@@ -1,3 +1,4 @@
 {
-  "start_command": "bash start.sh"
+  "build_command": "docker build -t btc15m .",
+  "start_command": "python main.py"
 }
