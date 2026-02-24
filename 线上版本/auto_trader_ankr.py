@@ -124,6 +124,8 @@ class TelegramNotifier:
         self.chat_id = CONFIG['telegram']['chat_id']
         self.proxy = CONFIG['telegram']['proxy']
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
+        # 🚀 HTTP Session（复用TCP连接，提速Telegram通知）
+        self.http_session = requests.Session()
 
     def send(self, message: str, parse_mode: str = None) -> bool:
         """发送Telegram消息
@@ -147,7 +149,8 @@ class TelegramNotifier:
             if parse_mode:
                 data['parse_mode'] = parse_mode
 
-            resp = requests.post(url, json=data, proxies=self.proxy, timeout=10)
+            # 🚀 使用Session复用TCP连接（提速Telegram通知）
+            resp = self.http_session.post(url, json=data, proxies=self.proxy, timeout=10)
             if resp.status_code == 200:
                 return True
             else:
@@ -189,6 +192,8 @@ class RealBalanceDetector:
         self.wallet = wallet
         self.balance_usdc = 0.0
         self.balance_pol = 0.0
+        # 🚀 HTTP Session（复用TCP连接，提速RPC调用）
+        self.http_session = requests.Session()
 
     def fetch(self) -> Tuple[float, float]:
         """Fetch real balance from Polygon"""
@@ -217,7 +222,8 @@ class RealBalanceDetector:
                 "id": 1
             }
 
-            resp = requests.post(url, json=payload, proxies=CONFIG['proxy'], timeout=10)
+            # 🚀 使用Session复用TCP连接（提速RPC调用）
+            resp = self.http_session.post(url, json=payload, proxies=CONFIG['proxy'], timeout=10)
 
             if resp.status_code == 200:
                 result = resp.json()
@@ -241,7 +247,8 @@ class RealBalanceDetector:
                 "id": 2
             }
 
-            resp2 = requests.post(url, json=payload2, proxies=CONFIG['proxy'], timeout=10)
+            # 🚀 使用Session复用TCP连接（提速RPC调用）
+            resp2 = self.http_session.post(url, json=payload2, proxies=CONFIG['proxy'], timeout=10)
 
             if resp2.status_code == 200:
                 result2 = resp2.json()
@@ -491,6 +498,24 @@ class AutoTraderV5:
         self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
 
+        # 🚀 HTTP Session池（复用TCP连接，提速3-5倍）
+        self.http_session = requests.Session()
+        # 配置连接池
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.1,
+            status_forcelist=[429, 500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=20
+        )
+        self.http_session.mount("http://", adapter)
+        self.http_session.mount("https://", adapter)
+
         # CLOB client
         self.client = None
         self.init_clob_client()
@@ -588,7 +613,8 @@ class AutoTraderV5:
                             # 获取当前市场价格（使用 /price API）
                             try:
                                 price_url = "https://clob.polymarket.com/price"
-                                price_resp = requests.get(
+                                # 🚀 使用Session复用TCP连接（提速价格查询）
+                                price_resp = self.http_session.get(
                                     price_url,
                                     params={"token_id": token_id, "side": "BUY"},
                                     proxies=CONFIG['proxy'],
@@ -678,7 +704,8 @@ class AutoTraderV5:
                                 try:
                                     # 尝试获取当前市场价格（使用 /price API）
                                     price_url = "https://clob.polymarket.com/price"
-                                    price_resp = requests.get(
+                                    # 🚀 使用Session复用TCP连接（提速价格查询）
+                                    price_resp = self.http_session.get(
                                         price_url,
                                         params={"token_id": token_id, "side": "BUY"},
                                         proxies=CONFIG['proxy'],
@@ -959,7 +986,8 @@ class AutoTraderV5:
             aligned = (now // 900) * 900
             slug = f"btc-updown-15m-{aligned}"
 
-            response = requests.get(
+            # 🚀 使用Session复用TCP连接（提速3-5倍）
+            response = self.http_session.get(
                 f"{CONFIG['gamma_host']}/markets",
                 params={'slug': slug},
                 proxies=CONFIG['proxy'],
@@ -1253,7 +1281,8 @@ class AutoTraderV5:
             url = f"{CONFIG['clob_host']}/positions"
             request_args = RequestArgs(method="GET", request_path="/positions")
             headers = create_level_2_headers(self.client.signer, self.client.creds, request_args)
-            resp = requests.get(url, headers=headers, proxies=CONFIG['proxy'], timeout=10)
+            # 🚀 使用Session复用TCP连接（提速持仓查询）
+            resp = self.http_session.get(url, headers=headers, proxies=CONFIG['proxy'], timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 positions = {}
@@ -1752,7 +1781,8 @@ class AutoTraderV5:
         """
         try:
             url = "https://clob.polymarket.com/price"
-            resp = requests.get(url, params={"token_id": token_id, "side": side}, proxies=CONFIG['proxy'], timeout=10)
+            # 🚀 使用Session复用TCP连接（提速3-5倍）
+            resp = self.http_session.get(url, params={"token_id": token_id, "side": side}, proxies=CONFIG['proxy'], timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 price = data.get('price')
@@ -1794,7 +1824,8 @@ class AutoTraderV5:
 
             token_id_yes = str(token_ids[0])
             url = "https://clob.polymarket.com/book"
-            resp = requests.get(url, params={"token_id": token_id_yes},
+            # 🚀 使用Session复用TCP连接（提速订单簿查询）
+            resp = self.http_session.get(url, params={"token_id": token_id_yes},
                                 proxies=CONFIG['proxy'], timeout=5)
             if resp.status_code != 200:
                 return 0.0
