@@ -9,7 +9,22 @@ import asyncio
 import websockets
 import json
 import time
+import os
 from datetime import datetime
+from dotenv import load_dotenv
+
+# 加载代理配置
+load_dotenv()
+proxy = os.getenv('HTTP_PROXY', os.getenv('HTTPS_PROXY', ''))
+proxies = None
+if proxy:
+    proxies = {
+        'http': proxy,
+        'https': proxy
+    }
+    print(f"[CONFIG] Using proxy: {proxy}")
+else:
+    print("[CONFIG] No proxy (direct connection)")
 
 
 async def test_polymarket_websocket():
@@ -30,6 +45,7 @@ async def test_polymarket_websocket():
         response = requests.get(
             "https://gamma-api.polymarket.com/markets",
             params={'slug': slug},
+            proxies=proxies,  # 添加代理支持
             timeout=10
         )
 
