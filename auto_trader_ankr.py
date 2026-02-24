@@ -654,7 +654,7 @@ class AutoTraderV5:
                                     time.sleep(1)
                                     try:
                                         close_order = self.client.get_order(close_order_id)
-                                        if close_order and close_order.get('status') == 'FILLED':
+                                        if close_order and close_order.get('status') in ('FILLED', 'MATCHED'):
                                             filled_price = close_order.get('price', close_price)
                                             # 计算盈亏（统一公式）
                                             pnl_usd = size * (filled_price - entry_price)
@@ -2335,13 +2335,12 @@ class AutoTraderV5:
                         try:
                             tp_order = self.client.get_order(tp_order_id)
                             if tp_order:
-                                if tp_order.get('status') == 'FILLED':
+                                # Polymarket 成交状态可能是 FILLED 或 MATCHED
+                                if tp_order.get('status') in ('FILLED', 'MATCHED'):
                                     exit_reason = 'TAKE_PROFIT'
                                     triggered_order_id = tp_order_id
-                                    # 从订单中获取实际成交价格
                                     actual_exit_price = tp_order.get('price')
                                     if actual_exit_price is None:
-                                        # 如果没有price字段，尝试其他可能的字段
                                         actual_exit_price = tp_order.get('matchAmount') / tp_order.get('matchedSize') if tp_order.get('matchedSize') else None
                             break
                         except Exception as e:
