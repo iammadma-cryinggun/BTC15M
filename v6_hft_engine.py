@@ -133,6 +133,10 @@ class V6HFTEngine:
                 self.v5.update_indicators(self.current_price or 0.5, high, low)
 
         except Exception as e:
+            # 🔍 调试：打印错误和原始数据（前100条）
+            if self.ws_message_count < 100:
+                print(f"[DEBUG] Price update error: {e}")
+                print(f"[DEBUG] Data sample: {str(data)[:200]}")
             pass  # 静默失败，避免打印过多错误
 
     async def check_and_trade(self):
@@ -274,6 +278,10 @@ class V6HFTEngine:
                             msg = await asyncio.wait_for(ws.recv(), timeout=1.0)
                             data = json.loads(msg)
                             self.ws_message_count += 1
+
+                            # 🔍 调试：打印前5条原始消息
+                            if self.ws_message_count <= 5:
+                                print(f"[DEBUG] 收到第{self.ws_message_count}条消息: {json.dumps(data, indent=2)[:500]}")
 
                             # 更新价格
                             self.update_price_from_ws(data)
