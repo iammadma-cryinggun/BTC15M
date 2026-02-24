@@ -116,25 +116,26 @@ python verify_real_data.py
 
 ## 🚀 快速开始
 
-### 1. 首次运行（启动系统）
+### 本地运行
 ```bash
-cd D:\OpenClaw\workspace\BTC_15min_V5_Professional
-python btc_15min_v5_professional.py
+# 安装依赖
+pip install -r requirements.txt
+
+# 配置环境变量（复制 .env.example 为 .env 并填入私钥）
+cp .env.example .env
+
+# 启动交易机器人
+python auto_trader_ankr.py
 ```
 
-### 2. 监控系统状态
+### Zeabur部署
 ```bash
-python monitor_system.py
-```
-
-### 3. 验证预测结果
-```bash
-python check_prediction_results.py
-```
-
-### 4. 确认数据真实性
-```bash
-python verify_real_data.py
+# 已配置 zbpack.json，自动使用 start.sh 启动
+# 只需在Zeabur配置环境变量：
+# - PRIVATE_KEY（必须）
+# - TELEGRAM_ENABLED（可选）
+# - TELEGRAM_BOT_TOKEN（可选）
+# - TELEGRAM_CHAT_ID（可选）
 ```
 
 ---
