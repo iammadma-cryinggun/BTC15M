@@ -1956,28 +1956,24 @@ class AutoTraderV5:
             # LONG买YES, SHORT买NO
             token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
 
-            # --- 查询真实成交价（用对应token的买一价，开仓是BUY）---
+            # --- 查询真实成交价（V6优先用WebSocket，V5回退REST）---
             best_price = self.get_order_book(token_id, side='BUY')
             if best_price is not None:
-                print(f"       [PRICE] 买一价: {best_price:.4f}")
-
-            outcome_prices = market.get('outcomePrices', [])
-            if isinstance(outcome_prices, str):
-                outcome_prices = json.loads(outcome_prices)
-
-            # outcome_prices[0]=YES价格, outcome_prices[1]=NO价格
-            token_price = None
-            if signal['direction'] == 'LONG':
-                # 买YES，用YES的价格
-                token_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else float(signal['price'])
+                print(f"       [PRICE] WebSocket实时价: {best_price:.4f}")
+                # 🔥 优先使用WebSocket实时价格（V6模式下是毫秒级数据）
+                base_price = best_price
             else:
-                # 买NO，直接用NO的价格（不通过YES计算）
-                token_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else round(1.0 - float(signal['price']), 4)
+                # 回退：从market的outcomePrices获取（可能是15分钟前的旧数据）
+                outcome_prices = market.get('outcomePrices', [])
+                if isinstance(outcome_prices, str):
+                    outcome_prices = json.loads(outcome_prices)
+                if signal['direction'] == 'LONG':
+                    base_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else float(signal['price'])
+                else:
+                    base_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else round(1.0 - float(signal['price']), 4)
+                print(f"       [PRICE] 回退旧数据: {base_price:.4f}")
 
-            print(f"       [PRICE] 使用={'YES' if signal['direction']=='LONG' else 'NO'}={token_price:.4f}")
-
-            # --- 核心修复：直接使用 Gamma 市场准确价格，废弃失真的 best_price ---
-            base_price = token_price
+            print(f"       [PRICE] 使用={'YES' if signal['direction']=='LONG' else 'NO'}={base_price:.4f}")
 
             # tick_size 对齐
             tick_size_float = float(market.get('orderPriceMinTickSize') or 0.01)
