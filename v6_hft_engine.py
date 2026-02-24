@@ -121,7 +121,7 @@ class V6HFTEngine:
         try:
             # 🔍 调试：打印前5条原始消息的完整结构
             if self.ws_message_count <= 5:
-                print(f"[DEBUG] 第{self.ws_message_count}条消息: {json.dumps(data, ensure=False)[:400]}")
+                print(f"[DEBUG] 第{self.ws_message_count}条消息: {json.dumps(data, ensure_ascii=False)[:400]}")
 
             # 处理price_changes类型（Polymarket的主要数据格式）
             price_changes = data.get("price_changes", [])
