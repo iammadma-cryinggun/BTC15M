@@ -125,12 +125,16 @@ class V6HFTEngine:
                 if self.current_yes_price is None:
                     self.current_price = 1.0 - mid_price
 
-            # 更新V5的指标（每秒最多更新一次，避免CPU爆炸）
+            # ✅ 修复: 使用自己的时间戳追踪，而不是访问不存在的rsi.last_update_time
+            if not hasattr(self, '_last_indicator_update'):
+                self._last_indicator_update = 0
+
             now = time.time()
-            if now - self.v5.rsi.last_update_time >= 1.0:
+            if now - self._last_indicator_update >= 1.0:
                 high = max(self.current_yes_price or 0.5, self.current_no_price or 0.5)
                 low = min(self.current_yes_price or 0.5, self.current_no_price or 0.5)
                 self.v5.update_indicators(self.current_price or 0.5, high, low)
+                self._last_indicator_update = now
 
         except Exception as e:
             # 🔍 调试：打印错误和原始数据（前100条）
