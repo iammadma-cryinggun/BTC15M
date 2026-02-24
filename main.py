@@ -26,6 +26,18 @@ print("")
 
 # 导入并运行主程序
 try:
+    # 检查py_clob_client是否可用
+    try:
+        from py_clob_client.client import ClobClient
+        CLOB_AVAILABLE = True
+        print("[OK] py-clob-client available - Trading ENABLED")
+    except ImportError:
+        CLOB_AVAILABLE = False
+        print("[WARN] py-clob-client NOT available - Trading DISABLED")
+        print("[INFO] Bot will run in SIGNAL-ONLY mode")
+        print("[INFO] Signals will be generated but NO trades will be executed")
+        print("")
+
     # 导入主交易程序
     from auto_trader_ankr import AutoTraderV5
 
@@ -34,6 +46,12 @@ try:
 
     # 创建并运行交易机器人
     bot = AutoTraderV5()
+
+    if not CLOB_AVAILABLE:
+        print("[INFO] Signal-only mode activated")
+        print("[INFO] To enable trading, install py-clob-client manually")
+        print("")
+
     bot.run()
 
 except KeyboardInterrupt:
