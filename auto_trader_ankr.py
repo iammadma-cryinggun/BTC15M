@@ -1732,9 +1732,9 @@ class AutoTraderV5:
                         return None, None, None
 
             # 确认token授权
-            # 检查token授权（已通过网页端永久授权，跳过）
-            # print(f"       [STOP ORDERS] 检查token授权...")
-            # self.ensure_allowance(token_id, expected_size=stop_size)
+            # 检查token授权
+            print(f"       [STOP ORDERS] 检查token授权...")
+            self.ensure_allowance(token_id, expected_size=stop_size)
 
             # ==========================================
             # 🚀 强制止盈挂单（带动态退避与重试机制）
@@ -2360,21 +2360,21 @@ class AutoTraderV5:
                     if result:
                         amount = result.get('balance', '0')
                         if amount is not None:
-                            # 尝试转换为float
                             try:
                                 amount_float = float(amount)
                             except:
                                 amount_float = 0
 
-                            if amount_float <= 0:
-                                print(f"       [POSITION] ⚠️  Token余额为{amount_float}，检测到已手动平仓，停止监控")
-                                # 标记为closed，避免继续尝试操作
+                            # 只有 balance 明确为0才认为已平仓（allowance为0不代表平仓）
+                            # balance 单位是最小精度，需要除以1e6才是实际份数
+                            actual_size = amount_float / 1e6
+                            if actual_size < 0.5:  # 少于0.5份才认为已平仓
+                                print(f"       [POSITION] ⚠️  Token余额为{actual_size:.2f}份，检测到已手动平仓，停止监控")
                                 exit_reason = 'MANUAL_CLOSED'
                                 actual_exit_price = pos_current_price
-                        else:
-                            print(f"       [POSITION] [DEBUG] 余额查询成功，balance={amount}")
+                            else:
+                                print(f"       [POSITION] [DEBUG] 余额查询成功，balance={actual_size:.2f}份")
                 except Exception as e:
-                    # 余额查询失败，打印错误信息但继续监控
                     print(f"       [POSITION] [DEBUG] 余额查询失败: {e}")
                     pass
 
