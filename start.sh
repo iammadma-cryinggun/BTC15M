@@ -1,51 +1,48 @@
-#!/bin/bash
-# Zeabur启动脚本
+#!/usr/bin/env python3
+"""
+Zeabur启动脚本（Python版，避免bash权限问题）
+"""
+import os
+import sys
+import subprocess
 
-echo "========================================="
-echo "  BTC 15min Trading Bot - Starting"
-echo "========================================="
-echo ""
+print("=" * 50)
+print("  BTC 15min Trading Bot - Starting")
+print("=" * 50)
+print("")
 
 # 检查Python版本
-echo "[INFO] Python version:"
-python --version
-echo ""
+print("[INFO] Python version:")
+print(sys.version)
+print("")
 
 # 检查环境变量
-echo "[INFO] Checking environment variables..."
-if [ -z "$PRIVATE_KEY" ]; then
-    echo "[ERROR] PRIVATE_KEY not set!"
-    echo "        Please configure this in Zeabur environment variables"
-    exit 1
-else
-    echo "[OK] PRIVATE_KEY is set (${#PRIVATE_KEY} chars)"
-fi
+print("[INFO] Checking environment variables...")
+private_key = os.getenv('PRIVATE_KEY')
+if not private_key:
+    print("[ERROR] PRIVATE_KEY not set!")
+    print("        Please configure this in Zeabur environment variables")
+    sys.exit(1)
+else:
+    print(f"[OK] PRIVATE_KEY is set ({len(private_key)} chars)")
 
-echo "[INFO] TELEGRAM_ENABLED: $TELEGRAM_ENABLED"
-echo "[INFO] HTTP_PROXY: $HTTP_PROXY"
-echo ""
+print(f"[INFO] TELEGRAM_ENABLED: {os.getenv('TELEGRAM_ENABLED', 'false')}")
+print(f"[INFO] HTTP_PROXY: {os.getenv('HTTP_PROXY', '(none)')}")
+print("")
 
-# 检查依赖
-echo "[INFO] Checking installed packages..."
-pip list | grep -E "requests|dotenv|clob" || echo "[WARN] Some packages may be missing"
-echo ""
+# 检查主文件是否存在
+if not os.path.exists('auto_trader_ankr.py'):
+    print("[ERROR] auto_trader_ankr.py not found!")
+    print(f"        Current directory: {os.getcwd()}")
+    print(f"        Files in directory: {os.listdir('.')}")
+    sys.exit(1)
+else:
+    print("[OK] auto_trader_ankr.py found")
 
-# 启动主程序
-echo "[INFO] Starting trading bot..."
-echo "========================================="
-echo ""
+print("")
+print("[INFO] Starting trading bot...")
+print("=" * 50)
+print("")
 
-# 运行主程序（捕获退出码）
-python auto_trader_ankr.py
-EXIT_CODE=$?
-
-echo ""
-echo "========================================="
-if [ $EXIT_CODE -eq 0 ]; then
-    echo "[INFO] Bot exited normally (code: $EXIT_CODE)"
-else
-    echo "[ERROR] Bot crashed! Exit code: $EXIT_CODE"
-fi
-echo "========================================="
-
-exit $EXIT_CODE
+# 直接运行主程序（使用当前Python解释器）
+os.execv(sys.executable, [sys.executable, 'auto_trader_ankr.py'])

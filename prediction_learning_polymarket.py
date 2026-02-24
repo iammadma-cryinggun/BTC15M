@@ -55,6 +55,8 @@ class PolymarketPredictionLearning:
             'min_long_score': 2.5,
             'min_short_score': -2.5
         }
+        # 🚀 HTTP Session（复用TCP连接，提速API请求）
+        self.http_session = requests.Session()
         self._init_db()
 
     def _init_db(self):
@@ -742,7 +744,8 @@ class PolymarketPredictionLearning:
             if slug in slug_price_cache:
                 return slug_price_cache[slug]
             try:
-                resp = requests.get(
+                # 🚀 使用Session复用TCP连接（提速API请求）
+                resp = self.http_session.get(
                     "https://gamma-api.polymarket.com/markets",
                     params={'slug': slug},
                     proxies=proxies,
