@@ -76,9 +76,10 @@ CONFIG = {
         'max_daily_loss_pct': 0.50,     # 50% daily loss (临时提高)
         'stop_loss_consecutive': 4,      # 提高到4（2太容易触发，错过机会）
         'pause_hours': 0.5,            # 缩短到0.5小时（2小时太长）
-        'max_same_direction_bullets': 2,  # 🛡️ 同市场同方向最大持仓数（防止马丁格尔）
-        'same_direction_cooldown_sec': 60,  # 🛡️ 同市场同方向最小间隔秒数（防止频繁追单）
-        'max_stop_loss_pct': 0.15,      # 🛡️ 最大止损15%（15分钟市场跌15%说明方向错了，早点认赔）
+        'max_same_direction_bullets': 1,  # 同市场同方向最大持仓数（每窗口只开1单）
+        'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
+        'max_trades_per_window': 1,       # 每个15分钟窗口最多开单总数（防止多空横跳）
+        'max_stop_loss_pct': 0.15,      # 最大止损15%
     },
 
     'signal': {
@@ -1198,23 +1199,46 @@ class AutoTraderV5:
                     # LONG 用 YES token (index 0), SHORT 用 NO token (index 1)
                     token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
 
-                    # 1. 检查在这个市场里，当前方向（LONG/SHORT）总共开了多少单（包括已平仓的）
-                    # 🛡️ 弹匣限制：统计整个15分钟窗口内的所有交易，防止开仓→平仓→无限循环
+                    # 1. 弹匣限制：只统计当前15分钟窗口内的交易（加时间过滤）
+                    # 当前窗口开始时间 = 当前UTC时间对齐到15分钟
+                    from datetime import timezone as tz
+                    now_utc = datetime.now(tz.utc)
+                    window_start_ts = (int(now_utc.timestamp()) // 900) * 900
+                    window_start_str = datetime.fromtimestamp(window_start_ts).strftime('%Y-%m-%d %H:%M:%S')
+
+                    # 检查当前窗口同方向开单数
                     cursor.execute("""
                         SELECT count(*), max(entry_time)
                         FROM positions
                         WHERE token_id = ? AND side = ?
-                    """, (token_id, signal['direction']))
+                          AND entry_time >= ?
+                    """, (token_id, signal['direction'], window_start_str))
 
                     row = cursor.fetchone()
                     open_count = row[0] if row else 0
                     last_entry_time_str = row[1] if row and row[1] else None
+
+                    # 检查当前窗口所有方向总开单数（防止多空横跳）
+                    max_per_window = CONFIG['risk'].get('max_trades_per_window', 1)
+                    yes_token_id = str(token_ids[0])
+                    no_token_id = str(token_ids[1])
+                    cursor.execute("""
+                        SELECT count(*) FROM positions
+                        WHERE (token_id = ? OR token_id = ?)
+                          AND entry_time >= ?
+                    """, (yes_token_id, no_token_id, window_start_str))
+                    total_row = cursor.fetchone()
+                    total_window_trades = total_row[0] if total_row else 0
+
                     conn.close()
+
+                    if total_window_trades >= max_per_window:
+                        return False, f"窗口限制: 本15分钟窗口已开{total_window_trades}单，最多{max_per_window}单"
 
                     # 弹匣限制：同一市场同一方向最多N发子弹
                     max_bullets = CONFIG['risk']['max_same_direction_bullets']
                     if open_count >= max_bullets:
-                        return False, f"🛡️ 弹匣耗尽: {token_id[-8:]} {signal['direction']}已达最大持仓({max_bullets}单)"
+                        return False, f"弹匣耗尽: {token_id[-8:]} {signal['direction']}已达最大持仓({max_bullets}单)"
 
                     # 射击冷却：距离上一单必须超过N秒
                     cooldown_sec = CONFIG['risk']['same_direction_cooldown_sec']
@@ -1233,19 +1257,41 @@ class AutoTraderV5:
 
         # 🛡️ === 第一斧：时间防火墙（拒绝垃圾时间） ===
         if market:
-            end_timestamp = market.get('endTimestamp')
-            if end_timestamp:
-                try:
-                    end_time = datetime.fromtimestamp(int(end_timestamp) / 1000, tz=timezone.utc)
-                    time_left = (end_time - datetime.now(timezone.utc)).total_seconds()
-                    # 距离结算不足180秒（3分钟），拒绝开仓
-                    if time_left < 180:
-                        return False, f"🛡️ 时间防火墙: 距离结算仅{time_left:.0f}秒，拒绝开仓"
-                except Exception as e:
-                    # ⚠️ 时间解析失败时保守处理：拒绝交易（避免在未知时间风险下开仓）
-                    return False, f"🛡️ 时间防火墙: 无法解析市场时间({e})，拒绝开仓"
-            # ⚠️ endTimestamp缺失时：允许交易（V6 WebSocket模式实时性高，不需要严格限制）
-            # return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
+            time_left = None
+            try:
+                # 优先用 endTimestamp（可能是毫秒时间戳或ISO字符串）
+                end_timestamp = market.get('endTimestamp')
+                if end_timestamp:
+                    # 判断类型：字符串 or 数字
+                    if isinstance(end_timestamp, str):
+                        # ISO 8601字符串格式：2026-02-24T16:15:00Z
+                        if 'T' in end_timestamp:
+                            end_dt = datetime.strptime(end_timestamp, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                            time_left = (end_dt - datetime.now(timezone.utc)).total_seconds()
+                        else:
+                            # 尝试作为数字字符串解析
+                            end_time = datetime.fromtimestamp(int(end_timestamp) / 1000, tz=timezone.utc)
+                            time_left = (end_time - datetime.now(timezone.utc)).total_seconds()
+                    else:
+                        # 数字类型（毫秒时间戳）
+                        end_time = datetime.fromtimestamp(int(end_timestamp) / 1000, tz=timezone.utc)
+                        time_left = (end_time - datetime.now(timezone.utc)).total_seconds()
+                else:
+                    # 备用：endDate 字符串格式
+                    end_date = market.get('endDate')
+                    if end_date:
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                        time_left = (end_dt - datetime.now(timezone.utc)).total_seconds()
+            except Exception as e:
+                # 时间解析失败，保守处理：拒绝交易
+                return False, f"🛡️ 时间防火墙: 无法解析市场时间({e})，拒绝开仓"
+
+            if time_left is not None:
+                if time_left < 180:
+                    return False, f"🛡️ 时间防火墙: 距离结算仅{time_left:.0f}秒，拒绝开仓"
+            else:
+                # 两个时间字段都缺失，保守拒绝
+                return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
         # 🛡️ === 第二斧：拒绝高位接盘（只做均势局） ===
         price = signal.get('price', 0.5)

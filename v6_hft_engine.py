@@ -47,6 +47,16 @@ class V6HFTEngine:
         print("\n[INFO] V5组件初始化完成，WebSocket连接准备中...\n")
         self._patch_v5_order_book()
 
+        # 加载动态参数（与V5保持一致）
+        self.v5.load_dynamic_params()
+
+        # 清理过期持仓
+        self.v5.cleanup_stale_positions()
+
+        # Telegram 启动通知
+        if self.v5.telegram.enabled:
+            self.v5.telegram.send("V6 高频引擎已启动 (WebSocket实时价格 + V5完整风控)")
+
     def _patch_v5_order_book(self):
         """覆盖V5的get_order_book，优先使用WebSocket缓存价格"""
         original = self.v5.get_order_book
@@ -336,6 +346,7 @@ class V6HFTEngine:
                     last_prediction_check = time.time()
                     last_trade_check = time.time()
                     last_adjust_check = time.time()
+                    last_cleanup_check = time.time()
 
                     while True:
                         # 接收WebSocket消息（带超时）
@@ -380,6 +391,12 @@ class V6HFTEngine:
                         if now - last_adjust_check >= 30:
                             await self.auto_adjust()
                             last_adjust_check = now
+
+                        # 每5分钟清理过期持仓
+                        if now - last_cleanup_check >= 300:
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, self.v5.cleanup_stale_positions)
+                            last_cleanup_check = now
 
                         # 检查是否需要切换市场
                         if self.market_end_time:
