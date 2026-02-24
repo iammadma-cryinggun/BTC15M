@@ -1,14 +1,9 @@
 # 使用Python 3.11官方镜像
 FROM python:3.11-slim
 
-# 安装系统依赖
+# 安装系统依赖（只需要ca-certificates用于HTTPS请求）
 RUN apt-get update && apt-get install -y \
-    git \
     ca-certificates \
-    wget \
-    unzip \
-    gcc \
-    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
