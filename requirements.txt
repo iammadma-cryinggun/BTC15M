@@ -6,6 +6,6 @@ requests>=2.31.0
 # Environment variables
 python-dotenv>=1.0.0
 
-# 注意：py-clob-client需要手动安装或使用Signal模式
-# 暂时注释掉，让程序在Signal模式下运行
-# git+https://github.com/Polymarket/clob-py-client.git@main
+# Polymarket CLOB Client (from GitHub)
+# SSL certificates now installed in Dockerfile
+git+https://github.com/Polymarket/clob-py-client.git@main
