@@ -2012,7 +2012,7 @@ class AutoTraderV5:
 
             print(f"       [ORDER] {signal['direction']}")
             print(f"       [ORDER] Value: {position_value:.2f} USDC")
-            print(f"       [ORDER] Token Price: {token_price:.4f} (Adjusted: {adjusted_price:.4f})")
+            print(f"       [ORDER] Token Price: {base_price:.4f} (Adjusted: {adjusted_price:.4f})")
             print(f"       [ORDER] Size: {size}")
 
             # 组装订单
@@ -2030,7 +2030,7 @@ class AutoTraderV5:
             if response and 'orderID' in response:
                 print(f"       [OK] {response['orderID']}")
                 # 返回实际下单价格（adjusted_price）和实际size，用于准确计算盈亏和挂单
-                return {'order_id': response['orderID'], 'status': 'posted', 'value': position_value, 'price': adjusted_price, 'token_price': token_price, 'size': float(size)}
+                return {'order_id': response['orderID'], 'status': 'posted', 'value': position_value, 'price': adjusted_price, 'token_price': base_price, 'size': float(size)}
 
             return None
 
