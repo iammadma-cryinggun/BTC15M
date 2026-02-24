@@ -1,0 +1,53 @@
+# 敏感信息
+.env
+*.key
+PRIVATE_KEY
+
+# 数据库文件
+*.db
+*.sqlite
+*.sqlite3
+
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+
+# 临时文件
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Claude相关
+.claude/
+projects/
+
+# 本地配置
+dynamic_params.json
+local_*.py
+
+# 备份文件
+*.bak
+*_backup.*
+*_old.*
+
+# 测试文件
+test_*.py
+*_test.py
