@@ -540,6 +540,9 @@ class AutoTraderV5:
         self.last_signal_direction = None  # 追踪上一次信号方向（用于信号改变检测）
         self.init_database()
 
+        # 从数据库恢复当天的亏损和交易统计（防止重启后风控失效）
+        self._restore_daily_stats()
+
         # 预测学习系统
         self.learning_system = None
         self.last_learning_report = 0
@@ -858,6 +861,39 @@ class AutoTraderV5:
 
         conn.close()
 
+    def _restore_daily_stats(self):
+        """从数据库恢复当天的亏损和交易统计，防止重启后风控失效"""
+        try:
+            today = datetime.now().date().strftime('%Y-%m-%d')
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # 恢复当天已关闭持仓的亏损总额
+            cursor.execute("""
+                SELECT COALESCE(SUM(ABS(pnl_usd)), 0)
+                FROM positions
+                WHERE status = 'closed'
+                  AND pnl_usd < 0
+                  AND date(exit_time) = ?
+            """, (today,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                self.stats['daily_loss'] = float(row[0])
+
+            # 恢复当天交易次数
+            cursor.execute("""
+                SELECT COUNT(*) FROM trades
+                WHERE date(timestamp) = ? AND status = 'posted'
+            """, (today,))
+            row2 = cursor.fetchone()
+            if row2 and row2[0]:
+                self.stats['daily_trades'] = int(row2[0])
+
+            conn.close()
+            print(f"[RESTORE] 当天统计已恢复: 亏损=${self.stats['daily_loss']:.2f}, 交易={self.stats['daily_trades']}次")
+        except Exception as e:
+            print(f"[RESTORE] 恢复统计失败（不影响运行）: {e}")
+
     def record_prediction_learning(self, market: Dict, signal: Dict, order_result: Optional[Dict], was_blocked: bool = False):
         if not self.learning_system:
             return
@@ -945,26 +981,38 @@ class AutoTraderV5:
             return 0
 
     def _get_last_market_slug(self, pos_id: int = None) -> str:
-        """获取最近交易的市场 slug，用于学习系统回填"""
+        """获取指定持仓对应的市场 slug，用于学习系统回填
+        
+        通过 positions.token_id 反查 predictions 表中对应的 market_slug。
+        多持仓时每个持仓独立查询，避免回填到错误记录。
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             if pos_id:
-                # 通过 positions 表的 entry_time 匹配 trades 表
+                # 通过 token_id 直接匹配 predictions 表的 market_slug
                 cursor.execute("""
-                    SELECT p.entry_time FROM positions p WHERE p.id = ?
+                    SELECT token_id, entry_time FROM positions WHERE id = ?
                 """, (pos_id,))
                 row = cursor.fetchone()
                 if row:
-                    cursor.execute("""
-                        SELECT order_id FROM trades
-                        WHERE timestamp <= ? AND status = 'posted'
-                        ORDER BY timestamp DESC LIMIT 1
-                    """, (row[0],))
-                    trade_row = cursor.fetchone()
-                    if trade_row:
-                        conn.close()
-                        return self.last_traded_market or ''
+                    token_id, entry_time = row
+                    # 在 predictions 表里找最近一条匹配该 token 的记录
+                    try:
+                        pred_conn = sqlite3.connect('btc_15min_predictionsv2.db')
+                        pred_cursor = pred_conn.cursor()
+                        pred_cursor.execute("""
+                            SELECT market_slug FROM predictions
+                            WHERE timestamp <= ? AND market_slug IS NOT NULL
+                            ORDER BY timestamp DESC LIMIT 1
+                        """, (entry_time,))
+                        pred_row = pred_cursor.fetchone()
+                        pred_conn.close()
+                        if pred_row and pred_row[0]:
+                            conn.close()
+                            return pred_row[0]
+                    except:
+                        pass
             conn.close()
         except:
             pass
@@ -1035,18 +1083,9 @@ class AutoTraderV5:
         self.price_history.append(price)
 
     def generate_signal(self, market: Dict, price: float) -> Optional[Dict]:
-        try:
-            outcome_prices = market.get('outcomePrices', '[]')
-            if isinstance(outcome_prices, str):
-                outcome_prices = json.loads(outcome_prices)
-            best_bid = float(market.get('bestBid', price))
-            best_ask = float(market.get('bestAsk', price))
-            high = max(price, best_ask)
-            low = min(price, best_bid)
-        except:
-            high = low = price
-
-        self.update_indicators(price, high, low)
+        # 注意：V5主循环在调用generate_signal前已调用update_indicators
+        # V6的update_price_from_ws每秒也会调用update_indicators
+        # 这里不再重复调用，避免同一价格点被更新多次导致RSI/VWAP失真
         if not self.rsi.is_ready():
             return None
 
@@ -1054,39 +1093,43 @@ class AutoTraderV5:
         vwap = self.vwap.get_vwap()
         price_hist = list(self.price_history)
 
-        # 入场价格过滤：避免在市场一边倒时开仓（风险收益比太差）
-        # 获取NO价格
+        # === 统一价格过滤（整合三处分散的过滤逻辑）===
+        # 有效入场区间：0.35~0.48 和 0.52~0.65
+        # 低于0.35或高于0.65：风险收益比太差
+        # 0.48~0.52：平衡区，信号不明确
+        max_entry = CONFIG['signal'].get('max_entry_price', 0.65)
+        min_entry = CONFIG['signal'].get('min_entry_price', 0.35)
+        bal_min = CONFIG['signal']['balance_zone_min']
+        bal_max = CONFIG['signal']['balance_zone_max']
+
+        if price > max_entry:
+            return None
+        if price < min_entry:
+            return None
+        if bal_min <= price <= bal_max:
+            return None
+
+        # 获取NO价格，过滤市场一边倒情况
         try:
             outcome_prices = market.get('outcomePrices', '[]')
             if isinstance(outcome_prices, str):
                 outcome_prices = json.loads(outcome_prices)
-            yes_price = price  # 当前price已经是YES价格
-            no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else (1.0 - yes_price)
-
-            # 过滤条件：市场一边倒时不入场
-            # YES > 0.80：市场过于看涨，做多成本高，做空风险大
-            # NO > 0.80：市场过于看跌，做空成本高，做多风险大
-            if yes_price > 0.80:
-                print(f"       [FILTER] YES价格 {yes_price:.4f} > 0.80（市场过于看涨），跳过")
+            no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else (1.0 - price)
+            if price > 0.80:
+                print(f"       [FILTER] YES价格 {price:.4f} > 0.80（市场过于看涨），跳过")
                 return None
             if no_price > 0.80:
                 print(f"       [FILTER] NO价格 {no_price:.4f} > 0.80（市场过于看跌），跳过")
                 return None
         except:
-            pass  # 获取失败时，继续执行
+            pass
 
-        ob_bias = 0.0
-        score, components = self.scorer.calculate_score_with_orderbook(
-            price, rsi, vwap, price_hist, ob_bias
-        )
+        # 评分（ob_bias固定为0，orderbook_bias权重已禁用）
+        score, components = self.scorer.calculate_score(price, rsi, vwap, price_hist)
 
         confidence = min(abs(score) / 5.0, 0.99)
 
-        if CONFIG['signal']['balance_zone_min'] <= price <= CONFIG['signal']['balance_zone_max']:
-            return None
-
         direction = None
-        # 使用分别的置信度设置
         min_long_conf = CONFIG['signal'].get('min_long_confidence', CONFIG['signal']['min_confidence'])
         min_short_conf = CONFIG['signal'].get('min_short_confidence', CONFIG['signal']['min_confidence'])
 
@@ -2161,7 +2204,7 @@ class AutoTraderV5:
                     tp_pct,
                     sl_pct,
                     tp_order_id,
-                    str(sl_target_price) if sl_target_price else None,  # 存止损价格供轮询使用
+                    str(sl_target_price) if sl_target_price else None,  # ⚠️ 注意：此字段存的是止损价格字符串，不是订单ID！用于本地轮询止损
                     token_id,
                     'open'
                 ))
@@ -2169,7 +2212,7 @@ class AutoTraderV5:
 
                 # 根据止盈止损单状态显示不同信息
                 if tp_order_id:
-                    print(f"       [POSITION] ✅ 止盈单已挂 @ {sl_target_price:.4f} 止损线本地监控")
+                    print(f"       [POSITION] ✅ 止盈单已挂 @ {tp_target_price:.4f}，止损线 @ {sl_target_price:.4f} 本地监控")
                 else:
                     print(f"       [POSITION] ⚠️  止盈单挂单失败，将使用本地监控双向平仓")
 
@@ -2181,8 +2224,12 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [DB ERROR] {e}")
 
-    def check_positions(self, current_token_price: float):
-        """检查持仓状态，通过检查止盈止损单是否成交来判断"""
+    def check_positions(self, current_token_price: float = None):
+        """检查持仓状态，通过检查止盈止损单是否成交来判断
+        
+        注意：current_token_price 参数仅作备用，内部会对每个持仓单独查询准确价格。
+        V6模式下由 get_order_book 覆盖返回 WebSocket 实时价格。
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -2203,11 +2250,11 @@ class AutoTraderV5:
             for pos in positions:
                 pos_id, entry_time, side, entry_token_price, size, value_usdc, tp_order_id, sl_order_id, token_id = pos
 
-                # 根据持仓token_id获取当前准确价格（LONG=YES价，SHORT=NO价）
-                current_token_price = None
+                # 对每个持仓单独查询准确价格（V6会走WebSocket缓存，V5走REST）
+                pos_current_price = None
                 if token_id:
-                    current_token_price = self.get_order_book(token_id, side='BUY')
-                if current_token_price is None:
+                    pos_current_price = self.get_order_book(token_id, side='BUY')
+                if pos_current_price is None:
                     # fallback：从市场数据获取
                     try:
                         market = self.get_market_data()
@@ -2216,22 +2263,22 @@ class AutoTraderV5:
                             if isinstance(outcome_prices, str):
                                 outcome_prices = json.loads(outcome_prices)
                             if side == 'LONG':
-                                current_token_price = float(outcome_prices[0]) if outcome_prices else 0.5
+                                pos_current_price = float(outcome_prices[0]) if outcome_prices else 0.5
                             else:
-                                current_token_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else 0.5
+                                pos_current_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else 0.5
                     except:
                         pass
-                if current_token_price is None:
+                if pos_current_price is None:
                     print(f"       [POSITION] 无法获取持仓 {pos_id} 的当前价格，跳过")
                     continue
 
-                print(f"       [POSITION] {side} token价格: {current_token_price:.4f}")
+                print(f"       [POSITION] {side} token价格: {pos_current_price:.4f}")
 
                 # 调试：打印止损检查的详细信息
                 if sl_order_id:
                     try:
                         sl_price = float(sl_order_id)
-                        print(f"       [DEBUG] 止损检查: 当前价={current_token_price:.4f}, 止损线={sl_price:.4f}, 触发={current_token_price <= sl_price}")
+                        print(f"       [DEBUG] 止损检查: 当前价={pos_current_price:.4f}, 止损线={sl_price:.4f}, 触发={pos_current_price <= sl_price}")
                     except:
                         pass
 
@@ -2282,7 +2329,7 @@ class AutoTraderV5:
                                 print(f"       [POSITION] ⚠️  Token余额为{amount_float}，检测到已手动平仓，停止监控")
                                 # 标记为closed，避免继续尝试操作
                                 exit_reason = 'MANUAL_CLOSED'
-                                actual_exit_price = current_token_price
+                                actual_exit_price = pos_current_price
                         else:
                             print(f"       [POSITION] [DEBUG] 余额查询成功，balance={amount}")
                 except Exception as e:
@@ -2325,18 +2372,18 @@ class AutoTraderV5:
                         pass
 
                     # 📊 显示双向监控状态
-                    tp_gap = tp_target_price - current_token_price
+                    tp_gap = tp_target_price - pos_current_price
                     if sl_price:
-                        sl_gap = current_token_price - sl_price
+                        sl_gap = pos_current_price - sl_price
                         time_info = f" | 剩余: {int(seconds_left)}s" if seconds_left else ""
-                        print(f"       [MONITOR] 当前价: {current_token_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f}) | SL止损: {sl_price:.4f} (距{sl_gap:.4f}){time_info}")
+                        print(f"       [MONITOR] 当前价: {pos_current_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f}) | SL止损: {sl_price:.4f} (距{sl_gap:.4f}){time_info}")
                     else:
-                        print(f"       [MONITOR] 当前价: {current_token_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f})")
+                        print(f"       [MONITOR] 当前价: {pos_current_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f})")
 
                     # 双向监控：止盈和止损
                     # 1. 检查止盈（价格上涨触发）
-                    if current_token_price >= tp_target_price:
-                        print(f"       [LOCAL TP] 触发本地止盈！当前价 {current_token_price:.4f} >= 目标 {tp_target_price:.4f}")
+                    if pos_current_price >= tp_target_price:
+                        print(f"       [LOCAL TP] 触发本地止盈！当前价 {pos_current_price:.4f} >= 目标 {tp_target_price:.4f}")
 
                         # 撤销原有的止盈单（如果存在）
                         if tp_order_id:
@@ -2355,11 +2402,11 @@ class AutoTraderV5:
                             if close_order_id == "NO_BALANCE":
                                 print(f"       [LOCAL TP] 🛑 检测到余额为空！证明限价单已成交或已手动平仓。结束监控。")
                                 exit_reason = 'AUTO_CLOSED_OR_MANUAL'  # 赋值后就能跳出 while 循环
-                                actual_exit_price = current_token_price  # 象征性记录
+                                actual_exit_price = pos_current_price  # 象征性记录
                             elif close_order_id:
                                 exit_reason = 'TAKE_PROFIT_LOCAL'
                                 triggered_order_id = close_order_id
-                                actual_exit_price = current_token_price
+                                actual_exit_price = pos_current_price
                                 try:
                                     time.sleep(2)
                                     close_order = self.client.get_order(close_order_id)
@@ -2376,8 +2423,8 @@ class AutoTraderV5:
                                 print(f"       [LOCAL TP] 市价平仓失败(非余额原因)，下次继续尝试")
 
                     # 2. 检查止损（价格下跌触发）- 🔥 立即执行，不再等待最后5分钟
-                    elif sl_price and current_token_price <= sl_price:
-                        print(f"       [LOCAL SL] 触发本地止损！当前价 {current_token_price:.4f} <= 止损线 {sl_price:.4f}")
+                    elif sl_price and pos_current_price <= sl_price:
+                        print(f"       [LOCAL SL] 触发本地止损！当前价 {pos_current_price:.4f} <= 止损线 {sl_price:.4f}")
                         time_remaining = f"{int(seconds_left)}s" if seconds_left else "未知"
                         print(f"       [LOCAL SL] ⏰ 市场剩余 {time_remaining}，立即执行止损保护")
 
@@ -2396,11 +2443,11 @@ class AutoTraderV5:
                             if close_order_id == "NO_BALANCE":
                                 print(f"       [LOCAL SL] 🛑 检测到余额为空！可能已手动平仓。结束监控。")
                                 exit_reason = 'AUTO_CLOSED_OR_MANUAL'
-                                actual_exit_price = current_token_price
+                                actual_exit_price = pos_current_price
                             elif close_order_id:
                                 exit_reason = 'STOP_LOSS_LOCAL'
                                 triggered_order_id = close_order_id
-                                actual_exit_price = current_token_price
+                                actual_exit_price = pos_current_price
                                 try:
                                     time.sleep(2)
                                     close_order = self.client.get_order(close_order_id)
@@ -2418,7 +2465,7 @@ class AutoTraderV5:
 
                 # 如果订单成交但没有获取到价格，使用当前价格作为fallback
                 if exit_reason and actual_exit_price is None:
-                    actual_exit_price = current_token_price
+                    actual_exit_price = pos_current_price
                     print(f"       [POSITION WARNING] 订单成交但无法获取价格，使用当前价格: {actual_exit_price:.4f}")
 
                 # 止盈止损完全依赖挂单成交，不做主动价格监控平仓
@@ -2438,14 +2485,14 @@ class AutoTraderV5:
                                 # 🛡️ 市场已过期：直接标记为已结算，停止监控
                                 if seconds_left < 0:
                                     print(f"       [EXPIRY] ⏰ 市场已过期({abs(seconds_left):.0f}秒)，标记为已结算")
-                                    current_value = size * current_token_price
+                                    current_value = size * pos_current_price
                                     current_pnl = current_value - value_usdc
                                     print(f"       [EXPIRY] 最终盈亏: ${current_pnl:.2f}")
                                     exit_reason = 'MARKET_SETTLED'
-                                    actual_exit_price = current_token_price
+                                    actual_exit_price = pos_current_price
 
                                 # 计算当前盈亏（用于判断触发策略）
-                                current_value = size * current_token_price
+                                current_value = size * pos_current_price
                                 current_pnl = current_value - value_usdc
 
                                 # 💎 盈利情况：最后60秒提前锁定利润
@@ -2463,7 +2510,7 @@ class AutoTraderV5:
 
                                     # 标记为持有到结算
                                     exit_reason = 'HOLD_TO_SETTLEMENT'
-                                    actual_exit_price = current_token_price
+                                    actual_exit_price = pos_current_price
 
                                 # 🩸 亏损情况：最后120秒强制止损
                                 elif current_pnl < 0 and seconds_left <= 120:
@@ -2481,7 +2528,7 @@ class AutoTraderV5:
                                     # 市价平仓
                                     try:
                                         from py_clob_client.clob_types import OrderArgs
-                                        close_price = max(0.01, min(0.99, current_token_price * 0.97))
+                                        close_price = max(0.01, min(0.99, pos_current_price * 0.97))
 
                                         close_order_args = OrderArgs(
                                             token_id=token_id,
@@ -2496,7 +2543,7 @@ class AutoTraderV5:
                                             close_order_id = close_response['orderID']
                                             exit_reason = 'EXPIRY_FORCE_CLOSE'
                                             triggered_order_id = close_order_id
-                                            actual_exit_price = current_token_price
+                                            actual_exit_price = pos_current_price
                                             print(f"       [EXPIRY] ✅ 强制平仓单已挂: {close_order_id[-8:]} @ {close_price:.4f}")
                                     except Exception as e:
                                         print(f"       [EXPIRY] ❌ 强制平仓失败: {e}")
@@ -2716,6 +2763,19 @@ class AutoTraderV5:
                     continue
 
                 print(f"       Price: {price:.4f}")
+
+                # 更新指标（RSI/VWAP/价格历史）- 在generate_signal之前调用
+                try:
+                    outcome_prices = market.get('outcomePrices', '[]')
+                    if isinstance(outcome_prices, str):
+                        outcome_prices = json.loads(outcome_prices)
+                    best_bid = float(market.get('bestBid', price))
+                    best_ask = float(market.get('bestAsk', price))
+                    high = max(price, best_ask)
+                    low = min(price, best_bid)
+                except:
+                    high = low = price
+                self.update_indicators(price, high, low)
 
                 # 检查持仓止盈止损（每15秒检查一次，即每5次迭代）
                 if i % 5 == 0:
