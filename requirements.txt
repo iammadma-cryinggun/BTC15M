@@ -6,6 +6,5 @@ requests>=2.31.0
 # Environment variables
 python-dotenv>=1.0.0
 
-# Polymarket CLOB Client (from Git)
-# Install from: https://github.com/Polymarket/clob-py-client
-py-clob-client @ git+https://github.com/Polymarket/clob-py-client.git@main
+# Polymarket CLOB Client (需要git)
+git+https://github.com/Polymarket/clob-py-client.git@main
