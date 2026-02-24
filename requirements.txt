@@ -1,0 +1,10 @@
+# Polymarket CLOB Trading Bot Dependencies
+
+# HTTP requests
+requests>=2.31.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Polymarket CLOB Client
+py-clob-client>=0.1.0
