@@ -4,6 +4,7 @@ FROM python:3.11-slim
 # 安装git和系统依赖
 RUN apt-get update && apt-get install -y \
     git \
+    ca-certificates \
     gcc \
     g++ \
     && rm -rf /var/lib/apt/lists/*
