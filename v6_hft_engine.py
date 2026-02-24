@@ -189,7 +189,10 @@ class V6HFTEngine:
         except Exception as e:
             if self.ws_message_count < 100:
                 print(f"[DEBUG] Price update error: {e}")
-                print(f"[DEBUG] Data sample: {str(data)[:200]}")
+                print(f"[DEBUG] Data type: {type(data)}, Keys: {list(data.keys()) if isinstance(data, dict) else 'N/A'}")
+                print(f"[DEBUG] Data sample: {str(data)[:300]}")
+                import traceback
+                print(f"[DEBUG] Traceback: {traceback.format_exc()}")
 
     async def check_and_trade(self):
         """检查信号并执行交易（完全复用V5逻辑）"""
