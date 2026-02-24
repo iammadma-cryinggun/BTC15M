@@ -99,8 +99,9 @@ async def test_polymarket_websocket():
                         asks = data.get("asks", [])
 
                         if len(bids) > 0 and len(asks) > 0:
-                            best_bid = float(bids[0][0])
-                            best_ask = float(asks[0][0])
+                            # ✅ 修复: Polymarket格式是字典 {"price": "0.54", "size": "100"}
+                            best_bid = float(bids[0]['price'])
+                            best_ask = float(asks[0]['price'])
                             mid_price = (best_bid + best_ask) / 2
 
                             asset_id = data.get("asset_id", "")

@@ -95,7 +95,7 @@ class V6HFTEngine:
     def update_price_from_ws(self, data):
         """从WebSocket数据更新价格"""
         try:
-            # Polymarket WebSocket格式: {"asset_id": "xxx", "bids": [[price, size]], "asks": [[price, size]]}
+            # ✅ 修复Bug 2: Polymarket格式是字典 {"price": "0.54", "size": "100"}
             if "bids" not in data or "asks" not in data:
                 return
 
@@ -105,8 +105,9 @@ class V6HFTEngine:
             if len(bids) == 0 or len(asks) == 0:
                 return
 
-            best_bid = float(bids[0][0])
-            best_ask = float(asks[0][0])
+            # ✅ 修复: 使用字典访问 bids[0]['price']
+            best_bid = float(bids[0]['price'])
+            best_ask = float(asks[0]['price'])
             mid_price = (best_bid + best_ask) / 2
 
             asset_id = data.get("asset_id")
@@ -155,11 +156,26 @@ class V6HFTEngine:
             if can_trade:
                 print(f"[TRADE] ✅ 风控通过: {reason}")
 
-                # 执行交易（使用V5的place_order）
-                order_result = self.v5.place_order(self.current_market, signal)
+                # ✅ 修复Bug 1: 使用线程池执行同步操作，不阻塞asyncio事件循环
+                loop = asyncio.get_running_loop()
 
-                # 记录交易
-                self.v5.record_trade(self.current_market, signal, order_result, was_blocked=False)
+                # 执行交易（扔到后台线程）
+                order_result = await loop.run_in_executor(
+                    None,
+                    self.v5.place_order,
+                    self.current_market,
+                    signal
+                )
+
+                # 记录交易（也扔到后台线程）
+                await loop.run_in_executor(
+                    None,
+                    self.v5.record_trade,
+                    self.current_market,
+                    signal,
+                    order_result,
+                    False
+                )
 
                 # 更新统计
                 self.v5.stats['total_trades'] += 1
@@ -175,18 +191,40 @@ class V6HFTEngine:
             else:
                 print(f"[BLOCK] ❌ 风控拦截: {reason}")
                 # 记录被拦截的信号
-                self.v5.record_prediction_learning(self.current_market, signal, None, was_blocked=True)
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    None,
+                    self.v5.record_prediction_learning,
+                    self.current_market,
+                    signal,
+                    None,
+                    True
+                )
 
     async def check_positions(self):
         """检查持仓止盈止损（每5秒检查一次）"""
         if self.current_price:
-            self.v5.check_positions(self.current_price)
+            # ✅ 修复: 使用线程池，避免阻塞WebSocket接收
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                self.v5.check_positions,
+                self.current_price
+            )
 
     async def verify_predictions(self):
         """验证待验证的预测（每10秒检查一次）"""
         if self.v5.learning_system:
-            self.v5.verify_pending_predictions()
-            self.v5.learning_system.verify_pending_predictions()
+            # ✅ 修复: 使用线程池，避免阻塞WebSocket接收
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                self.v5.verify_pending_predictions
+            )
+            await loop.run_in_executor(
+                None,
+                self.v5.learning_system.verify_pending_predictions
+            )
 
     async def websocket_loop(self):
         """WebSocket主循环"""
