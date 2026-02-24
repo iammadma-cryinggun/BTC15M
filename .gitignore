@@ -48,6 +48,33 @@ local_*.py
 *_backup.*
 *_old.*
 
-# 测试文件
+# === 调试和测试脚本（不需要上传） ===
+check_*.py
+diagnose_*.py
 test_*.py
 *_test.py
+
+# === 辅助工具脚本（不需要上传） ===
+clean_*.py
+cleanup_*.py
+clear_*.py
+force_*.py
+close_*.py
+mark_*.py
+final_*.py
+recompute_*.py
+reset_*.py
+fetch_*.py
+analyze_*.py
+orderbook_*.py
+code_check.py
+
+# === 本地辅助脚本（中文） ===
+一键授权.py
+启动*.bat
+手动*.py
+查看*.py
+查看*.bat
+链上*.py
+实时*.py
+实时*.bat
