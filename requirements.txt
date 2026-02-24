@@ -6,5 +6,8 @@ requests>=2.31.0
 # Environment variables
 python-dotenv>=1.0.0
 
+# Terminal colors (for learning system)
+colorama>=0.4.6
+
 # Polymarket CLOB Client (from PyPI - official stable version)
 py-clob-client
