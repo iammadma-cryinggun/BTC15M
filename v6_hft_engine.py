@@ -53,8 +53,8 @@ class V6HFTEngine:
         from datetime import datetime, timezone
         now = int(datetime.now(timezone.utc).timestamp())
         aligned = (now // 900) * 900
-        # 使用V5的正确格式
-        return f"btc-will-go-up-or-down-in-the-next-15m-starting-{aligned}"
+        # ✅ 修复: 使用V5的正确格式（不是starting-格式）
+        return f"btc-updown-15m-{aligned}"
 
     async def fetch_market_info_via_rest(self):
         """通过REST API获取市场信息（仅用于初始化和每15分钟重新获取）"""
