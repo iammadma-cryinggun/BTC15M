@@ -49,7 +49,9 @@ class V6HFTEngine:
 
     def get_current_market_slug(self):
         """获取当前15分钟市场的slug"""
-        now = int(time.time())
+        # ✅ 修复: 明确使用UTC时间，避免服务器时区问题
+        from datetime import datetime, timezone
+        now = int(datetime.now(timezone.utc).timestamp())
         aligned = (now // 900) * 900
         # 使用V5的正确格式
         return f"btc-will-go-up-or-down-in-the-next-15m-starting-{aligned}"
