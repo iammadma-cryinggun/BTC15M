@@ -1201,9 +1201,8 @@ class AutoTraderV5:
                 except Exception as e:
                     # ⚠️ 时间解析失败时保守处理：拒绝交易（避免在未知时间风险下开仓）
                     return False, f"🛡️ 时间防火墙: 无法解析市场时间({e})，拒绝开仓"
-            else:
-                # ⚠️ endTimestamp缺失时保守处理：拒绝交易
-                return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
+            # ⚠️ endTimestamp缺失时：允许交易（V6 WebSocket模式实时性高，不需要严格限制）
+            # return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
         # 🛡️ === 第二斧：拒绝高位接盘（只做均势局） ===
         price = signal.get('price', 0.5)

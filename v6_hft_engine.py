@@ -97,6 +97,13 @@ class V6HFTEngine:
                         self.token_no_id = str(token_ids[1])
                         print(f"[INFO] YES token: ...{self.token_yes_id[-8:]}")
                         print(f"[INFO] NO  token: ...{self.token_no_id[-8:]}")
+
+                        # 🔍 调试：检查endTimestamp
+                        end_ts = market.get('endTimestamp')
+                        if end_ts:
+                            print(f"[INFO] endTimestamp: {end_ts}")
+                        else:
+                            print(f"[WARN] endTimestamp缺失！市场数据: {list(market.keys())}")
                     else:
                         print(f"[ERROR] 无法获取token IDs: {token_ids}")
                         return None
