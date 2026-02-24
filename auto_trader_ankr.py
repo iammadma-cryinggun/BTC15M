@@ -805,7 +805,7 @@ class AutoTraderV5:
             self.client = None
 
     def init_database(self):
-        self.db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '数据库', 'btc_15min_auto_trades.db')
+        self.db_path = '/tmp/btc_15min_auto_trades.db'
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
