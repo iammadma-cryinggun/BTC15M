@@ -90,58 +90,72 @@ class V6HFTEngine:
         print("[SWITCH] 价格缓存已重置")
 
     async def fetch_market_info_via_rest(self):
-        slug = self.get_current_market_slug()
-        print(f"[INFO] 正在获取市场信息: {slug}")
-        try:
-            response = self.v5.http_session.get(
-                f"{v5.CONFIG['gamma_host']}/markets",
-                params={'slug': slug},
-                proxies=v5.CONFIG.get('proxy'),
-                timeout=10
-            )
-            if response.status_code == 200:
-                markets = response.json()
-                if markets and len(markets) > 0:
-                    market = markets[0]
-                    self.current_market = market
-                    self.current_slug = slug
-                    token_ids = market.get('clobTokenIds', [])
-                    if isinstance(token_ids, str):
-                        token_ids = json.loads(token_ids)
-                    if token_ids and len(token_ids) >= 2:
-                        self.token_yes_id = str(token_ids[0])
-                        self.token_no_id = str(token_ids[1])
-                        print(f"[INFO] YES token: ...{self.token_yes_id[-8:]}")
-                        print(f"[INFO] NO  token: ...{self.token_no_id[-8:]}")
+        # 尝试当前窗口，过期则尝试下一个
+        now = int(datetime.now(timezone.utc).timestamp())
+        aligned = (now // 900) * 900
 
-                        # 🔥 关键：设置endTimestamp，防止时间防火墙被绕过
-                        end_ts = market.get('endTimestamp') or market.get('endDate')
-                        if end_ts:
-                            market['endTimestamp'] = end_ts
+        for offset in [0, 900]:
+            slug = f"btc-updown-15m-{aligned + offset}"
+            print(f"[INFO] 正在获取市场信息: {slug}")
+            try:
+                response = self.v5.http_session.get(
+                    f"{v5.CONFIG['gamma_host']}/markets",
+                    params={'slug': slug},
+                    proxies=v5.CONFIG.get('proxy'),
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    markets = response.json()
+                    if markets and len(markets) > 0:
+                        market = markets[0]
+
+                        # 检查市场是否已过期
+                        end_date = market.get('endDate')
+                        if end_date:
+                            try:
+                                end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                                now_dt = datetime.now(timezone.utc)
+                                if (end_dt - now_dt).total_seconds() < 0:
+                                    print(f"[WARN] 市场已过期，尝试下一个窗口: {slug}")
+                                    continue
+                            except:
+                                pass
+
+                        self.current_market = market
+                        self.current_slug = slug
+                        token_ids = market.get('clobTokenIds', [])
+                        if isinstance(token_ids, str):
+                            token_ids = json.loads(token_ids)
+                        if token_ids and len(token_ids) >= 2:
+                            self.token_yes_id = str(token_ids[0])
+                            self.token_no_id = str(token_ids[1])
+                            print(f"[INFO] YES token: ...{self.token_yes_id[-8:]}")
+                            print(f"[INFO] NO  token: ...{self.token_no_id[-8:]}")
+
+                            end_ts = market.get('endTimestamp') or market.get('endDate')
+                            if end_ts:
+                                market['endTimestamp'] = end_ts
+                            else:
+                                end_iso = market.get('endDateIso')
+                                if end_iso:
+                                    try:
+                                        dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+                                        end_ts = int(dt.timestamp() * 1000)
+                                        market['endTimestamp'] = end_ts
+                                    except:
+                                        pass
                         else:
-                            # 尝试从endDateIso解析
-                            end_iso = market.get('endDateIso')
-                            if end_iso:
-                                from datetime import datetime, timezone
-                                try:
-                                    dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
-                                    end_ts = int(dt.timestamp() * 1000)
-                                    market['endTimestamp'] = end_ts
-                                except:
-                                    pass
+                            print(f"[ERROR] 无法获取token IDs: {token_ids}")
+                            continue
+                        return market
                     else:
-                        print(f"[ERROR] 无法获取token IDs: {token_ids}")
-                        return None
-                    return market
+                        print(f"[WARN] 市场未找到: {slug}")
                 else:
-                    print(f"[WARN] 市场未找到: {slug}")
-                    return None
-            else:
-                print(f"[ERROR] REST请求失败: {response.status_code}")
-                return None
-        except Exception as e:
-            print(f"[ERROR] 获取市场信息失败: {e}")
-            return None
+                    print(f"[ERROR] REST请求失败: {response.status_code}")
+            except Exception as e:
+                print(f"[ERROR] 获取市场信息失败: {e}")
+
+        return None
 
     def update_price_from_ws(self, data: dict):
         try:

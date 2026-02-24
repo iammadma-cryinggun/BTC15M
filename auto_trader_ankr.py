@@ -1033,36 +1033,43 @@ class AutoTraderV5:
         try:
             now = int(time.time())
             aligned = (now // 900) * 900
-            slug = f"btc-updown-15m-{aligned}"
 
-            # 🚀 使用Session复用TCP连接（提速3-5倍）
-            response = self.http_session.get(
-                f"{CONFIG['gamma_host']}/markets",
-                params={'slug': slug},
-                proxies=CONFIG['proxy'],
-                timeout=10
-            )
+            # 尝试当前窗口，如果过期则尝试下一个窗口
+            for offset in [0, 900]:
+                slug = f"btc-updown-15m-{aligned + offset}"
 
-            if response.status_code == 200:
-                markets = response.json()
-                if markets:
-                    market = markets[0]
+                # 🚀 使用Session复用TCP连接（提速3-5倍）
+                response = self.http_session.get(
+                    f"{CONFIG['gamma_host']}/markets",
+                    params={'slug': slug},
+                    proxies=CONFIG['proxy'],
+                    timeout=10
+                )
 
-                    # 过滤：市场结算前2分钟停止交易
-                    end_date = market.get('endDate')
-                    if end_date:
-                        try:
-                            from datetime import timezone
-                            end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
-                            now_dt = datetime.now(timezone.utc)
-                            seconds_left = (end_dt - now_dt).total_seconds()
-                            if seconds_left < 120:
-                                print(f"       [MARKET] 市场即将结算({seconds_left:.0f}秒)，跳过")
-                                return None
-                        except Exception:
-                            pass
+                if response.status_code == 200:
+                    markets = response.json()
+                    if markets:
+                        market = markets[0]
 
-                    return market
+                        # 过滤：市场结算前2分钟停止交易
+                        end_date = market.get('endDate')
+                        if end_date:
+                            try:
+                                from datetime import timezone
+                                end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                                now_dt = datetime.now(timezone.utc)
+                                seconds_left = (end_dt - now_dt).total_seconds()
+                                if seconds_left < 0:
+                                    # 市场已过期，尝试下一个
+                                    continue
+                                if seconds_left < 120:
+                                    print(f"       [MARKET] 市场即将结算({seconds_left:.0f}秒)，跳过")
+                                    return None
+                            except Exception:
+                                pass
+
+                        return market
+
             return None
         except:
             return None
