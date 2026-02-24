@@ -168,14 +168,15 @@ class V6HFTEngine:
             self.signal_count += 1
             print(f"[SIGNAL] {signal['direction']} | Score: {signal['score']:.2f} | Price: {self.current_price:.4f}")
 
-            # 检测信号改变（复用V5逻辑，作为止盈信号）
-            if self.v5.last_signal_direction and self.v5.last_signal_direction != signal['direction']:
-                print(f"[SIGNAL CHANGE] {self.v5.last_signal_direction} -> {signal['direction']}")
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None, self.v5.close_positions_by_signal_change,
-                    self.current_price, signal['direction']
-                )
+            # ❌ 禁用信号改变平仓（数据显示：SIGNAL_CHANGE胜率14.3%，亏损-10.02 USDC）
+            # 持有到结算胜率更高（80.0%），不应该在信号改变时提前平仓
+            # if self.v5.last_signal_direction and self.v5.last_signal_direction != signal['direction']:
+            #     print(f"[SIGNAL CHANGE] {self.v5.last_signal_direction} -> {signal['direction']}")
+            #     loop = asyncio.get_running_loop()
+            #     await loop.run_in_executor(
+            #         None, self.v5.close_positions_by_signal_change,
+            #         self.current_price, signal['direction']
+            #     )
 
             self.v5.last_signal_direction = signal['direction']
 
