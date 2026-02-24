@@ -17,15 +17,8 @@ WORKDIR /app
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装基础Python依赖
+# 安装Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
-
-# 尝试安装 py-clob-client（多种方式）
-RUN echo "Attempting to install py-clob-client..." && \
-    pip install polymarket-clob || \
-    pip install clob-client || \
-    pip install py-clob-client || \
-    echo "WARNING: py-clob-client installation failed, will run in signal-only mode"
 
 # 复制应用代码
 COPY . .

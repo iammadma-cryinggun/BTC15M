@@ -6,6 +6,5 @@ requests>=2.31.0
 # Environment variables
 python-dotenv>=1.0.0
 
-# 尝试多种方式安装 py-clob-client
-# 方法1: 从PyPI安装
-# 方法2: 如果PyPI失败，将在Dockerfile中处理
+# Polymarket CLOB Client (from PyPI - official stable version)
+py-clob-client
