@@ -83,12 +83,12 @@ CONFIG = {
 
     'signal': {
         'min_confidence': 0.75,  # 默认置信度（保留用于兼容）
-        'min_long_confidence': 0.60,   # 🔥 提高到0.60（减少低质量信号）
-        'min_short_confidence': 0.60,  # 🔥 提高到0.60（减少低质量信号）
-        'min_long_score': 3.0,      # 🔥 提高到3.0（更严格的信号筛选）
-        'min_short_score': -3.0,    # 🔥 降低到-3.0（更严格的信号筛选）
-        'balance_zone_min': 0.49,  # 🔥 收窄到0.49（只在明确信号时开仓）
-        'balance_zone_max': 0.51,  # 🔥 收窄到0.51（只在明确信号时开仓）
+        'min_long_confidence': 0.50,   # 做多置信度（对应score >= 2.5）
+        'min_short_confidence': 0.50,  # 做空置信度（对应score <= -2.5，修复逻辑冲突！）
+        'min_long_score': 2.7,      # 🎯 2.7分（基于176条实际交易：2.7分准确率69.6%，平均盈亏+10.88%）
+        'min_short_score': -2.7,    # 🎯 -2.7分（降低门槛，2.0-3.0区间整体表现最好：64.6%准确率，+6.92%盈亏）
+        'balance_zone_min': 0.48,  # 收窄平衡区（原来是0.45-0.55太宽）
+        'balance_zone_max': 0.52,
         'allow_long': True,   # 允许做多（但会动态调整）
         'allow_short': True,  # 允许做空（但会动态调整）
 
@@ -1198,11 +1198,8 @@ class AutoTraderV5:
                     # 距离结算不足180秒（3分钟），拒绝开仓
                     if time_left < 180:
                         return False, f"🛡️ 时间防火墙: 距离结算仅{time_left:.0f}秒，拒绝开仓"
-                except Exception as e:
-                    # ⚠️ 时间解析失败时保守处理：拒绝交易（避免在未知时间风险下开仓）
-                    return False, f"🛡️ 时间防火墙: 无法解析市场时间({e})，拒绝开仓"
-            # ⚠️ endTimestamp缺失时：允许交易（V6 WebSocket模式实时性高，不需要严格限制）
-            # return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
+                except:
+                    pass
 
         # 🛡️ === 第二斧：拒绝高位接盘（只做均势局） ===
         price = signal.get('price', 0.5)
@@ -1712,15 +1709,8 @@ class AutoTraderV5:
             print(f"       [TRACEBACK] {traceback.format_exc()}")
             return None, None, entry_price
 
-    def close_position(self, market: Dict, side: str, size: float, is_stop_loss: bool = False):
-        """平仓函数
-
-        Args:
-            market: 市场数据
-            side: LONG/SHORT
-            size: 平仓数量
-            is_stop_loss: 是否是止损调用（止损时直接市价，不防插针）
-        """
+    def close_position(self, market: Dict, side: str, size: float):
+        """平仓函数"""
         try:
             token_ids = market.get('clobTokenIds', [])
             if isinstance(token_ids, str):
@@ -1754,21 +1744,16 @@ class AutoTraderV5:
             # 🛡️ 防插针核心逻辑：最多允许折价5%，拒绝恶意接针
             min_acceptable_price = token_price * 0.95  # 公允价的95%作为底线
 
-            # 🔥 止损场景：直接市价砸单，不要防插针保护
-            if is_stop_loss:
-                # ⚡ 止损模式：直接市价成交，放弃防插针
-                close_price = best_bid if best_bid and best_bid > 0 else token_price * 0.90
-                use_limit_order = False  # 强制市价单
-                print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (止损优先，不防插针)")
-            elif best_bid and best_bid >= min_acceptable_price:
-                # 正常止盈：买一价合理，直接市价平仓
+            if best_bid and best_bid >= min_acceptable_price:
+                # 买一价合理，直接市价平仓（瞬间成交）
                 close_price = best_bid
-                use_limit_order = False
+                use_limit_order = False  # 市价单（Taker）
             else:
-                # ⚠️ 买一价太黑（流动性断层）！限价单等待
+                # ⚠️ 买一价太黑（流动性断层/恶意插针）！拒绝贱卖
                 close_price = min_acceptable_price
-                use_limit_order = True
-                print(f"       [防插针] ⚠️ 买一价({best_bid if best_bid else 0:.4f})远低于公允价({token_price:.4f})，改挂限价单 @ {close_price:.4f}")
+                use_limit_order = True  # 限价单（Maker）
+                print(f"       [防插针] ⚠️ 买一价({best_bid if best_bid else 0:.4f})远低于公允价({token_price:.4f})，拒绝贱卖！")
+                print(f"       [防插针] 🛡️ 改挂限价单 @ {close_price:.4f} (公允价95折)")
 
             close_price = max(0.01, min(0.99, close_price))
             # ===========================================
@@ -2100,20 +2085,10 @@ class AutoTraderV5:
                     # 重新计算value
                     position_value = position_size * actual_price
 
-                # 计算止盈止损百分比（用于数据库记录和学习系统分析）
-                # 止盈：目标价格 / 入场价格 - 1
-                # 止损：入场价格 - 止损价格 / 入场价格
-                tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
-                def align_price(p: float) -> float:
-                    p = round(round(p / tick_size) * tick_size, 4)
-                    return max(tick_size, min(1 - tick_size, p))
-
+                # 计算止盈止损百分比（用于数据库记录）
                 real_value = position_size * actual_price
-                tp_target_price = align_price((real_value + 1.0) / max(position_size, 1))
-                sl_target_price = align_price((real_value - 1.0) / max(position_size, 1))
-
-                tp_pct = round((tp_target_price - actual_price) / actual_price, 4) if actual_price > 0 else None
-                sl_pct = round((actual_price - sl_target_price) / actual_price, 4) if actual_price > 0 else None
+                tp_pct = round(1.0 / real_value, 4) if real_value > 0 else None
+                sl_pct = round(1.0 / real_value, 4) if real_value > 0 else None
 
                 # 发送开仓Telegram通知
                 if self.telegram.enabled:

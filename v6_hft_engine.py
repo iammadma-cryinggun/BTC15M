@@ -119,6 +119,46 @@ class V6HFTEngine:
 
     def update_price_from_ws(self, data: dict):
         try:
+            # 🔍 调试：打印前5条原始消息的完整结构
+            if self.ws_message_count <= 5:
+                print(f"[DEBUG] 第{self.ws_message_count}条消息: {json.dumps(data, ensure=False)[:400]}")
+
+            # 处理price_changes类型（Polymarket的主要数据格式）
+            price_changes = data.get("price_changes", [])
+            if price_changes:
+                for change in price_changes:
+                    asset_id = change.get("asset_id")
+                    if not asset_id:
+                        continue
+
+                    price_str = change.get("price") or change.get("best_bid")
+                    if not price_str:
+                        continue
+
+                    token_price = float(price_str)
+
+                    # 根据asset_id判断是YES还是NO token
+                    if asset_id == self.token_yes_id:
+                        self.current_yes_price = token_price
+                        self.current_price = token_price
+                    elif asset_id == self.token_no_id:
+                        self.current_no_price = token_price
+                        # 只有YES价格还未收到时，才用NO反推
+                        if self.current_yes_price is None:
+                            self.current_price = 1.0 - token_price
+
+                # 每秒最多更新一次指标
+                now = time.time()
+                if now - self._last_indicator_update >= 1.0 and self.current_price:
+                    high = max(self.current_yes_price or self.current_price,
+                               self.current_no_price or self.current_price)
+                    low = min(self.current_yes_price or self.current_price,
+                              self.current_no_price or self.current_price)
+                    self.v5.update_indicators(self.current_price, high, low)
+                    self._last_indicator_update = now
+                return
+
+            # 处理book类型（直接订单簿数据）
             event_type = data.get("event_type") or data.get("type", "")
             if event_type not in ("book", "price_change", "tick_size_change", "last_trade_price", ""):
                 if "bids" not in data and "asks" not in data:
