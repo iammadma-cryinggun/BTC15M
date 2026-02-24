@@ -2816,9 +2816,8 @@ class AutoTraderV5:
                     high = low = price
                 self.update_indicators(price, high, low)
 
-                # 检查持仓止盈止损（每15秒检查一次，即每5次迭代）
-                if i % 5 == 0:
-                    self.check_positions(price)
+                # 检查持仓止盈止损（每次迭代都检查，利用WebSocket实时价格）
+                self.check_positions(price)
 
                 # 验证待验证的预测（每15秒检查一次）
                 if i % 5 == 0:
