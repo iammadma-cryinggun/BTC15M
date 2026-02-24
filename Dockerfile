@@ -20,14 +20,12 @@ COPY requirements.txt .
 # 安装基础Python依赖
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 安装 py-clob-client（使用下载方式，避免git认证问题）
-RUN cd /tmp && \
-    wget https://github.com/Polymarket/clob-py-client/archive/refs/heads/main.zip -O clob-client.zip && \
-    unzip clob-client.zip && \
-    cd clob-py-client-main && \
-    pip install -e . && \
-    cd / && \
-    rm -rf /tmp/clob-client.zip /tmp/clob-py-client-main
+# 尝试安装 py-clob-client（多种方式）
+RUN echo "Attempting to install py-clob-client..." && \
+    pip install polymarket-clob || \
+    pip install clob-client || \
+    pip install py-clob-client || \
+    echo "WARNING: py-clob-client installation failed, will run in signal-only mode"
 
 # 复制应用代码
 COPY . .
