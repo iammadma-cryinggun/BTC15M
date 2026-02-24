@@ -70,7 +70,7 @@ CONFIG = {
     'risk': {
         'max_position_pct': 0.15,       # 15% per trade (to ensure min 2 USDC)
         'max_total_exposure_pct': 0.60,
-        'reserve_usdc': 2.0,             # Keep 2 USDC reserve
+        'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
         'max_daily_loss_pct': 0.50,     # 50% daily loss (临时提高)
