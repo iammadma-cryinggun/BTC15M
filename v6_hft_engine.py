@@ -103,6 +103,22 @@ class V6HFTEngine:
                         self.token_no_id = str(token_ids[1])
                         print(f"[INFO] YES token: ...{self.token_yes_id[-8:]}")
                         print(f"[INFO] NO  token: ...{self.token_no_id[-8:]}")
+
+                        # 🔥 关键：设置endTimestamp，防止时间防火墙被绕过
+                        end_ts = market.get('endTimestamp') or market.get('endDate')
+                        if end_ts:
+                            market['endTimestamp'] = end_ts
+                        else:
+                            # 尝试从endDateIso解析
+                            end_iso = market.get('endDateIso')
+                            if end_iso:
+                                from datetime import datetime, timezone
+                                try:
+                                    dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+                                    end_ts = int(dt.timestamp() * 1000)
+                                    market['endTimestamp'] = end_ts
+                                except:
+                                    pass
                     else:
                         print(f"[ERROR] 无法获取token IDs: {token_ids}")
                         return None
