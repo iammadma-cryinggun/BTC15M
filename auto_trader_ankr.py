@@ -111,7 +111,7 @@ CONFIG = {
 
     'system': {
         'max_iterations': 100,
-        'iteration_interval': 3,
+        'iteration_interval': 1,
         'dry_run': False,
     },
 }
@@ -2292,9 +2292,9 @@ class AutoTraderV5:
             for pos in positions:
                 pos_id, entry_time, side, entry_token_price, size, value_usdc, tp_order_id, sl_order_id, token_id = pos
 
-                # 对每个持仓单独查询准确价格（V6会走WebSocket缓存，V5走REST）
-                pos_current_price = None
-                if token_id:
+                # 优先使用传入的实时价格（WebSocket），避免REST查询延迟
+                pos_current_price = current_token_price if current_token_price else None
+                if pos_current_price is None and token_id:
                     pos_current_price = self.get_order_book(token_id, side='BUY')
                 if pos_current_price is None:
                     # fallback：从市场数据获取
