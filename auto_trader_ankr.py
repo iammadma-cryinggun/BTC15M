@@ -805,7 +805,7 @@ class AutoTraderV5:
             self.client = None
 
     def init_database(self):
-        self.db_path = 'btc_15min_auto_trades.db'
+        self.db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '数据库', 'btc_15min_auto_trades.db')
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -1263,41 +1263,25 @@ class AutoTraderV5:
                     pass
 
         # 🛡️ === 第一斧：时间防火墙（拒绝垃圾时间） ===
+        # 注意：get_market_data 已过滤过期市场，这里只做二次确认
         if market:
             time_left = None
             try:
-                # 优先用 endTimestamp（可能是毫秒时间戳或ISO字符串）
-                end_timestamp = market.get('endTimestamp')
-                if end_timestamp:
-                    # 判断类型：字符串 or 数字
-                    if isinstance(end_timestamp, str):
-                        # ISO 8601字符串格式：2026-02-24T16:15:00Z
-                        if 'T' in end_timestamp:
-                            end_dt = datetime.strptime(end_timestamp, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
-                            time_left = (end_dt - datetime.now(timezone.utc)).total_seconds()
-                        else:
-                            # 尝试作为数字字符串解析
-                            end_time = datetime.fromtimestamp(int(end_timestamp) / 1000, tz=timezone.utc)
-                            time_left = (end_time - datetime.now(timezone.utc)).total_seconds()
-                    else:
-                        # 数字类型（毫秒时间戳）
-                        end_time = datetime.fromtimestamp(int(end_timestamp) / 1000, tz=timezone.utc)
-                        time_left = (end_time - datetime.now(timezone.utc)).total_seconds()
-                else:
-                    # 备用：endDate 字符串格式
-                    end_date = market.get('endDate')
-                    if end_date:
-                        end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
-                        time_left = (end_dt - datetime.now(timezone.utc)).total_seconds()
+                # 统一用 endDate（与 get_market_data 保持一致，避免 endTimestamp 解析歧义）
+                end_date = market.get('endDate')
+                if end_date:
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                    time_left = (end_dt - datetime.now(timezone.utc)).total_seconds()
             except Exception as e:
-                # 时间解析失败，保守处理：拒绝交易
                 return False, f"🛡️ 时间防火墙: 无法解析市场时间({e})，拒绝开仓"
 
             if time_left is not None:
+                if time_left < 0:
+                    # 市场已过期但 get_market_data 没过滤掉，直接拒绝
+                    return False, f"🛡️ 时间防火墙: 市场已过期({time_left:.0f}秒)，拒绝开仓"
                 if time_left < 180:
                     return False, f"🛡️ 时间防火墙: 距离结算仅{time_left:.0f}秒，拒绝开仓"
             else:
-                # 两个时间字段都缺失，保守拒绝
                 return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
         # 🛡️ === 第二斧：拒绝高位接盘（只做均势局） ===
@@ -1853,7 +1837,11 @@ class AutoTraderV5:
             # 🔥 止损场景：直接市价砸单，不要防插针保护
             if is_stop_loss:
                 # ⚡ 止损模式：直接市价成交，放弃防插针
-                close_price = best_bid if best_bid and best_bid > 0 else token_price * 0.90
+                # 但仍需检查价格合理性，防止WebSocket旧数据导致极低价成交
+                if best_bid and best_bid >= token_price * 0.50:
+                    close_price = best_bid
+                else:
+                    close_price = token_price * 0.90  # fallback到公允价9折
                 use_limit_order = False  # 强制市价单
                 print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (止损优先，不防插针)")
             elif best_bid and best_bid >= min_acceptable_price:
@@ -2480,10 +2468,10 @@ class AutoTraderV5:
                             self.cancel_order(tp_order_id)
                             time.sleep(1)
 
-                        # 市价平仓
+                        # 市价平仓（止损模式，直接砸单不防插针）
                         close_market = self.get_market_data()
                         if close_market:
-                            close_order_id = self.close_position(close_market, side, size)
+                            close_order_id = self.close_position(close_market, side, size, is_stop_loss=True)
 
                             # 💡 增加识别 "NO_BALANCE" 的逻辑
                             if close_order_id == "NO_BALANCE":
