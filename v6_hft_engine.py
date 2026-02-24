@@ -98,12 +98,28 @@ class V6HFTEngine:
                         print(f"[INFO] YES token: ...{self.token_yes_id[-8:]}")
                         print(f"[INFO] NO  token: ...{self.token_no_id[-8:]}")
 
-                        # 🔍 调试：检查endTimestamp
-                        end_ts = market.get('endTimestamp')
+                        # 🔍 获取市场结束时间（优先endTimestamp，其次endDate，最后endDateIso）
+                        end_ts = market.get('endTimestamp') or market.get('endDate')
                         if end_ts:
-                            print(f"[INFO] endTimestamp: {end_ts}")
+                            print(f"[INFO] 市场结束时间: {end_ts}")
+                            # 存储为endTimestamp，保证V5兼容性
+                            market['endTimestamp'] = end_ts
                         else:
-                            print(f"[WARN] endTimestamp缺失！市场数据: {list(market.keys())}")
+                            # 尝试解析endDateIso
+                            end_iso = market.get('endDateIso')
+                            if end_iso:
+                                print(f"[INFO] endDateIso: {end_iso}")
+                                # 转换为毫秒时间戳
+                                from datetime import datetime, timezone
+                                try:
+                                    dt = datetime.fromisoformat(end_iso.replace('Z', '+00:00'))
+                                    end_ts = int(dt.timestamp() * 1000)
+                                    market['endTimestamp'] = end_ts
+                                    print(f"[INFO] 转换后endTimestamp: {end_ts}")
+                                except Exception as e:
+                                    print(f"[WARN] endDateIso解析失败: {e}")
+                            else:
+                                print(f"[WARN] 所有时间字段都缺失！市场数据: {list(market.keys())}")
                     else:
                         print(f"[ERROR] 无法获取token IDs: {token_ids}")
                         return None
