@@ -17,8 +17,14 @@ from collections import deque
 from typing import Optional, Dict, Tuple
 from dotenv import load_dotenv
 
-os.environ['HTTP_PROXY'] = 'http://127.0.0.1:15236'
-os.environ['HTTPS_PROXY'] = 'http://127.0.0.1:15236'
+# 代理配置（支持环境变量，云端部署可留空）
+proxy = os.getenv('HTTP_PROXY', os.getenv('HTTPS_PROXY', ''))
+if proxy:
+    os.environ['HTTP_PROXY'] = proxy
+    os.environ['HTTPS_PROXY'] = proxy
+    print(f"[CONFIG] Using proxy: {proxy}")
+else:
+    print("[CONFIG] No proxy (direct connection)")
 
 load_dotenv()
 
@@ -44,18 +50,21 @@ CONFIG = {
     'chain_id': 137,
     'wallet_address': '0xd5d037390c6216CCFa17DFF7148549B9C2399BD3',  # 将从私钥自动生成
     'private_key': os.getenv('PRIVATE_KEY', ''),
-    'proxy': {'http': 'http://127.0.0.1:15236', 'https': 'http://127.0.0.1:15236'},
+    'proxy': {
+        'http': os.getenv('HTTP_PROXY', os.getenv('HTTPS_PROXY', '')),
+        'https': os.getenv('HTTPS_PROXY', os.getenv('HTTP_PROXY', ''))
+    },
 
     # Ankr API for balance
     'ankr_rpc': 'https://rpc.ankr.com/polygon',
     'usdce_contract': '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174',  # USDC.e
 
-    # Telegram 通知
+    # Telegram 通知（支持环境变量配置）
     'telegram': {
-        'enabled': True,
-        'bot_token': '8378210377:AAFolTlY9BsW5BfXUKt7aqavnpfGvJwgVaI',
-        'chat_id': '838429342',
-        'proxy': {'http': 'http://127.0.0.1:15236', 'https': 'http://127.0.0.1:15236'},
+        'enabled': os.getenv('TELEGRAM_ENABLED', 'true').lower() == 'true',
+        'bot_token': os.getenv('TELEGRAM_BOT_TOKEN', ''),
+        'chat_id': os.getenv('TELEGRAM_CHAT_ID', ''),
+        'proxy': {'http': os.getenv('HTTP_PROXY', ''), 'https': os.getenv('HTTPS_PROXY', '')},
     },
 
     'risk': {
