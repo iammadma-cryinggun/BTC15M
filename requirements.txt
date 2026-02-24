@@ -9,5 +9,8 @@ python-dotenv>=1.0.0
 # Terminal colors (for learning system)
 colorama>=0.4.6
 
+# WebSocket support (for V6 HFT engine)
+websockets>=11.0.3
+
 # Polymarket CLOB Client (from PyPI - official stable version)
 py-clob-client

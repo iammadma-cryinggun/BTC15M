@@ -54,6 +54,9 @@ diagnose_*.py
 test_*.py
 *_test.py
 
+# === 例外：重要的测试脚本需要上传 ===
+!test_websocket.py  # V6 WebSocket连接测试
+
 # === 辅助工具脚本（不需要上传） ===
 clean_*.py
 cleanup_*.py

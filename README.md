@@ -67,17 +67,38 @@ python auto_trader_ankr.py
 
 ## 🚀 快速开始
 
-### 本地运行
-```bash
-# 安装依赖
-pip install -r requirements.txt
+### V5 vs V6 选择
 
-# 配置环境变量
+| 特性 | V5 (REST轮询) | V6 (WebSocket) |
+|------|--------------|---------------|
+| 价格获取 | 每3秒REST请求 | 毫秒级WebSocket推送 |
+| 稳定性 | ✅ 生产环境验证 | ⚠️ 实验性 |
+| 风控系统 | ✅ 完整 | ✅ 完全复用V5 |
+| 速度 | 3秒延迟 | 实时（<100ms） |
+| 推荐场景 | 生产环境 | 测试/追求速度 |
+
+### 本地运行
+
+**V5（推荐 - 稳定版）**：
+```bash
+pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env，添加你的PRIVATE_KEY
-
-# 启动
 python auto_trader_ankr.py
+```
+
+**V6（实验性 - 高频版）**：
+```bash
+# 1. 先测试WebSocket连接
+python test_websocket.py
+
+# 2. 如果测试通过，启动V6
+python v6_hft_engine.py
+```
+
+**选择器启动**：
+```bash
+python start.py  # 会提示选择V5或V6
 ```
 
 ### Zeabur部署
