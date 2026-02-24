@@ -1730,23 +1730,39 @@ class AutoTraderV5:
             if isinstance(outcome_prices, str):
                 outcome_prices = json.loads(outcome_prices)
 
-            # 计算平仓价格：用实时买一价（BUY方向的最优价），确保成交但不打折亏损
+            # ========== 🛡️ 智能防插针止损保护 ==========
+            # 获取公允价格（token_price）和实际买一价（best_bid）
             if side == 'LONG':
                 # 平多仓 -> 卖出YES，查YES的买一价
                 token_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else 0.5
                 best_bid = self.get_order_book(token_id, side='BUY')
-                close_price = best_bid if best_bid else token_price
             else:
                 # 平空仓 -> 卖出NO，查NO的买一价
                 token_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else 0.5
                 best_bid = self.get_order_book(token_id, side='BUY')
-                close_price = best_bid if best_bid else token_price
+
+            # 🛡️ 防插针核心逻辑：最多允许折价5%，拒绝恶意接针
+            min_acceptable_price = token_price * 0.95  # 公允价的95%作为底线
+
+            if best_bid and best_bid >= min_acceptable_price:
+                # 买一价合理，直接市价平仓（瞬间成交）
+                close_price = best_bid
+                use_limit_order = False  # 市价单（Taker）
+            else:
+                # ⚠️ 买一价太黑（流动性断层/恶意插针）！拒绝贱卖
+                close_price = min_acceptable_price
+                use_limit_order = True  # 限价单（Maker）
+                print(f"       [防插针] ⚠️ 买一价({best_bid if best_bid else 0:.4f})远低于公允价({token_price:.4f})，拒绝贱卖！")
+                print(f"       [防插针] 🛡️ 改挂限价单 @ {close_price:.4f} (公允价95折)")
+
             close_price = max(0.01, min(0.99, close_price))
+            # ===========================================
 
             # 计算平仓数量（平全部）
             close_size = int(size)
 
-            print(f"       [CLOSE] 平仓 {side} {close_size}份 @ {close_price:.4f}")
+            order_type = "限价单(挂单等待)" if use_limit_order else "市价单(立即成交)"
+            print(f"       [CLOSE] {order_type} 平仓 {side} {close_size}份 @ {close_price:.4f}")
 
             order_args = OrderArgs(
                 token_id=token_id,
@@ -1755,10 +1771,14 @@ class AutoTraderV5:
                 side=opposite_side
             )
 
+            # 下单（两种情况都用create_and_post_order，价格决定了成交方式）
             response = self.client.create_and_post_order(order_args)
             if response and 'orderID' in response:
                 order_id = response['orderID']
-                print(f"       [CLOSE OK] {order_id}")
+                if use_limit_order:
+                    print(f"       [CLOSE OK] 限价单已挂 {order_id[-8:]}，等待成交...")
+                else:
+                    print(f"       [CLOSE OK] 市价成交 {order_id[-8:]}")
                 return order_id
             else:
                 print(f"       [CLOSE FAIL] {response}")
