@@ -52,6 +52,30 @@ class V6HFTEngine:
 
         print("\n[INFO] V5组件初始化完成，WebSocket连接准备中...\n")
 
+        # 🔥 关键修复：覆盖V5的get_order_book方法，使用WebSocket实时价格
+        # 这样V5的check_positions就能快速获取YES/NO的正确价格
+        original_get_order_book = self.v5.get_order_book
+        def fast_get_order_book(token_id: str, side: str = 'BUY'):
+            """从WebSocket缓存获取价格（毫秒级），替代V5的REST API调用"""
+            # 判断是YES还是NO token
+            if token_id == self.token_yes_id:
+                price = self.current_yes_price
+            elif token_id == self.token_no_id:
+                price = self.current_no_price
+            else:
+                # 未知token，回退到V5的REST方法
+                return original_get_order_book(token_id, side)
+
+            if price is not None:
+                print(f"       [WS PRICE] {side} {token_id[-8:]}: {price:.4f} (WebSocket实时)")
+                return price
+            else:
+                # WebSocket还没收到价格，回退到REST
+                print(f"       [WS PRICE] {token_id[-8:]}: WebSocket暂无数据，回退REST")
+                return original_get_order_book(token_id, side)
+
+        self.v5.get_order_book = fast_get_order_book
+
     def get_current_market_slug(self):
         """获取当前15分钟市场的slug（使用UTC时间）"""
         now = int(datetime.now(timezone.utc).timestamp())
