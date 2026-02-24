@@ -1888,12 +1888,12 @@ class AutoTraderV5:
                 print(f"       [CLOSE FAIL] {response}")
                 return None
         except Exception as e:
-            print(f"       [CLOSE ERROR] {e}")
             error_msg = str(e).lower()
             # 💡 精准识别"余额不足"，并返回特殊标记
             if 'balance' in error_msg or 'allowance' in error_msg or 'insufficient' in error_msg:
-                print(f"       [CLOSE ERROR] 🔍 余额不足，可能已被限价单自动止盈，或被手动平仓！")
+                print(f"       [CLOSE OK] 限价单已提前成交或已手动平仓，跳过市价平仓")
                 return "NO_BALANCE"  # 以前这里是返回 None，现在返回专属暗号
+            print(f"       [CLOSE ERROR] {e}")
             return None
 
     def get_order_book(self, token_id: str, side: str = 'BUY') -> Optional[float]:
@@ -2380,12 +2380,10 @@ class AutoTraderV5:
 
                 # 如果止盈单没成交，检查本地止盈止损价格（双向轮询模式）
                 if not exit_reason:
-                    # ✅ 关键修复：在 Polymarket 现货逻辑中，无论持有 YES 还是 NO，
-                    # 获利都意味着 Token 自身价格的上涨！
-                    # LONG 做多 YES：买入 YES，YES 涨价 → 盈利
-                    # SHORT 做空 NO：买入 NO，NO 涨价 → 盈利
-                    # 所以止盈永远是：入场价 + 预期单币利润
-                    tp_target_price = entry_token_price + (1.0 / size)
+                    # ✅ 关键修复：使用与开仓时相同的公式，确保一致性
+                    # 开仓时：tp = (value_usdc + 1.0) / size
+                    # 这里也要用相同的公式，而不是 entry_price + 1/size
+                    tp_target_price = (value_usdc + 1.0) / max(size, 1)
 
                     # 确保止盈价格在合理范围内 (Polymarket 最高价格为 1.0)
                     tp_target_price = max(0.01, min(0.99, tp_target_price))
