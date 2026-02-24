@@ -1713,8 +1713,15 @@ class AutoTraderV5:
             print(f"       [TRACEBACK] {traceback.format_exc()}")
             return None, None, entry_price
 
-    def close_position(self, market: Dict, side: str, size: float):
-        """平仓函数"""
+    def close_position(self, market: Dict, side: str, size: float, is_stop_loss: bool = False):
+        """平仓函数
+
+        Args:
+            market: 市场数据
+            side: LONG/SHORT
+            size: 平仓数量
+            is_stop_loss: 是否是止损调用（止损时直接市价，不防插针）
+        """
         try:
             token_ids = market.get('clobTokenIds', [])
             if isinstance(token_ids, str):
@@ -1748,16 +1755,21 @@ class AutoTraderV5:
             # 🛡️ 防插针核心逻辑：最多允许折价5%，拒绝恶意接针
             min_acceptable_price = token_price * 0.95  # 公允价的95%作为底线
 
-            if best_bid and best_bid >= min_acceptable_price:
-                # 买一价合理，直接市价平仓（瞬间成交）
+            # 🔥 止损场景：直接市价砸单，不要防插针保护
+            if is_stop_loss:
+                # ⚡ 止损模式：直接市价成交，放弃防插针
+                close_price = best_bid if best_bid and best_bid > 0 else token_price * 0.90
+                use_limit_order = False  # 强制市价单
+                print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (止损优先，不防插针)")
+            elif best_bid and best_bid >= min_acceptable_price:
+                # 正常止盈：买一价合理，直接市价平仓
                 close_price = best_bid
-                use_limit_order = False  # 市价单（Taker）
+                use_limit_order = False
             else:
-                # ⚠️ 买一价太黑（流动性断层/恶意插针）！拒绝贱卖
+                # ⚠️ 买一价太黑（流动性断层）！限价单等待
                 close_price = min_acceptable_price
-                use_limit_order = True  # 限价单（Maker）
-                print(f"       [防插针] ⚠️ 买一价({best_bid if best_bid else 0:.4f})远低于公允价({token_price:.4f})，拒绝贱卖！")
-                print(f"       [防插针] 🛡️ 改挂限价单 @ {close_price:.4f} (公允价95折)")
+                use_limit_order = True
+                print(f"       [防插针] ⚠️ 买一价({best_bid if best_bid else 0:.4f})远低于公允价({token_price:.4f})，改挂限价单 @ {close_price:.4f}")
 
             close_price = max(0.01, min(0.99, close_price))
             # ===========================================
