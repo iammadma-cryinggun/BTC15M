@@ -816,8 +816,19 @@ class AutoTraderV5:
         # 确保数据目录存在
         os.makedirs(data_dir, exist_ok=True)
 
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        # ======== 核心修复：开启高并发数据库模式 ========
+        # check_same_thread=False: 允许不同线程(下单线程和主线程)同时访问
+        # timeout=20.0: 如果遇到锁，排队等20秒而不是直接报错
+        self.conn = sqlite3.connect(
+            self.db_path, 
+            timeout=20.0, 
+            check_same_thread=False
+        )
+        cursor = self.conn.cursor()
+        
+        # 开启 WAL (Write-Ahead Logging) 模式，支持读写分离并发！
+        cursor.execute('PRAGMA journal_mode=WAL;')
+        # ===============================================
 
         # 交易表
         cursor.execute("""
