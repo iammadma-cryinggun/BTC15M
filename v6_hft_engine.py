@@ -426,8 +426,8 @@ class V6HFTEngine:
 
                         now = time.time()
 
-                        # 每1秒检查持仓（及时响应止损）
-                        if now - last_positions_check >= 1:
+                        # 每0.5秒检查持仓（快速响应止盈止损）
+                        if now - last_positions_check >= 0.5:
                             await self.check_positions()
                             last_positions_check = now
 
