@@ -576,7 +576,13 @@ class AutoTraderV5:
         self.cleanup_stale_positions()
 
     def cleanup_stale_positions(self):
-        """启动时清理过期持仓（超过20分钟的open持仓自动平仓）"""
+        """启动时清理过期持仓（超过20分钟的open持仓自动平仓）
+
+        优化逻辑：
+        1. 先查询链上订单状态（get_order）
+        2. 如果订单已不存在 → 直接标记为 MARKET_SETTLED（市场到期归零）
+        3. 如果订单还存在 → 尝试取消和平仓
+        """
         try:
             if not self.client:
                 print("[CLEANUP] 跳过：CLOB客户端未初始化")
@@ -584,42 +590,137 @@ class AutoTraderV5:
 
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+
             # 获取更完整的持仓信息
             cursor.execute("""
-                SELECT id, entry_time, side, entry_token_price, size, token_id,
+                SELECT id, entry_time, side, entry_token_price, size, value_usdc, token_id,
                        take_profit_order_id, stop_loss_order_id
                 FROM positions
                 WHERE status = 'open'
             """)
             positions = cursor.fetchall()
             cleaned = 0
-            for pos_id, entry_time, side, entry_price, size, token_id, tp_order_id, sl_order_id in positions:
+
+            for pos_id, entry_time, side, entry_price, size, value_usdc, token_id, tp_order_id, sl_order_id in positions:
                 try:
                     entry_dt = datetime.strptime(entry_time, '%Y-%m-%d %H:%M:%S')
                     elapsed = (datetime.now() - entry_dt).total_seconds()
-                    if elapsed > 1200:  # 超过20分钟
-                        print(f"[CLEANUP] 持仓 #{pos_id} 超过20分钟，执行清理")
 
-                        # 取消链上的止盈止损单
+                    if elapsed > 1200:  # 超过20分钟
+                        print(f"[CLEANUP] 持仓 #{pos_id} 超过20分钟({elapsed/60:.1f}分钟)，执行清理")
+
+                        # 🚀 优化：先查询链上订单状态
+                        orders_exist = False
+                        orders_cancelled = False
+
+                        # 检查止盈单状态
+                        if tp_order_id:
+                            try:
+                                tp_order = self.client.get_order(tp_order_id)
+                                if tp_order:
+                                    status = tp_order.get('status', '').upper()
+                                    if status in ('FILLED', 'MATCHED'):
+                                        # 止盈单已成交，更新数据库
+                                        print(f"[CLEANUP] ✅ 发现止盈单已成交: {tp_order_id[-8:]}")
+                                        avg_price = tp_order.get('avgPrice') or tp_order.get('price')
+                                        if avg_price:
+                                            try:
+                                                exit_p = float(avg_price)
+                                                if 0.01 <= exit_p <= 0.99:
+                                                    pnl_usd = size * (exit_p - entry_price)
+                                                    pnl_pct = (pnl_usd / (size * entry_price)) * 100 if size * entry_price > 0 else 0
+
+                                                    cursor.execute("""
+                                                        UPDATE positions
+                                                        SET status='closed', exit_reason='TAKE_PROFIT',
+                                                            exit_time=?, exit_token_price=?, pnl_usd=?, pnl_pct=?
+                                                        WHERE id=?
+                                                    """, (
+                                                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                                        exit_p, pnl_usd, pnl_pct, pos_id
+                                                    ))
+                                                    self.safe_commit(conn)
+                                                    print(f"[CLEANUP] ✅ 持仓 #{pos_id} 止盈成交: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) @ {exit_p:.4f}")
+                                                    if pnl_usd < 0:
+                                                        self.stats['daily_loss'] += abs(pnl_usd)
+                                                    cleaned += 1
+                                                    continue  # 跳过后续处理
+                                            except:
+                                                pass
+                                    elif status in ('LIVE', 'OPEN'):
+                                        orders_exist = True
+                                        print(f"[CLEANUP] 止盈单仍存在: {tp_order_id[-8:]} ({status})")
+                                    else:
+                                        print(f"[CLEANUP] 止盈单状态: {status}")
+                            except Exception as e:
+                                err_str = str(e).lower()
+                                if 'not found' in err_str or 'does not exist' in err_str:
+                                    print(f"[CLEANUP] 止盈单不存在（可能已成交或取消）")
+                                else:
+                                    print(f"[CLEANUP] 查询止盈单失败: {e}")
+
+                        # 检查止损单状态（如果止损单是订单ID而不是价格）
+                        if sl_order_id and sl_order_id.startswith('0x'):
+                            try:
+                                sl_order = self.client.get_order(sl_order_id)
+                                if sl_order:
+                                    status = sl_order.get('status', '').upper()
+                                    if status in ('LIVE', 'OPEN'):
+                                        orders_exist = True
+                                        print(f"[CLEANUP] 止损单仍存在: {sl_order_id[-8:]} ({status})")
+                            except Exception as e:
+                                err_str = str(e).lower()
+                                if 'not found' in err_str or 'does not exist' in err_str:
+                                    print(f"[CLEANUP] 止损单不存在")
+
+                        # 🎯 关键优化：如果链上订单都不存在 → 市场已到期归零
+                        if not orders_exist:
+                            print(f"[CLEANUP] ⚠️  链上订单已不存在，判断为市场到期归零")
+                            pnl_usd = 0 - (size * entry_price)  # 全亏
+                            pnl_pct = -100.0
+
+                            cursor.execute("""
+                                UPDATE positions
+                                SET status='closed', exit_reason='MARKET_SETTLED',
+                                    exit_time=?, exit_token_price=0, pnl_usd=?, pnl_pct=?
+                                WHERE id=?
+                            """, (
+                                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                pnl_usd, pnl_pct, pos_id
+                            ))
+                            self.safe_commit(conn)
+                            print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已归零: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)")
+                            if pnl_usd < 0:
+                                self.stats['daily_loss'] += abs(pnl_usd)
+                            cleaned += 1
+                            continue
+
+                        # 如果链上订单还存在，尝试取消并平仓
+                        print(f"[CLEANUP] 🔄 链上订单仍存在，尝试取消并平仓")
+
+                        # 取消订单
                         if tp_order_id:
                             try:
                                 self.cancel_order(tp_order_id)
                                 print(f"[CLEANUP] 已取消止盈单: {tp_order_id[-8:]}")
-                            except:
-                                pass
-                        if sl_order_id:
+                                orders_cancelled = True
+                            except Exception as e:
+                                print(f"[CLEANUP] 取消止盈单失败: {e}")
+
+                        if sl_order_id and sl_order_id.startswith('0x'):
                             try:
                                 self.cancel_order(sl_order_id)
                                 print(f"[CLEANUP] 已取消止损单: {sl_order_id[-8:]}")
-                            except:
-                                pass
+                                orders_cancelled = True
+                            except Exception as e:
+                                print(f"[CLEANUP] 取消止损单失败: {e}")
 
                         # 尝试市价平仓
                         try:
                             from py_clob_client.clob_types import OrderArgs
                             import time
 
-                            # 获取当前市场价格（优先WebSocket实时价，fallback REST）
+                            # 获取当前市场价格
                             try:
                                 current_price = self.get_order_book(token_id, side='BUY')
                                 if not current_price or current_price <= 0.01:
@@ -661,7 +762,7 @@ class AutoTraderV5:
                                         close_order = self.client.get_order(close_order_id)
                                         if close_order and close_order.get('status') in ('FILLED', 'MATCHED'):
                                             filled_price = close_order.get('price', close_price)
-                                            # 计算盈亏（统一公式）
+                                            # 计算盈亏
                                             pnl_usd = size * (filled_price - entry_price)
                                             pnl_pct = (pnl_usd / (size * entry_price)) * 100 if size * entry_price > 0 else 0
 
@@ -679,7 +780,6 @@ class AutoTraderV5:
                                             ))
                                             self.safe_commit(conn)
                                             print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已平仓: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)")
-                                            # 更新 daily_loss 统计
                                             if pnl_usd < 0:
                                                 self.stats['daily_loss'] += abs(pnl_usd)
                                             cleaned += 1
@@ -687,7 +787,7 @@ class AutoTraderV5:
                                     except:
                                         pass
                                 else:
-                                    # 等待超时，但仍然标记为closed
+                                    # 等待超时，仍然标记为closed
                                     print(f"[CLEANUP] ⚠️  平仓单未立即成交，标记为closed")
                                     cursor.execute("""
                                         UPDATE positions SET status='closed', exit_reason='STALE_CLEANUP',
@@ -706,59 +806,19 @@ class AutoTraderV5:
 
                         except Exception as close_error:
                             err_msg = str(close_error)
-                            # 检查是否是订单簿不存在的错误（市场已结算）
-                            if 'orderbook' in err_msg and 'does not exist' in err_msg:
-                                print(f"[CLEANUP] ⚠️  市场已结算，订单簿已关闭")
-                                # 使用当前价格计算盈亏并标记为closed
-                                try:
-                                    # 尝试获取当前市场价格（使用 /price API）
-                                    price_url = "https://clob.polymarket.com/price"
-                                    # 🚀 使用Session复用TCP连接（提速价格查询）
-                                    price_resp = self.http_session.get(
-                                        price_url,
-                                        params={"token_id": token_id, "side": "BUY"},
-                                        proxies=CONFIG['proxy'],
-                                        timeout=10
-                                    )
-                                    if price_resp.status_code == 200:
-                                        price_data = price_resp.json()
-                                        settle_price = float(price_data.get('price', entry_price))
-                                    else:
-                                        settle_price = entry_price
-                                except:
-                                    settle_price = entry_price
-
-                                # 计算盈亏（统一公式）
-                                pnl_usd = size * (settle_price - entry_price)
-                                pnl_pct = (pnl_usd / (size * entry_price)) * 100 if size * entry_price > 0 else 0
-
-                                cursor.execute("""
-                                    UPDATE positions
-                                    SET status='closed', exit_reason='STALE_CLEANUP',
-                                        exit_time=?, exit_token_price=?, pnl_usd=?, pnl_pct=?
-                                    WHERE id=?
-                                """, (
-                                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                    settle_price, pnl_usd, pnl_pct, pos_id
-                                ))
-                                self.safe_commit(conn)
-                                print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已结算: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) @ {settle_price:.4f}")
-                                # 更新 daily_loss 统计
-                                if pnl_usd < 0:
-                                    self.stats['daily_loss'] += abs(pnl_usd)
-                                cleaned += 1
-                            else:
-                                print(f"[CLEANUP] 平仓失败: {close_error}")
-                                # 即使平仓失败，也标记为closed
-                                cursor.execute("""
-                                    UPDATE positions SET status='closed', exit_reason='STALE_CLEANUP',
-                                    exit_time=? WHERE id=?
-                                """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pos_id))
-                                self.safe_commit(conn)
-                                cleaned += 1
+                            # 即使平仓失败，也标记为closed
+                            print(f"[CLEANUP] 平仓异常: {close_error}，标记为closed")
+                            cursor.execute("""
+                                UPDATE positions SET status='closed', exit_reason='STALE_CLEANUP',
+                                exit_time=? WHERE id=?
+                            """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pos_id))
+                            self.safe_commit(conn)
+                            cleaned += 1
 
                 except Exception as e:
                     print(f"[CLEANUP] 处理持仓 #{pos_id} 失败: {e}")
+                    import traceback
+                    print(f"[CLEANUP] Traceback: {traceback.format_exc()}")
                     pass
 
             conn.close()
@@ -766,6 +826,8 @@ class AutoTraderV5:
                 print(f"[CLEANUP] ✅ 清理了 {cleaned} 笔过期持仓")
         except Exception as e:
             print(f"[CLEANUP ERROR] {e}")
+            import traceback
+            print(f"[CLEANUP] Traceback: {traceback.format_exc()}")
 
     def init_clob_client(self):
         if not CONFIG['private_key'] or not CLOB_AVAILABLE:
