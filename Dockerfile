@@ -18,8 +18,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用代码
 COPY . .
 
+# 设置脚本可执行权限
+RUN chmod +x start.sh
+
 # 设置环境变量
 ENV PYTHONUNBUFFERED=1
 
-# 启动应用
-CMD ["python", "main.py"]
+# 启动应用（使用start.sh同时启动Oracle和交易引擎）
+CMD ["./start.sh"]

@@ -145,9 +145,19 @@ gh repo create btc-15min-v5-professional --private --source=. --push
 1. 选择服务类型：**Python**
 2. 设置启动命令：
    ```bash
-   python auto_trader_ankr.py
+   ./start.sh
+   ```
+   **或者**
+   ```bash
+   python start.sh
    ```
 3. 点击 **"Deploy"**
+
+**重要提示：** 使用 `start.sh` 会自动同时启动：
+- Binance Oracle（提供UT Bot趋势信号）
+- 交易机器人（执行交易）
+
+如果只启动 `auto_trader_ankr.py`，UT Bot会一直显示NEUTRAL！
 
 ---
 
