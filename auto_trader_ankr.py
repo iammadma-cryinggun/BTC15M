@@ -2028,7 +2028,7 @@ class AutoTraderV5:
             print(f"       [TRACEBACK] {traceback.format_exc()}")
             return None, None, entry_price
 
-    def close_position(self, market: Dict, side: str, size: float, is_stop_loss: bool = False):
+    def close_position(self, market: Dict, side: str, size: float, is_stop_loss: bool = False, entry_price: float = None):
         """平仓函数
 
         Args:
@@ -2036,6 +2036,7 @@ class AutoTraderV5:
             side: LONG/SHORT
             size: 平仓数量
             is_stop_loss: 是否是止损调用（止损时直接市价，不防插针）
+            entry_price: 入场价格（止损时需要，用于设置最低可接受价格）
         """
         try:
             token_ids = market.get('clobTokenIds', [])
@@ -2072,16 +2073,21 @@ class AutoTraderV5:
             # 🛡️ 防插针核心逻辑：最多允许折价5%，拒绝恶意接针
             min_acceptable_price = token_price * 0.95  # 公允价的95%作为底线
 
-            # 🔥 止损场景：直接市价砸单，不要防插针保护
+            # 🔥 止损场景：直接市价砸单，但设置最低可接受价格
             if is_stop_loss:
-                # ⚡ 止损模式：直接市价成交，放弃防插针
-                # best_bid是买家愿意出的价格，直接用它挂卖单确保成交
-                if best_bid and best_bid > 0.01:
+                # ⚡ 止损模式：直接市价成交，但不接受极端低价
+                # 设置最低价格为止损线的90%（防止滑点过大）
+                min_acceptable_sl = entry_price * 0.90  # 最多接受10%额外滑点
+                if best_bid and best_bid >= min_acceptable_sl:
                     close_price = best_bid
+                    print(f"       [止损模式] ⚡ 市价砸单 @ {close_price:.4f} (止损线{entry_price*0.8:.4f})")
+                elif best_bid and best_bid > 0.01:
+                    # best_bid太低，使用止损线价格
+                    close_price = entry_price * 0.80
+                    print(f"       [止损模式] ⚠️ best_bid太低({best_bid:.4f})，使用止损价 {close_price:.4f}")
                 else:
                     close_price = token_price  # fallback到公允价
                 use_limit_order = False  # 强制市价单
-                print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (止损优先，不防插针)")
 
                 # ========== 核心修复：止损前撤销所有挂单释放冻结余额 ==========
                 print(f"       [LOCAL SL] 🧹 正在紧急撤销该Token的所有挂单，释放被冻结的余额...")
@@ -3079,7 +3085,7 @@ class AutoTraderV5:
                         # 市价平仓（止损模式，直接砸单不防插针）
                         close_market = market if market else self.get_market_data()
                         if close_market:
-                            close_order_id = self.close_position(close_market, side, size, is_stop_loss=True)
+                            close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price)
 
                             # 💡 增加识别 "NO_BALANCE" 的逻辑
                             if close_order_id == "NO_BALANCE":
