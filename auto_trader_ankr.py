@@ -2171,7 +2171,12 @@ class AutoTraderV5:
             slippage_ticks = 2  # 加2个tick滑点
             adjusted_price = align_price(base_price + tick_size_float * slippage_ticks)
 
-            # Calculate based on REAL balance
+            # Calculate based on REAL balance（每次开仓前刷新链上余额）
+            fresh_usdc, _ = self.balance_detector.fetch()
+            if fresh_usdc <= 0:
+                print(f"       [RISK] 余额查询失败或余额为0，拒绝开仓（安全保护）")
+                return None
+            self.position_mgr.balance = fresh_usdc
             position_value = self.position_mgr.calculate_position(signal['confidence'])
 
             if not self.position_mgr.can_afford(position_value):
