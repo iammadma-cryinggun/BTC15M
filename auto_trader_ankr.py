@@ -1908,14 +1908,11 @@ class AutoTraderV5:
 
             # 🔥 止损场景：直接市价砸单，不要防插针保护
             if is_stop_loss:
-                # ⚡ 止损模式：直接市价成交，放弃防插针
-                # 但仍需检查价格合理性，防止WebSocket旧数据导致极低价成交
-                if best_bid and best_bid >= token_price * 0.50:
-                    close_price = best_bid
-                else:
-                    close_price = token_price * 0.90  # fallback到公允价9折
+                # ⚡ 止损模式：强制用REST的outcomePrices，不信任WebSocket缓存
+                # WebSocket可能推送错误价格（如NO token推0.80而实际是0.20）
+                close_price = token_price * 0.97  # REST公允价打3折作为市价单价格
                 use_limit_order = False  # 强制市价单
-                print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (止损优先，不防插针)")
+                print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (REST公允价{token_price:.4f}×0.97，忽略WebSocket缓存)")
 
                 # ========== 核心修复：止损前撤销所有挂单释放冻结余额 ==========
                 print(f"       [LOCAL SL] 🧹 正在紧急撤销该Token的所有挂单，释放被冻结的余额...")
