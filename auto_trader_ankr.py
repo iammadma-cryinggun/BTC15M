@@ -2636,14 +2636,15 @@ class AutoTraderV5:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
-            # 查找同方向OPEN持仓
+            # 查找同方向OPEN持仓（不依赖token_id，因为每小时市场会切换）
+            # 只使用 side 查询，取最新的一个持仓进行合并
             cursor.execute("""
-                SELECT id, entry_token_price, size, value_usdc, take_profit_order_id, stop_loss_order_id
+                SELECT id, entry_token_price, size, value_usdc, take_profit_order_id, stop_loss_order_id, token_id
                 FROM positions
-                WHERE token_id = ? AND side = ? AND status = 'open'
+                WHERE side = ? AND status = 'open'
                 ORDER BY entry_time DESC
                 LIMIT 1
-            """, (token_id, signal['direction']))
+            """, (signal['direction'],))
 
             row = cursor.fetchone()
             if not row:
@@ -2657,6 +2658,7 @@ class AutoTraderV5:
             old_value = float(row[3])
             old_tp_order_id = row[4]
             old_sl_order_id = row[5]
+            old_token_id = row[6]  # 旧持仓的token_id
 
             # 获取新订单信息
             new_size = new_order_result.get('size', 0)
@@ -2666,6 +2668,15 @@ class AutoTraderV5:
             if isinstance(new_value, str):
                 new_value = float(new_value)
             new_entry_price = new_value / max(new_size, 1)
+
+            # 检查新旧token_id是否一致（不同时间窗口的市场）
+            if old_token_id != token_id:
+                print(f"       [MERGE] ⚠️ 警告：新旧持仓在不同时间窗口市场！")
+                print(f"       [MERGE]    旧市场token: {old_token_id[-8:]}")
+                print(f"       [MERGE]    新市场token: {token_id[-8:]}")
+                print(f"       [MERGE]    ❌ 跨市场不能合并（不同资产），将作为独立持仓管理")
+                conn.close()
+                return False  # 返回False，让record_trade正常记录新持仓
 
             print(f"       [MERGE] 旧持仓: {old_size}股 @ {old_entry_price:.4f} (${old_value:.2f})")
             print(f"       [MERGE] 新订单: {new_size}股 @ {new_entry_price:.4f} (${new_value:.2f})")
