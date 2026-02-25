@@ -78,7 +78,7 @@ CONFIG = {
         'pause_hours': 0.5,            # 缩短到0.5小时（2小时太长）
         'max_same_direction_bullets': 2,  # 同市场同方向最大持仓数（允许止盈后再开1单）
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
-        'max_trades_per_window': 2,       # 每个15分钟窗口最多开单总数（防止过度交易）
+        'max_trades_per_window': 4,       # 每个15分钟窗口最多开单总数（防止过度交易）
         'max_stop_loss_pct': 0.15,      # 最大止损15%
     },
 
