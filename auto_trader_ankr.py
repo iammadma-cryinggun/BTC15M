@@ -2380,7 +2380,7 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [DB ERROR] {e}")
 
-    def check_positions(self, current_token_price: float = None):
+    def check_positions(self, current_token_price: float = None, yes_price: float = None, no_price: float = None):
         """检查持仓状态，通过检查止盈止损单是否成交来判断
         
         注意：current_token_price 参数仅作备用，内部会对每个持仓单独查询准确价格。
@@ -2409,8 +2409,11 @@ class AutoTraderV5:
                 size = float(size)
                 value_usdc = float(value_usdc) if value_usdc else 0.0
 
-                # 优先使用传入的实时价格（WebSocket），避免REST查询延迟
-                pos_current_price = current_token_price if current_token_price else None
+                # 优先使用传入的实时价格，根据方向选择YES/NO价格
+                if yes_price is not None and no_price is not None:
+                    pos_current_price = yes_price if side == 'LONG' else no_price
+                else:
+                    pos_current_price = current_token_price if current_token_price else None
                 if pos_current_price is None and token_id:
                     pos_current_price = self.get_order_book(token_id, side='BUY')
                 if pos_current_price is None:
@@ -3043,7 +3046,9 @@ class AutoTraderV5:
                 self.update_indicators(price, high, low)
 
                 # 检查持仓止盈止损（每次迭代都检查，利用WebSocket实时价格）
-                self.check_positions(price)
+                yes_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else None
+                no_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else None
+                self.check_positions(yes_price=yes_price, no_price=no_price)
 
                 # 验证待验证的预测（每15秒检查一次）
                 if i % 5 == 0:
