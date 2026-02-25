@@ -2307,7 +2307,11 @@ class AutoTraderV5:
 
                 real_value = position_size * actual_price
                 tp_target_price = align_price((real_value + 1.0) / max(position_size, 1))
-                sl_target_price = align_price((real_value - 1.0) / max(position_size, 1))
+                # 止损取固定1U和15%百分比中较高的那个，与place_stop_orders逻辑一致
+                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.15)
+                sl_by_pct = actual_price * (1 - sl_pct_max)
+                sl_by_fixed = (real_value - 1.0) / max(position_size, 1)
+                sl_target_price = align_price(max(sl_by_fixed, sl_by_pct))
 
                 tp_pct = round((tp_target_price - actual_price) / actual_price, 4) if actual_price > 0 else None
                 sl_pct = round((actual_price - sl_target_price) / actual_price, 4) if actual_price > 0 else None
