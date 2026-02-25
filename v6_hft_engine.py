@@ -190,7 +190,8 @@ class V6HFTEngine:
                     if not asset_id:
                         continue
 
-                    price_str = change.get("price") or change.get("best_bid")
+                    # 优先用best_bid（真实买一价），price只是某笔挂单价格不代表市价
+                    price_str = change.get("best_bid") or change.get("price")
                     if not price_str:
                         continue
 
