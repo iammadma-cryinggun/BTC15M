@@ -197,27 +197,19 @@ class V6HFTEngine:
 
                     token_price = float(price_str)
 
-                    # 根据asset_id判断是YES还是NO token
+                    # YES和NO各自独立，直接存自己的价格，不互相推算
                     if asset_id == self.token_yes_id:
                         if 0.02 <= token_price <= 0.98:
                             self.current_yes_price = token_price
                             self.current_price = token_price
-                        # 静默过滤旧市场极端价格，不打印
                     elif asset_id == self.token_no_id:
                         if 0.02 <= token_price <= 0.98:
                             self.current_no_price = token_price
-                            if self.current_yes_price is None:
-                                self.current_price = 1.0 - token_price
-                        # 静默过滤旧市场极端价格，不打印
 
-                # 每秒最多更新一次指标
+                # 每秒最多更新一次指标（只用YES价格驱动）
                 now = time.time()
-                if now - self._last_indicator_update >= 1.0 and self.current_price:
-                    high = max(self.current_yes_price or self.current_price,
-                               self.current_no_price or self.current_price)
-                    low = min(self.current_yes_price or self.current_price,
-                              self.current_no_price or self.current_price)
-                    self.v5.update_indicators(self.current_price, high, low)
+                if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
+                    self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
                     self._last_indicator_update = now
                 return
 
@@ -239,15 +231,9 @@ class V6HFTEngine:
                 self.current_price = mid_price
             elif asset_id == self.token_no_id:
                 self.current_no_price = mid_price
-                if self.current_yes_price is None:
-                    self.current_price = 1.0 - mid_price
             now = time.time()
-            if now - self._last_indicator_update >= 1.0 and self.current_price:
-                high = max(self.current_yes_price or self.current_price,
-                           self.current_no_price or self.current_price)
-                low = min(self.current_yes_price or self.current_price,
-                          self.current_no_price or self.current_price)
-                self.v5.update_indicators(self.current_price, high, low)
+            if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
+                self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
                 self._last_indicator_update = now
         except Exception as e:
             if self.ws_message_count < 100:
@@ -278,17 +264,11 @@ class V6HFTEngine:
                 elif asset_id == self.token_no_id:
                     if 0.02 <= mid_price <= 0.98:
                         self.current_no_price = mid_price
-                        if self.current_yes_price is None:
-                            self.current_price = 1.0 - mid_price
 
-                # 更新指标
+                # 更新指标（只用YES价格）
                 now = time.time()
-                if now - self._last_indicator_update >= 1.0 and self.current_price:
-                    high = max(self.current_yes_price or self.current_price,
-                               self.current_no_price or self.current_price)
-                    low = min(self.current_yes_price or self.current_price,
-                              self.current_no_price or self.current_price)
-                    self.v5.update_indicators(self.current_price, high, low)
+                if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
+                    self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
                     self._last_indicator_update = now
         except Exception as e:
             if self.ws_message_count < 100:
