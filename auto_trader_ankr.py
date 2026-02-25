@@ -588,7 +588,7 @@ class AutoTraderV5:
                 print("[CLEANUP] 跳过：CLOB客户端未初始化")
                 return
 
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 获取更完整的持仓信息
@@ -965,7 +965,7 @@ class AutoTraderV5:
         """从数据库恢复当天的亏损和交易统计，防止重启后风控失效"""
         try:
             today = datetime.now().date().strftime('%Y-%m-%d')
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 恢复当天已关闭持仓的亏损总额
@@ -1087,7 +1087,7 @@ class AutoTraderV5:
         多持仓时每个持仓独立查询，避免回填到错误记录。
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
             if pos_id:
                 # 通过 token_id 直接匹配 predictions 表的 market_slug
@@ -1217,10 +1217,10 @@ class AutoTraderV5:
 
         # === 统一价格过滤（整合三处分散的过滤逻辑）===
         # 有效入场区间：0.35~0.48 和 0.52~0.65
-        # 低于0.35或高于0.65：风险收益比太差
+        # 低于0.20或高于0.80：风险收益比太差
         # 0.48~0.52：平衡区，信号不明确
-        max_entry = CONFIG['signal'].get('max_entry_price', 0.65)
-        min_entry = CONFIG['signal'].get('min_entry_price', 0.35)
+        max_entry = CONFIG['signal'].get('max_entry_price', 0.80)
+        min_entry = CONFIG['signal'].get('min_entry_price', 0.20)
         bal_min = CONFIG['signal']['balance_zone_min']
         bal_max = CONFIG['signal']['balance_zone_max']
 
@@ -1358,7 +1358,7 @@ class AutoTraderV5:
 
             if token_ids:
                 try:
-                    conn = sqlite3.connect(self.db_path)
+                    conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
                     cursor = conn.cursor()
 
                     # 使用 token_id 判断同一市场（每个15分钟市场有唯一的 token_id）
@@ -1467,13 +1467,13 @@ class AutoTraderV5:
             else:
                 return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
-        # 🛡️ === 第二斧：拒绝高位接盘（只做均势局） ===
+        # 🛡️ === 第二斧：拒绝极端价格（只做合理区间） ===
         price = signal.get('price', 0.5)
-        max_entry_price = CONFIG['signal'].get('max_entry_price', 0.65)
-        min_entry_price = CONFIG['signal'].get('min_entry_price', 0.35)
+        max_entry_price = CONFIG['signal'].get('max_entry_price', 0.80)
+        min_entry_price = CONFIG['signal'].get('min_entry_price', 0.20)
 
         if price > max_entry_price:
-            return False, f"🛡️ 拒绝高位接盘: {price:.4f} > {max_entry_price:.2f} (利润空间太小)"
+            return False, f"🛡️ 拒绝极端高位: {price:.4f} > {max_entry_price:.2f} (利润空间太小)"
         if price < min_entry_price:
             return False, f"🛡️ 拒绝极端低位: {price:.4f} < {min_entry_price:.2f} (风险太大)"
 
@@ -1515,7 +1515,7 @@ class AutoTraderV5:
         """查询当前持仓（从 positions 表）"""
         positions = {}  # {side: size}
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 从 positions 表获取当前持仓
@@ -2401,7 +2401,8 @@ class AutoTraderV5:
 
     def record_trade(self, market: Dict, signal: Dict, order_result: Optional[Dict], was_blocked: bool = False):
         try:
-            conn = sqlite3.connect(self.db_path)
+            # 🔥 防止数据库锁定：设置timeout和check_same_thread
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             value = order_result.get('value', 0) if order_result else 0
@@ -2626,7 +2627,7 @@ class AutoTraderV5:
                 token_ids = json.loads(token_ids)
             token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
 
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 查找同方向OPEN持仓
@@ -2772,7 +2773,7 @@ class AutoTraderV5:
         market: 可选，传入已获取的市场数据避免重复请求。
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 获取所有open状态的持仓（包括订单ID）
@@ -3311,7 +3312,7 @@ class AutoTraderV5:
     def get_open_positions_count(self) -> int:
         """获取当前open持仓数量"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM positions WHERE status = 'open'")
             count = cursor.fetchone()[0]
@@ -3323,7 +3324,7 @@ class AutoTraderV5:
     def close_positions_by_signal_change(self, current_token_price: float, new_signal_direction: str):
         """信号改变时平掉所有相反方向的持仓，先取消止盈止损单，再市价平仓"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 确定需要平仓的方向（与当前信号相反）
