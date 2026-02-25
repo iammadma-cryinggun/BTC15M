@@ -824,9 +824,10 @@ class AutoTraderV5:
             timeout=20.0, 
             check_same_thread=False
         )
-        cursor = self.conn.cursor()
+        # 🌟 加这一行！让底下的 conn.commit() 重新生效
+        conn = self.conn
         
-        # 开启 WAL (Write-Ahead Logging) 模式，支持读写分离并发！
+        cursor = self.conn.cursor()
         cursor.execute('PRAGMA journal_mode=WAL;')
         # ===============================================
 
