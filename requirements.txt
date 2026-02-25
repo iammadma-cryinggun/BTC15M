@@ -12,5 +12,9 @@ colorama>=0.4.6
 # WebSocket support (for V6 HFT engine)
 websockets>=11.0.3
 
+# Data analysis (for UT Bot + Hull indicators in Binance Oracle)
+pandas>=2.0.0
+numpy>=1.24.0
+
 # Polymarket CLOB Client (from PyPI - official stable version)
 py-clob-client
