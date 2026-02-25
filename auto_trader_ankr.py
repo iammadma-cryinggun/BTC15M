@@ -1904,15 +1904,17 @@ class AutoTraderV5:
                 outcome_prices = json.loads(outcome_prices)
 
             # ========== 🛡️ 智能防插针止损保护 ==========
-            # 获取公允价格（token_price）和实际买一价（best_bid）
-            if side == 'LONG':
-                # 平多仓 -> 卖出YES，查YES的买一价
-                token_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else 0.5
-                best_bid = self.get_order_book(token_id, side='BUY')
+            # 获取公允价格（token_price）和实际买一价（best_bid），优先用WebSocket实时价
+            best_bid = self.get_order_book(token_id, side='BUY')
+            if best_bid and best_bid > 0.01:
+                token_price = best_bid  # WebSocket实时价作为公允价
             else:
-                # 平空仓 -> 卖出NO，查NO的买一价
-                token_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else 0.5
-                best_bid = self.get_order_book(token_id, side='BUY')
+                # fallback到outcomePrices
+                if side == 'LONG':
+                    token_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else 0.5
+                else:
+                    token_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else 0.5
+                best_bid = token_price
 
             # 🛡️ 防插针核心逻辑：最多允许折价5%，拒绝恶意接针
             min_acceptable_price = token_price * 0.95  # 公允价的95%作为底线
@@ -2425,15 +2427,18 @@ class AutoTraderV5:
                 size = float(size)
                 value_usdc = float(value_usdc) if value_usdc else 0.0
 
-                # 优先使用传入的实时价格，根据方向选择YES/NO价格
-                if yes_price is not None and no_price is not None:
-                    pos_current_price = yes_price if side == 'LONG' else no_price
-                else:
-                    pos_current_price = current_token_price if current_token_price else None
-                if pos_current_price is None and token_id:
+                # 优先用WebSocket实时价（get_order_book），outcomePrices是REST旧数据不可靠
+                pos_current_price = None
+                if token_id:
                     pos_current_price = self.get_order_book(token_id, side='BUY')
+                # fallback：传入的outcomePrices
                 if pos_current_price is None:
-                    # fallback：从市场数据获取
+                    if yes_price is not None and no_price is not None:
+                        pos_current_price = yes_price if side == 'LONG' else no_price
+                    elif current_token_price:
+                        pos_current_price = current_token_price
+                if pos_current_price is None:
+                    # 最终fallback：重新拉市场数据
                     try:
                         market = self.get_market_data()
                         if market:
@@ -3069,7 +3074,7 @@ class AutoTraderV5:
                     high = low = price
                 self.update_indicators(price, high, low)
 
-                # 检查持仓止盈止损（每次迭代都检查，利用WebSocket实时价格）
+                # 检查持仓止盈止损（check_positions内部优先用WebSocket实时价，outcomePrices仅作fallback）
                 yes_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else None
                 no_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else None
                 self.check_positions(yes_price=yes_price, no_price=no_price, market=market)
