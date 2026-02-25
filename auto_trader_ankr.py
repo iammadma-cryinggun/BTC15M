@@ -2358,7 +2358,9 @@ class AutoTraderV5:
                     tp_pct,
                     sl_pct,
                     tp_order_id,
-                    str(sl_target_price) if sl_target_price else None,  # ⚠️ 注意：此字段存的是止损价格字符串，不是订单ID！用于本地轮询止损
+                    # ⚠️ 此字段存的是止损价格字符串，不是订单ID！用于本地轮询止损
+                    # 🔍 修复：sl_target_price为None时用入场价兜底计算，确保止损线永远存在
+                    str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.15))), 4)),
                     token_id,
                     'open'
                 ))
