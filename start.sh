@@ -6,7 +6,6 @@ Zeabur双核架构启动脚本
 import os
 import sys
 import subprocess
-import signal
 import time
 
 print("=" * 70)
@@ -59,8 +58,8 @@ print(f"[OK] Oracle运行正常 (PID: {oracle_process.pid})")
 if os.path.exists('oracle_signal.json'):
     import json
     with open('oracle_signal.json', 'r') as f:
-        signal = json.load(f)
-    print(f"[OK] 信号文件已生成: score={signal.get('signal_score', 0):.2f}")
+        signal_data = json.load(f)
+    print(f"[OK] 信号文件已生成: score={signal_data.get('signal_score', 0):.2f}")
 else:
     print("[WARN] oracle_signal.json 尚未生成（可能正在初始化）")
 
@@ -69,28 +68,35 @@ print("[2/2] 启动V6高频引擎 (前台)...")
 print("=" * 70)
 print()
 
-# 定义清理函数
-def cleanup(signum=None, frame=None):
-    print()
-    print("=" * 70)
-    print("[STOP] 收到停止信号，清理进程...")
-    try:
-        oracle_process.terminate()
-        oracle_process.wait(timeout=5)
-        print(f"[OK] Oracle进程 (PID: {oracle_process.pid}) 已清理")
-    except:
-        oracle_process.kill()
-        print("[OK] Oracle进程已强制终止")
-    print("=" * 70)
-    sys.exit(0)
-
-# 注册信号处理
-signal.signal(signal.SIGINT, cleanup)
-signal.signal(signal.SIGTERM, cleanup)
+# 🚀 移除信号处理（Zeabur容器环境中会报错）
+# Zeabur有自己的信号管理机制
 
 # 启动V6（前台运行）
 try:
     process = subprocess.Popen([sys.executable, 'v6_hft_engine.py'])
-    process.wait()
+    returncode = process.wait()
+    print()
+    print("=" * 70)
+    print(f"[STOP] V6引擎已停止 (退出码: {returncode})")
+    print("=" * 70)
+    print()
+    print("[清理] 正在清理Oracle进程...")
+    try:
+        oracle_process.terminate()
+        oracle_process.wait(timeout=5)
+        print(f"[OK] Oracle进程已清理")
+    except:
+        oracle_process.kill()
+        print("[OK] Oracle进程已强制终止")
 except KeyboardInterrupt:
-    cleanup()
+    print()
+    print("=" * 70)
+    print("[STOP] 收到中断信号，清理所有进程...")
+    try:
+        oracle_process.terminate()
+        oracle_process.wait(timeout=5)
+        print("[OK] Oracle进程已清理")
+    except:
+        oracle_process.kill()
+        print("[OK] Oracle进程已强制终止")
+    print("=" * 70)
