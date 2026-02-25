@@ -179,13 +179,20 @@ class V6HFTEngine:
 
                     # 根据asset_id判断是YES还是NO token
                     if asset_id == self.token_yes_id:
-                        self.current_yes_price = token_price
-                        self.current_price = token_price
+                        # 价格合理性检查：拒绝极端异常值（可能是旧市场数据）
+                        if 0.02 <= token_price <= 0.98:
+                            self.current_yes_price = token_price
+                            self.current_price = token_price
+                        else:
+                            print(f"       [WS FILTER] 拒绝异常价格 YES={token_price:.4f}，可能是旧市场数据")
                     elif asset_id == self.token_no_id:
-                        self.current_no_price = token_price
-                        # 只有YES价格还未收到时，才用NO反推
-                        if self.current_yes_price is None:
-                            self.current_price = 1.0 - token_price
+                        if 0.02 <= token_price <= 0.98:
+                            self.current_no_price = token_price
+                            # 只有YES价格还未收到时，才用NO反推
+                            if self.current_yes_price is None:
+                                self.current_price = 1.0 - token_price
+                        else:
+                            print(f"       [WS FILTER] 拒绝异常价格 NO={token_price:.4f}，可能是旧市场数据")
 
                 # 每秒最多更新一次指标
                 now = time.time()
@@ -415,9 +422,22 @@ class V6HFTEngine:
                         # 检查是否需要切换市场
                         if self.market_end_time:
                             time_left = (self.market_end_time - datetime.now(timezone.utc)).total_seconds()
-                            if time_left < 10:
-                                print(f"[SWITCH] 市场即将到期，切换到下一个15分钟窗口...")
+                            if time_left < 200:
+                                print(f"[SWITCH] 市场即将到期({time_left:.0f}秒)，切换到下一个15分钟窗口...")
+                                self._reset_price_cache()
                                 break
+                        else:
+                            # market_end_time 解析失败，用slug时间戳判断
+                            if self.current_slug:
+                                try:
+                                    ts = int(self.current_slug.split('-')[-1])
+                                    time_left = ts + 900 - int(datetime.now(timezone.utc).timestamp())
+                                    if time_left < 200:
+                                        print(f"[SWITCH] 市场即将到期(slug判断)，切换...")
+                                        self._reset_price_cache()
+                                        break
+                                except:
+                                    pass
 
             except websockets.exceptions.ConnectionClosed as e:
                 print(f"[WSS] 连接断开: {e}，{self._reconnect_delay}秒后重连...")

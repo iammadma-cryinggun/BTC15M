@@ -1277,7 +1277,7 @@ class AutoTraderV5:
 
             if time_left is not None:
                 if time_left < 0:
-                    # 市场已过期但 get_market_data 没过滤掉，直接拒绝
+                    # 市场已过期，拒绝开仓
                     return False, f"🛡️ 时间防火墙: 市场已过期({time_left:.0f}秒)，拒绝开仓"
                 if time_left < 180:
                     return False, f"🛡️ 时间防火墙: 距离结算仅{time_left:.0f}秒，拒绝开仓"
@@ -1857,8 +1857,29 @@ class AutoTraderV5:
             close_price = max(0.01, min(0.99, close_price))
             # ===========================================
 
-            # 计算平仓数量（平全部）
-            close_size = int(size)
+            # 计算平仓数量（平全部）- 使用精确余额，不取整避免超卖
+            # 先查链上实际可用余额，以实际余额为准
+            try:
+                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                    signature_type=2
+                )
+                result = self.client.get_balance_allowance(params)
+                if result:
+                    amount = float(result.get('balance', '0') or '0')
+                    actual_size = amount / 1e6
+                    if actual_size >= 0.5:
+                        close_size = actual_size
+                        print(f"       [CLOSE] 链上精确余额: {close_size} (DB size={size})")
+                    else:
+                        close_size = int(size)
+                else:
+                    close_size = int(size)
+            except Exception as e:
+                print(f"       [CLOSE] 余额查询失败({e})，使用DB size")
+                close_size = int(size)
 
             order_type = "限价单(挂单等待)" if use_limit_order else "市价单(立即成交)"
             print(f"       [CLOSE] {order_type} 平仓 {side} {close_size}份 @ {close_price:.4f}")
@@ -2462,11 +2483,11 @@ class AutoTraderV5:
                         time_remaining = f"{int(seconds_left)}s" if seconds_left else "未知"
                         print(f"       [LOCAL SL] ⏰ 市场剩余 {time_remaining}，立即执行止损保护")
 
-                        # 先撤止盈单，释放token
+                        # 先撤止盈单，释放token（等待3秒让余额解冻）
                         if tp_order_id:
                             print(f"       [LOCAL SL] 撤销止盈单 {tp_order_id[-8:]}...")
                             self.cancel_order(tp_order_id)
-                            time.sleep(1)
+                            time.sleep(3)  # 等待链上余额解冻，避免误判NO_BALANCE
 
                         # 市价平仓（止损模式，直接砸单不防插针）
                         close_market = self.get_market_data()
