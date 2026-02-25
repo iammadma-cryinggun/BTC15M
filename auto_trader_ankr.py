@@ -2445,6 +2445,9 @@ class AutoTraderV5:
                     except Exception as tg_error:
                         print(f"       [TELEGRAM ERROR] 发送开仓通知失败: {tg_error}")
 
+                # 👇 新加这一行，彻底消灭未定义报错（如果找不到就默认填 'BTC_15M'）
+                token_id = signal.get('token_id', 'BTC_15M')
+                
                 cursor.execute("""
                     INSERT INTO positions (
                         entry_time, side, entry_token_price,
