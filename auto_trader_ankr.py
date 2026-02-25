@@ -1667,31 +1667,30 @@ class AutoTraderV5:
                                 print(f"       [STOP ORDERS] ✅ 入场订单已成交 ({status})")
                                 print(f"       [STOP ORDERS] ⏳ 等待 10 秒，确保 Token 到达钱包...")
                                 time.sleep(10)
-                                # 尝试获取实际成交价格（优先用matchAmount/matchedSize算加权均价）
-                                matched_size = float(entry_order.get('matchedSize', 0) or 0)
-                                match_amount = float(entry_order.get('matchAmount', 0) or 0)
-                                if matched_size > 0 and match_amount > 0:
-                                    actual_entry_price = match_amount / matched_size
-                                else:
-                                    filled_price = entry_order.get('avgPrice') or entry_order.get('price')
-                                    if filled_price:
-                                        actual_entry_price = float(filled_price)
-                                if actual_entry_price:
-                                    print(f"       [STOP ORDERS] 实际成交价: {actual_entry_price:.4f} (调整价格: {entry_price:.4f})")
-                                    # 如果实际价格和调整价格不同，重新计算止盈止损价格
-                                    if abs(actual_entry_price - entry_price) > 0.001:
-                                        value_usdc = size * actual_entry_price
-                                        # 重新计算止盈止损价格（基于实际成交价）
-                                        tp_target_price = (value_usdc + 1.0) / max(size, 1)
-                                        # 🛡️ 使用收紧的止损逻辑（两种Token逻辑相同）
-                                        sl_original = (value_usdc - 1.0) / max(size, 1)
-                                        sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.15)
-                                        sl_by_pct = actual_entry_price * (1 - sl_pct_max)
-                                        sl_target_price = max(sl_original, sl_by_pct)
-                                        tp_target_price = align_price(tp_target_price)
-                                        sl_target_price = align_price(sl_target_price)
-                                        print(f"       [STOP ORDERS] 重新计算止盈止损: tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
-                                        print(f"       [STOP ORDERS] 更新value: {value_usdc:.2f} USDC")
+                                # 获取实际成交价：优先avgPrice，fallback到entry_price
+                                # 不用matchAmount/matchedSize，单位不确定容易算错
+                                avg_price = entry_order.get('avgPrice')
+                                if avg_price:
+                                    try:
+                                        parsed = float(avg_price)
+                                        # 合理性校验：必须在0.01~0.99之间，且与entry_price偏差不超过20%
+                                        if 0.01 <= parsed <= 0.99 and abs(parsed - entry_price) / entry_price < 0.20:
+                                            actual_entry_price = parsed
+                                            print(f"       [STOP ORDERS] 实际成交价(avgPrice): {actual_entry_price:.4f} (调整价格: {entry_price:.4f})")
+                                        else:
+                                            print(f"       [STOP ORDERS] avgPrice={parsed:.4f} 不合理，使用调整价格: {entry_price:.4f}")
+                                    except:
+                                        pass
+                                # 基于最终确认的actual_entry_price统一重算止盈止损
+                                value_usdc = size * actual_entry_price
+                                tp_target_price = (value_usdc + 1.0) / max(size, 1)
+                                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.15)
+                                sl_by_pct = actual_entry_price * (1 - sl_pct_max)
+                                sl_original = (value_usdc - 1.0) / max(size, 1)
+                                sl_target_price = max(sl_original, sl_by_pct)
+                                tp_target_price = align_price(tp_target_price)
+                                sl_target_price = align_price(sl_target_price)
+                                print(f"       [STOP ORDERS] 止盈止损确认: entry={actual_entry_price:.4f}, tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
                                 break
                             elif status in ['CANCELLED', 'EXPIRED']:
                                 print(f"       [STOP ORDERS] ❌ 入场订单已{status}，取消挂止盈止损单")
