@@ -2357,8 +2357,38 @@ class AutoTraderV5:
 
         except Exception as e:
             import traceback
+            err_msg = str(e)
             print(f"       [ERROR] {e}")
             print(f"       [TRACEBACK] {traceback.format_exc()}")
+
+            # 🚨 严重Bug修复：订单可能已成交但异常被捕获
+            # 检查是否有 orderID，如果有则尝试查询订单状态
+            if 'response' in locals() and response and isinstance(response, dict):
+                order_id = response.get('orderID')
+                if order_id:
+                    print(f"       [RECOVERY] 检测到订单ID {order_id[-8:]}，尝试查询状态...")
+                    try:
+                        # 延迟1秒让订单上链
+                        import time
+                        time.sleep(1)
+
+                        order_info = self.client.get_order(order_id)
+                        if order_info:
+                            status = order_info.get('status', '').upper()
+                            print(f"       [RECOVERY] 订单状态: {status}")
+
+                            # 如果订单已成交或部分成交，仍然返回订单信息（确保记录到数据库）
+                            if status in ('FILLED', 'MATCHED'):
+                                print(f"       [RECOVERY] ✅ 订单已成交！强制返回订单信息（即使有异常）")
+                                return {'order_id': order_id, 'status': 'filled', 'value': position_value, 'price': adjusted_price, 'token_price': base_price, 'size': float(size)}
+                            elif status == 'LIVE':
+                                print(f"       [RECOVERY] ⚠️  订单挂单中（LIVE），可能已成交")
+                                # LIVE 状态也可能是已成交，保守处理，返回订单信息
+                                return {'order_id': order_id, 'status': 'live', 'value': position_value, 'price': adjusted_price, 'token_price': base_price, 'size': float(size)}
+                    except Exception as recovery_err:
+                        print(f"       [RECOVERY] 查询订单失败: {recovery_err}")
+
+            # 如果无法确认订单状态，返回 None
             return None
 
     def record_trade(self, market: Dict, signal: Dict, order_result: Optional[Dict], was_blocked: bool = False):
@@ -2433,17 +2463,23 @@ class AutoTraderV5:
                         result = self.client.get_balance_allowance(params)
                         if result:
                             balance = float(result.get('balance', 0))
-                            print(f"       [POSITION] Token余额: {balance:.2f} (需要: {position_size:.0f})")
-                            if balance < position_size * 0.5:  # 余额不足一半，说明未成交
+                            balance_shares = balance / 1e6  # 转换为份数
+                            print(f"       [POSITION] Token余额: {balance_shares:.2f}份 (需要: {position_size:.0f})")
+                            if balance_shares < position_size * 0.5:  # 余额不足一半，说明未成交
                                 print(f"       [POSITION] ❌ 确认未成交，放弃记录持仓")
                                 self.safe_commit(conn)
                                 conn.close()
                                 return
+                            else:
+                                # 🚨 严重Bug修复：余额充足，说明订单已成交！
+                                # 即使止盈止损单没挂上，也要记录到positions表
+                                print(f"       [POSITION] ✅ 确认已成交！止盈止损单失败，但必须记录持仓")
+                                # 继续执行后续的positions记录逻辑
+                                pass
                     except Exception as verify_err:
-                        print(f"       [POSITION] ⚠️  无法验证余额，假设未成交: {verify_err}")
-                        self.safe_commit(conn)
-                        conn.close()
-                        return
+                        print(f"       [POSITION] ⚠️  无法验证余额: {verify_err}")
+                        print(f"       [POSITION] 🛡️  保守处理：假设已成交，记录持仓")
+                        # 继续执行，确保不会漏记录持仓
                 elif tp_order_id is None and sl_target_price is None and actual_entry_price is None:
                     print(f"       [POSITION] ❌ 入场单未成交，放弃记录持仓")
                     self.safe_commit(conn)
