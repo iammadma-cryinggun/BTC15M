@@ -157,11 +157,30 @@ class V6HFTEngine:
 
         return None
 
-    def update_price_from_ws(self, data: dict):
+    def update_price_from_ws(self, data):
+        """
+        处理WebSocket价格更新
+        data格式可能是：
+        1. dict - price_changes格式
+        2. list - 订单簿快照格式
+        """
         try:
             # 🔍 调试：打印前5条原始消息的完整结构
             if self.ws_message_count <= 5:
-                print(f"[DEBUG] 第{self.ws_message_count}条消息: {json.dumps(data, ensure_ascii=False)[:400]}")
+                data_str = json.dumps(data, ensure_ascii=False)[:400] if isinstance(data, (dict, list)) else str(data)
+                print(f"[DEBUG] 第{self.ws_message_count}条消息: {data_str}")
+
+            # 处理list格式（订单簿快照）
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict) and "asset_id" in item:
+                        # 转换为dict格式处理
+                        self._process_orderbook_item(item)
+                return
+
+            # 处理dict格式（price_changes或book）
+            if not isinstance(data, dict):
+                return
 
             # 处理price_changes类型（Polymarket的主要数据格式）
             price_changes = data.get("price_changes", [])
@@ -236,6 +255,43 @@ class V6HFTEngine:
                 print(f"[DEBUG] Data sample: {str(data)[:300]}")
                 import traceback
                 print(f"[DEBUG] Traceback: {traceback.format_exc()}")
+
+    def _process_orderbook_item(self, item: dict):
+        """处理订单簿格式的单个item（来自list格式消息）"""
+        try:
+            # 检查是否有价格字段（直接订单簿数据）
+            if "bids" in item and "asks" in item:
+                bids = item.get("bids", [])
+                asks = item.get("asks", [])
+                if not bids or not asks:
+                    return
+                best_bid = float(bids[0]['price'])
+                best_ask = float(asks[0]['price'])
+                mid_price = (best_bid + best_ask) / 2
+
+                asset_id = item.get("asset_id")
+                if asset_id == self.token_yes_id:
+                    if 0.02 <= mid_price <= 0.98:
+                        self.current_yes_price = mid_price
+                        self.current_price = mid_price
+                elif asset_id == self.token_no_id:
+                    if 0.02 <= mid_price <= 0.98:
+                        self.current_no_price = mid_price
+                        if self.current_yes_price is None:
+                            self.current_price = 1.0 - mid_price
+
+                # 更新指标
+                now = time.time()
+                if now - self._last_indicator_update >= 1.0 and self.current_price:
+                    high = max(self.current_yes_price or self.current_price,
+                               self.current_no_price or self.current_price)
+                    low = min(self.current_yes_price or self.current_price,
+                              self.current_no_price or self.current_price)
+                    self.v5.update_indicators(self.current_price, high, low)
+                    self._last_indicator_update = now
+        except Exception as e:
+            if self.ws_message_count < 100:
+                print(f"[DEBUG] Process item error: {e}")
 
     async def check_and_trade(self):
         """检查信号并执行交易（完全复用V5逻辑）"""
