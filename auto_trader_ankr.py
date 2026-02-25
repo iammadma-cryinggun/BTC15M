@@ -1212,12 +1212,11 @@ class AutoTraderV5:
                 print(f"       [RESET] 新的15分钟窗口: {self.last_traded_market} → {current_slug}")
                 self.last_traded_market = None
 
-        # 【已禁用】每个市场只交易一次的限制（改为：同一市场只要没持仓就可以再开单）
-        # 原因：15分钟合约内可能有多次交易机会（止盈后立即开新单）
-        # if market and self.last_traded_market:
-        #     current_slug = market.get('slug', '')
-        #     if current_slug == self.last_traded_market:
-        #         return False, "Already traded this market"
+        # 🛡️ 每个市场只交易一次（15分钟窗口限制）
+        if market and self.last_traded_market:
+            current_slug = market.get('slug', '')
+            if current_slug == self.last_traded_market:
+                return False, f"已交易过该市场: {current_slug}"
 
         # --- 检查持仓冲突 ---
         positions = self.get_positions()
