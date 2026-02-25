@@ -50,13 +50,13 @@ class BinanceOracle:
     def _calc_signal_score(self) -> float:
         """
         计算综合信号分 (-10 到 +10)
-        - CVD贡献：±5分
+        - CVD贡献：±5分（每40万USD得1分，200万USD满分）
         - 盘口失衡贡献：±5分（使用10次移动平均平滑噪音）
         """
         score = 0.0
 
-        # CVD分（归一化，以100 BTC为满分基准）
-        cvd_score = max(-5.0, min(5.0, self.cvd / 20.0))
+        # CVD分（归一化，以200万USD为满分基准，每40万USD得1分）
+        cvd_score = max(-5.0, min(5.0, self.cvd / 400000.0))
         score += cvd_score
 
         # 盘口失衡分（使用移动平均平滑）
