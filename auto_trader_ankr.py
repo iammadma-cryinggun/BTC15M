@@ -1171,7 +1171,26 @@ class AutoTraderV5:
                 oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
             score += oracle_boost
             score = max(-10, min(10, score))
-            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD(15m): {oracle.get('cvd_15m', 0):+.1f} | 盘口失衡: {oracle.get('wall_imbalance', 0)*100:+.1f}% | boost: {oracle_boost:+.2f} | 融合后评分: {score:.2f}")
+
+            # 🛡️ 双重确认：UT Bot + Hull 趋势过滤
+            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
+            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | UT+Hull: {ut_hull_trend} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
+
+            # 双重确认逻辑：UT Bot 趋势必须与 Oracle 信号方向一致
+            if ut_hull_trend != 'NEUTRAL':
+                # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
+                if score > 0 and ut_hull_trend == 'SHORT':
+                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
+                    return None
+                # 如果 Oracle 看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
+                elif score < 0 and ut_hull_trend == 'LONG':
+                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看跌({score:+.2f})但UT Bot LONG，拒绝开空")
+                    return None
+                else:
+                    print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与Oracle({score:+.2f})一致")
+            else:
+                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仅使用Oracle信号")
+
         # ======================================================
 
         confidence = min(abs(score) / 5.0, 0.99)
