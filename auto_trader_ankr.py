@@ -503,6 +503,21 @@ class AutoTraderV5:
         self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
 
+        def safe_commit(self, connection):
+        """带有重试机制的安全数据库提交 (防止多线程高频并发锁死)"""
+        import time
+        import sqlite3
+        for i in range(5):
+            try:
+                connection.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    # 如果遇到别人在写，默默等0.5秒再重试
+                    time.sleep(0.5)
+                else:
+                    raise e
+
         # 🚀 HTTP Session池（复用TCP连接，提速3-5倍）
         self.http_session = requests.Session()
         # 配置连接池
@@ -676,7 +691,7 @@ class AutoTraderV5:
                                                 pnl_pct,
                                                 pos_id
                                             ))
-                                            conn.commit()
+                                            self.safe_commit(conn)
                                             print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已平仓: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)")
                                             # 更新 daily_loss 统计
                                             if pnl_usd < 0:
@@ -692,7 +707,7 @@ class AutoTraderV5:
                                         UPDATE positions SET status='closed', exit_reason='STALE_CLEANUP',
                                         exit_time=? WHERE id=?
                                     """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pos_id))
-                                    conn.commit()
+                                    self.safe_commit(conn)
                                     cleaned += 1
                             else:
                                 print(f"[CLEANUP] ❌ 平仓单失败，仅标记为closed")
@@ -700,7 +715,7 @@ class AutoTraderV5:
                                     UPDATE positions SET status='closed', exit_reason='STALE_CLEANUP',
                                     exit_time=? WHERE id=?
                                 """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pos_id))
-                                conn.commit()
+                                self.safe_commit(conn)
                                 cleaned += 1
 
                         except Exception as close_error:
@@ -740,7 +755,7 @@ class AutoTraderV5:
                                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                                     settle_price, pnl_usd, pnl_pct, pos_id
                                 ))
-                                conn.commit()
+                                self.safe_commit(conn)
                                 print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已结算: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) @ {settle_price:.4f}")
                                 # 更新 daily_loss 统计
                                 if pnl_usd < 0:
@@ -753,7 +768,7 @@ class AutoTraderV5:
                                     UPDATE positions SET status='closed', exit_reason='STALE_CLEANUP',
                                     exit_time=? WHERE id=?
                                 """, (datetime.now().strftime('%Y-%m-%d %H:%M:%S'), pos_id))
-                                conn.commit()
+                                self.safe_commit(conn)
                                 cleaned += 1
 
                 except Exception as e:
@@ -824,7 +839,7 @@ class AutoTraderV5:
             timeout=20.0, 
             check_same_thread=False
         )
-        # 🌟 加这一行！让底下的 conn.commit() 重新生效
+        # 🌟 加这一行！让底下的 self.safe_commit(conn) 重新生效
         conn = self.conn
         
         cursor = self.conn.cursor()
@@ -873,12 +888,12 @@ class AutoTraderV5:
             )
         """)
 
-        conn.commit()
+        self.safe_commit(conn)
 
         # 兼容旧数据库：添加 token_id 列（如果不存在）
         try:
             cursor.execute("ALTER TABLE positions ADD COLUMN token_id TEXT")
-            conn.commit()
+            self.safe_commit(conn)
         except:
             pass  # 列已存在，忽略
 
@@ -2359,17 +2374,17 @@ class AutoTraderV5:
                             print(f"       [POSITION] Token余额: {balance:.2f} (需要: {position_size:.0f})")
                             if balance < position_size * 0.5:  # 余额不足一半，说明未成交
                                 print(f"       [POSITION] ❌ 确认未成交，放弃记录持仓")
-                                conn.commit()
+                                self.safe_commit(conn)
                                 conn.close()
                                 return
                     except Exception as verify_err:
                         print(f"       [POSITION] ⚠️  无法验证余额，假设未成交: {verify_err}")
-                        conn.commit()
+                        self.safe_commit(conn)
                         conn.close()
                         return
                 elif tp_order_id is None and sl_target_price is None and actual_entry_price is None:
                     print(f"       [POSITION] ❌ 入场单未成交，放弃记录持仓")
-                    conn.commit()
+                    self.safe_commit(conn)
                     conn.close()
                     return
 
@@ -2462,7 +2477,7 @@ class AutoTraderV5:
                 else:
                     print(f"       [POSITION] ⚠️  止盈单挂单失败，将使用本地监控双向平仓")
 
-            conn.commit()
+            self.safe_commit(conn)
             conn.close()
 
             self.record_prediction_learning(market, signal, order_result, was_blocked=was_blocked)
@@ -3007,7 +3022,7 @@ class AutoTraderV5:
                         except Exception as le:
                             print(f"       [LEARNING EXIT ERROR] {le}")
 
-            conn.commit()
+            self.safe_commit(conn)
             conn.close()
 
         except Exception as e:
@@ -3141,7 +3156,7 @@ class AutoTraderV5:
             if closed_count > 0:
                 print(f"       [SIGNAL CHANGE] 共平仓 {closed_count} 个{opposite_direction}持仓")
 
-            conn.commit()
+            self.safe_commit(conn)
             conn.close()
 
         except Exception as e:
