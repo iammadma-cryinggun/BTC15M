@@ -1661,10 +1661,16 @@ class AutoTraderV5:
                                 print(f"       [STOP ORDERS] ✅ 入场订单已成交 ({status})")
                                 print(f"       [STOP ORDERS] ⏳ 等待 10 秒，确保 Token 到达钱包...")
                                 time.sleep(10)
-                                # 尝试获取实际成交价格
-                                filled_price = entry_order.get('price')
-                                if filled_price:
-                                    actual_entry_price = float(filled_price)
+                                # 尝试获取实际成交价格（优先用matchAmount/matchedSize算加权均价）
+                                matched_size = float(entry_order.get('matchedSize', 0) or 0)
+                                match_amount = float(entry_order.get('matchAmount', 0) or 0)
+                                if matched_size > 0 and match_amount > 0:
+                                    actual_entry_price = match_amount / matched_size
+                                else:
+                                    filled_price = entry_order.get('avgPrice') or entry_order.get('price')
+                                    if filled_price:
+                                        actual_entry_price = float(filled_price)
+                                if actual_entry_price:
                                     print(f"       [STOP ORDERS] 实际成交价: {actual_entry_price:.4f} (调整价格: {entry_price:.4f})")
                                     # 如果实际价格和调整价格不同，重新计算止盈止损价格
                                     if abs(actual_entry_price - entry_price) > 0.001:
@@ -2290,7 +2296,7 @@ class AutoTraderV5:
                 position_value = position_size * actual_price
 
                 # 使用实际成交价格（如果获取到了的话）
-                if actual_entry_price and actual_entry_price != actual_price:
+                if actual_entry_price and abs(actual_entry_price - actual_price) > 0.0001:
                     print(f"       [POSITION] 使用实际成交价格: {actual_entry_price:.4f} (调整价格: {actual_price:.4f})")
                     actual_price = actual_entry_price
                     # 重新计算value
@@ -2764,8 +2770,9 @@ class AutoTraderV5:
                                     actual_exit_price = pos_current_price
 
                                 # 计算当前盈亏（用于判断触发策略）
+                                # 用价格差计算，避免value_usdc浮点误差导致亏损被判为盈利
                                 current_value = size * pos_current_price
-                                current_pnl = current_value - value_usdc
+                                current_pnl = size * (pos_current_price - entry_token_price)
 
                                 # 💎 盈利情况：最后60秒提前锁定利润
                                 if current_pnl >= 0 and seconds_left <= 60:
