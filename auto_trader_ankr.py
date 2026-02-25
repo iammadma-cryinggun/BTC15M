@@ -408,10 +408,12 @@ class V5SignalScorer:
         if len(price_history) >= 5:
             volatility = statistics.stdev(price_history[-5:])
             norm_vol = min(volatility / 0.1, 1.0)
-            vol_score = (norm_vol - 0.5) * 10
-            components['volatility'] = vol_score
-            score += vol_score * self.weights['volatility']
+            # 波动率只影响置信度倍数，不贡献方向分
+            # 高波动时信号更可信（有趋势），低波动时信号弱（横盘）
+            vol_multiplier = 0.5 + norm_vol * 0.5  # 0.5~1.0
+            components['volatility'] = norm_vol
         else:
+            vol_multiplier = 0.75
             components['volatility'] = 0
 
         if vwap > 0:
@@ -444,7 +446,9 @@ class V5SignalScorer:
         else:
             components['trend_strength'] = 0
 
-
+        score = max(-10, min(10, score))
+        # 波动率作为置信度倍数：高波动增强信号，低波动削弱信号
+        score = score * vol_multiplier
         score = max(-10, min(10, score))
         return score, components
 
@@ -1111,7 +1115,7 @@ class AutoTraderV5:
         except Exception:
             return None
 
-    def generate_signal(self, market: Dict, price: float) -> Optional[Dict]:
+    def generate_signal(self, market: Dict, price: float, no_price: float = None) -> Optional[Dict]:
         # 注意：V5主循环在调用generate_signal前已调用update_indicators
         # V6的update_price_from_ws每秒也会调用update_indicators
         # 这里不再重复调用，避免同一价格点被更新多次导致RSI/VWAP失真
@@ -1139,16 +1143,14 @@ class AutoTraderV5:
             return None
 
         # 获取NO价格，过滤市场一边倒情况
+        # 优先用传入的实时no_price（V6 WebSocket），fallback到1-price推算
         try:
-            outcome_prices = market.get('outcomePrices', '[]')
-            if isinstance(outcome_prices, str):
-                outcome_prices = json.loads(outcome_prices)
-            no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else (1.0 - price)
+            _no_price = no_price if no_price and 0.01 <= no_price <= 0.99 else round(1.0 - price, 4)
             if price > 0.80:
                 print(f"       [FILTER] YES价格 {price:.4f} > 0.80（市场过于看涨），跳过")
                 return None
-            if no_price > 0.80:
-                print(f"       [FILTER] NO价格 {no_price:.4f} > 0.80（市场过于看跌），跳过")
+            if _no_price > 0.80:
+                print(f"       [FILTER] NO价格 {_no_price:.4f} > 0.80（市场过于看跌），跳过")
                 return None
         except:
             pass
@@ -1161,10 +1163,15 @@ class AutoTraderV5:
         oracle_score = 0.0
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
-            # Oracle分数映射到本地评分体系（Oracle±10 → 本地±2加成）
-            oracle_boost = oracle_score / 5.0
+            # 同向增强（权重20%），反向削弱（权重10%）
+            # 避免Oracle把弱信号推过门槛，或把强信号压下去
+            if oracle_score * score > 0:
+                oracle_boost = oracle_score / 5.0   # 同向：最多±2
+            else:
+                oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
             score += oracle_boost
-            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD(15m): {oracle.get('cvd_15m', 0):+.1f} | 盘口失衡: {oracle.get('wall_imbalance', 0)*100:+.1f}% | 融合后评分: {score:.2f}")
+            score = max(-10, min(10, score))
+            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD(15m): {oracle.get('cvd_15m', 0):+.1f} | 盘口失衡: {oracle.get('wall_imbalance', 0)*100:+.1f}% | boost: {oracle_boost:+.2f} | 融合后评分: {score:.2f}")
         # ======================================================
 
         confidence = min(abs(score) / 5.0, 0.99)
@@ -2485,13 +2492,13 @@ class AutoTraderV5:
                                 if tp_order.get('status') in ('FILLED', 'MATCHED'):
                                     exit_reason = 'TAKE_PROFIT'
                                     triggered_order_id = tp_order_id
-                                    p = tp_order.get('price')
-                                    actual_exit_price = float(p) if p else None
+                                    # 优先用avgPrice，合理性校验
+                                    avg_p = tp_order.get('avgPrice') or tp_order.get('price')
+                                    if avg_p:
+                                        parsed = float(avg_p)
+                                        actual_exit_price = parsed if 0.01 <= parsed <= 0.99 else None
                                     if actual_exit_price is None:
-                                        match_amount = tp_order.get('matchAmount')
-                                        matched_size = tp_order.get('matchedSize')
-                                        if match_amount and matched_size:
-                                            actual_exit_price = float(match_amount) / float(matched_size)
+                                        actual_exit_price = entry_token_price  # fallback入场价
                             break
                         except Exception as e:
                             print(f"       [ORDER CHECK ERROR] TP order {tp_order_id}: {e}")
@@ -2533,8 +2540,12 @@ class AutoTraderV5:
                                             if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
                                                 # 止盈单真实成交
                                                 exit_reason = 'TAKE_PROFIT'
-                                                p = tp_order_info.get('price')
-                                                actual_exit_price = float(p) if p else pos_current_price
+                                                avg_p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
+                                                if avg_p:
+                                                    parsed = float(avg_p)
+                                                    actual_exit_price = parsed if 0.01 <= parsed <= 0.99 else pos_current_price
+                                                else:
+                                                    actual_exit_price = pos_current_price
                                                 print(f"       [POSITION] ✅ 确认止盈单已成交 status={tp_status} @ {actual_exit_price:.4f}")
                                             else:
                                                 # 止盈单未成交，余额为0 = 市场到期归零
@@ -2574,13 +2585,13 @@ class AutoTraderV5:
                     except (ValueError, TypeError):
                         pass
 
-                    # 获取市场剩余时间
+                    # 获取市场剩余时间（优先用传入的market，避免重复REST请求）
                     seconds_left = None
                     try:
                         from datetime import timezone
-                        market = self.get_market_data()
-                        if market:
-                            end_date = market.get('endDate')
+                        _market = market if market else self.get_market_data()
+                        if _market:
+                            end_date = _market.get('endDate')
                             if end_date:
                                 end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
                                 now_dt = datetime.now(timezone.utc)
@@ -2660,13 +2671,11 @@ class AutoTraderV5:
                                             tp_status = close_order.get('status', '').upper()
                                             matched_size = float(close_order.get('matchedSize', 0) or 0)
                                             if tp_status in ('FILLED', 'MATCHED') or matched_size > 0:
-                                                match_amount = float(close_order.get('matchAmount', 0) or 0)
-                                                if matched_size > 0 and match_amount > 0:
-                                                    actual_exit_price = match_amount / matched_size
-                                                else:
-                                                    p = close_order.get('price')
-                                                    if p is not None:
-                                                        actual_exit_price = float(p)
+                                                avg_p = close_order.get('avgPrice') or close_order.get('price')
+                                                if avg_p:
+                                                    parsed = float(avg_p)
+                                                    if 0.01 <= parsed <= 0.99:
+                                                        actual_exit_price = parsed
                                                 print(f"       [LOCAL TP] ✅ 止盈实际成交价: {actual_exit_price:.4f} (尝试{_tp_attempt+1}次)")
                                                 break
                                             else:
@@ -2692,7 +2701,7 @@ class AutoTraderV5:
                             time.sleep(3)  # 等待链上余额解冻，避免误判NO_BALANCE
 
                         # 市价平仓（止损模式，直接砸单不防插针）
-                        close_market = self.get_market_data()
+                        close_market = market if market else self.get_market_data()
                         if close_market:
                             close_order_id = self.close_position(close_market, side, size, is_stop_loss=True)
 
@@ -2711,9 +2720,11 @@ class AutoTraderV5:
                                             matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
                                             if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
                                                 tp_actually_filled = True
-                                                p = tp_order_info.get('price')
-                                                if p is not None:
-                                                    tp_filled_price = float(p)
+                                                avg_p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
+                                                if avg_p:
+                                                    parsed = float(avg_p)
+                                                    if 0.01 <= parsed <= 0.99:
+                                                        tp_filled_price = parsed
                                                 print(f"       [LOCAL SL] ✅ 止盈单已提前成交 status={tp_status}，非归零")
                                             else:
                                                 print(f"       [LOCAL SL] ❌ 止盈单未成交(status={tp_status})，市场到期归零！")
@@ -2741,14 +2752,11 @@ class AutoTraderV5:
                                             sl_status = close_order.get('status', '').upper()
                                             matched_size = float(close_order.get('matchedSize', 0) or 0)
                                             if sl_status in ('FILLED', 'MATCHED') or matched_size > 0:
-                                                # 优先用 matchAmount/matchedSize 算加权均价
-                                                match_amount = float(close_order.get('matchAmount', 0) or 0)
-                                                if matched_size > 0 and match_amount > 0:
-                                                    actual_exit_price = match_amount / matched_size
-                                                else:
-                                                    p = close_order.get('price')
-                                                    if p is not None:
-                                                        actual_exit_price = float(p)
+                                                avg_p = close_order.get('avgPrice') or close_order.get('price')
+                                                if avg_p:
+                                                    parsed = float(avg_p)
+                                                    if 0.01 <= parsed <= 0.99:
+                                                        actual_exit_price = parsed
                                                 print(f"       [LOCAL SL] ✅ 止损实际成交价: {actual_exit_price:.4f} (尝试{_sl_attempt+1}次)")
                                                 break
                                             else:
