@@ -1307,9 +1307,8 @@ class AutoTraderV5:
                     total_row = cursor.fetchone()
                     total_window_trades = total_row[0] if total_row else 0
 
-                    conn.close()
-
                     if total_window_trades >= max_per_window:
+                        conn.close()
                         return False, f"窗口限制: 本15分钟窗口已开{total_window_trades}单，最多{max_per_window}单"
 
                     # 🛡️ 禁止同时反向交易（不能同时持有多空）
@@ -1325,11 +1324,13 @@ class AutoTraderV5:
                     opposite_count = opposite_row[0] if opposite_row else 0
 
                     if opposite_count > 0:
+                        conn.close()
                         return False, f"🛡️ 反向持仓冲突: 已有{opposite_direction}持仓({opposite_count}单)，禁止同时开{signal['direction']}"
 
                     # 弹匣限制：同一市场同一方向最多N发子弹
                     max_bullets = CONFIG['risk']['max_same_direction_bullets']
                     if open_count >= max_bullets:
+                        conn.close()
                         return False, f"弹匣耗尽: {token_id[-8:]} {signal['direction']}已达最大持仓({max_bullets}单)"
 
                     # 射击冷却：距离上一单必须超过N秒
@@ -1340,10 +1341,19 @@ class AutoTraderV5:
 
                         if seconds_since_last < cooldown_sec:
                             remaining_sec = cooldown_sec - seconds_since_last
+                            conn.close()
                             return False, f"⏳ 射击冷却中: 距离上一单仅{seconds_since_last:.0f}秒 (需>{cooldown_sec}s)"
+
+                    # 所有风控检查通过，关闭连接
+                    conn.close()
 
                 except Exception as e:
                     print(f"       [RISK CHECK ERROR] {e}")
+                    # 确保异常时也关闭连接
+                    try:
+                        conn.close()
+                    except:
+                        pass
                     return False, f"风控查询异常，拒绝交易: {e}"
 
         # 🛡️ === 第一斧：时间防火墙（拒绝垃圾时间） ===
