@@ -2448,28 +2448,47 @@ class AutoTraderV5:
                 pos_current_price = None
                 if token_id:
                     pos_current_price = self.get_order_book(token_id, side='BUY')
+
                 # fallback：传入的outcomePrices
                 if pos_current_price is None:
                     if yes_price is not None and no_price is not None:
                         pos_current_price = yes_price if side == 'LONG' else no_price
                     elif current_token_price:
                         pos_current_price = current_token_price
+
+                # 🚨 修复：价格获取完全失败时触发紧急止损（避免重复平仓）
                 if pos_current_price is None:
-                    # 最终fallback：重新拉市场数据
-                    try:
-                        market = self.get_market_data()
-                        if market:
-                            outcome_prices = market.get('outcomePrices', [])
-                            if isinstance(outcome_prices, str):
-                                outcome_prices = json.loads(outcome_prices)
-                            if side == 'LONG':
-                                pos_current_price = float(outcome_prices[0]) if outcome_prices else 0.5
+                    # 检查是否已经尝试过紧急平仓
+                    emergency_closed = exit_reason is not None and 'EMERGENCY' in exit_reason
+                    if not emergency_closed:
+                        print(f"       [EMERGENCY] ⚠️ 价格获取失败（API超时/网络问题），立即市价平仓保护")
+                        # 尝试紧急市价平仓
+                        try:
+                            close_market = market if market else self.get_market_data()
+                            if close_market:
+                                # 用入场价90%确保成交（快速止损）
+                                close_price = max(0.01, min(0.99, entry_token_price * 0.90))
+                                from py_clob_client.clob_types import OrderArgs
+                                close_order_args = OrderArgs(
+                                    token_id=token_id,
+                                    price=close_price,
+                                    size=float(size),
+                                    side=SELL
+                                )
+                                close_response = self.client.create_and_post_order(close_order_args)
+                                if close_response and 'orderID' in close_response:
+                                    exit_reason = 'EMERGENCY_PRICE_FAIL'
+                                    triggered_order_id = close_response['orderID']
+                                    actual_exit_price = close_price
+                                    print(f"       [EMERGENCY] ✅ 紧急平仓成功 @ {close_price:.4f}")
+                                else:
+                                    print(f"       [EMERGENCY] ⚠️ 紧急平仓失败（API返回空）")
                             else:
-                                pos_current_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else 0.5
-                    except:
-                        pass
-                if pos_current_price is None:
-                    print(f"       [POSITION] 无法获取持仓 {pos_id} 的当前价格，跳过")
+                                print(f"       [EMERGENCY] ⚠️ 无法获取市场数据，紧急平仓跳过")
+                        except Exception as e:
+                            print(f"       [EMERGENCY] ❌ 紧急平仓异常: {e}")
+
+                    print(f"       [POSITION] 价格获取失败，本轮跳过（等待0.1秒后重试）")
                     continue
 
                 print(f"       [POSITION] {side} token价格: {pos_current_price:.4f}")
