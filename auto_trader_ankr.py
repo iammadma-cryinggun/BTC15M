@@ -1218,11 +1218,12 @@ class AutoTraderV5:
                 print(f"       [RESET] 新的15分钟窗口: {self.last_traded_market} → {current_slug}")
                 self.last_traded_market = None
 
-        # 🛡️ 每个市场只交易一次（15分钟窗口限制）
-        if market and self.last_traded_market:
-            current_slug = market.get('slug', '')
-            if current_slug == self.last_traded_market:
-                return False, f"已交易过该市场: {current_slug}"
+        # 【已解除】每个市场只交易一次的限制
+        # 改为：通过弹匣限制、射击冷却、时间防火墙等精细风控来控制频率
+        # if market and self.last_traded_market:
+        #     current_slug = market.get('slug', '')
+        #     if current_slug == self.last_traded_market:
+        #         return False, f"已交易过该市场: {current_slug}"
 
         # --- 检查持仓冲突 ---
         positions = self.get_positions()
