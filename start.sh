@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Zeabur双核架构启动脚本
-同时启动 binance_oracle.py 和 auto_trader_ankr.py
+同时启动 binance_oracle.py 和 v6_hft_engine.py
 """
 import os
 import sys
@@ -18,8 +18,8 @@ if not os.path.exists('binance_oracle.py'):
     print("[ERROR] binance_oracle.py not found!")
     sys.exit(1)
 
-if not os.path.exists('auto_trader_ankr.py'):
-    print("[ERROR] auto_trader_ankr.py not found!")
+if not os.path.exists('v6_hft_engine.py'):
+    print("[ERROR] v6_hft_engine.py not found!")
     sys.exit(1)
 
 # 清理可能存在的旧oracle.log
@@ -58,45 +58,39 @@ print(f"[OK] Oracle运行正常 (PID: {oracle_process.pid})")
 if os.path.exists('oracle_signal.json'):
     import json
     with open('oracle_signal.json', 'r') as f:
-        signal_data = json.load(f)
-    print(f"[OK] 信号文件已生成: score={signal_data.get('signal_score', 0):.2f}")
+        signal = json.load(f)
+    print(f"[OK] 信号文件已生成: score={signal.get('signal_score', 0):.2f}")
 else:
     print("[WARN] oracle_signal.json 尚未生成（可能正在初始化）")
 
 print()
-print("[2/2] 启动交易机器人 (前台)...")
+print("[2/2] 启动V6高频引擎 (前台)...")
 print("=" * 70)
 print()
 
-# 🚀 移除信号处理（Zeabur容器环境中会报错）
-# Zeabur有自己的信号管理机制
+# 定义清理函数
+def cleanup(signum=None, frame=None):
+    print()
+    print("=" * 70)
+    print("[STOP] 收到停止信号，清理进程...")
+    try:
+        oracle_process.terminate()
+        oracle_process.wait(timeout=5)
+        print(f"[OK] Oracle进程 (PID: {oracle_process.pid}) 已清理")
+    except:
+        oracle_process.kill()
+        print("[OK] Oracle进程已强制终止")
+    print("=" * 70)
+    sys.exit(0)
 
-# 启动交易机器人（前台运行）
+# 注册信号处理
+import signal
+signal.signal(signal.SIGINT, cleanup)
+signal.signal(signal.SIGTERM, cleanup)
+
+# 启动V6（前台运行）
 try:
-    process = subprocess.Popen([sys.executable, 'auto_trader_ankr.py'])
-    returncode = process.wait()
-    print()
-    print("=" * 70)
-    print(f"[STOP] 交易机器人已停止 (退出码: {returncode})")
-    print("=" * 70)
-    print()
-    print("[清理] 正在清理Oracle进程...")
-    try:
-        oracle_process.terminate()
-        oracle_process.wait(timeout=5)
-        print(f"[OK] Oracle进程已清理")
-    except:
-        oracle_process.kill()
-        print("[OK] Oracle进程已强制终止")
+    process = subprocess.Popen([sys.executable, 'v6_hft_engine.py'])
+    process.wait()
 except KeyboardInterrupt:
-    print()
-    print("=" * 70)
-    print("[STOP] 收到中断信号，清理所有进程...")
-    try:
-        oracle_process.terminate()
-        oracle_process.wait(timeout=5)
-        print("[OK] Oracle进程已清理")
-    except:
-        oracle_process.kill()
-        print("[OK] Oracle进程已强制终止")
-    print("=" * 70)
+    cleanup()
