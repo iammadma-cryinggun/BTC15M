@@ -284,8 +284,8 @@ class V6HFTEngine:
         if now - self.last_trade_time < 60:
             return
 
-        # 生成信号（复用V5）
-        signal = self.v5.generate_signal(self.current_market, self.current_price)
+        # 生成信号（复用V5，传入WebSocket实时NO价）
+        signal = self.v5.generate_signal(self.current_market, self.current_price, no_price=self.current_no_price)
 
         if signal:
             self.signal_count += 1
@@ -426,8 +426,8 @@ class V6HFTEngine:
 
                         now = time.time()
 
-                        # 每5秒检查持仓
-                        if now - last_positions_check >= 5:
+                        # 每1秒检查持仓（及时响应止损）
+                        if now - last_positions_check >= 1:
                             await self.check_positions()
                             last_positions_check = now
 
