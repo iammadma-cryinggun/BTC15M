@@ -503,19 +503,6 @@ class AutoTraderV5:
         self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
 
-        def safe_commit(self, connection):
-        """带有重试机制的安全数据库提交 (防止多线程高频并发锁死)"""
-        import time
-        import sqlite3
-        for i in range(5):
-            try:
-                connection.commit()
-                break
-            except sqlite3.OperationalError as e:
-                if "locked" in str(e).lower():
-                    time.sleep(0.5)
-                else:
-                    raise e
 
         # 🚀 HTTP Session池（复用TCP连接，提速3-5倍）
         self.http_session = requests.Session()
@@ -822,6 +809,20 @@ class AutoTraderV5:
             print(f"[WARN] CLOB Failed: {e}")
             self.client = None
 
+    def safe_commit(self, connection):
+        """带有重试机制的安全数据库提交 (防止多线程高频并发锁死)"""
+        import time
+        import sqlite3
+        for i in range(5):
+            try:
+                connection.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    time.sleep(0.5)
+                else:
+                    raise e
+                    
     def init_database(self):
         # 支持通过环境变量配置数据目录（用于Zeabur持久化存储）
         data_dir = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
