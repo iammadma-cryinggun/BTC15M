@@ -1406,7 +1406,7 @@ class AutoTraderV5:
 
                     cursor.execute("""
                         SELECT count(*) FROM positions
-                        WHERE token_id = ? AND side = ? AND status = 'OPEN'
+                        WHERE token_id = ? AND side = ? AND status = 'open'
                     """, (opposite_token_id, opposite_direction))
 
                     opposite_row = cursor.fetchone()
@@ -2595,6 +2595,158 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [DB ERROR] {e}")
 
+    def merge_position_existing(self, market: Dict, signal: Dict, new_order_result: Dict):
+        """合并新订单到已有持仓（解决连续开仓导致止盈止损混乱）
+
+        逻辑：
+        1. 查找同方向OPEN持仓
+        2. 取消旧止盈止损单
+        3. 合并持仓（加权平均计算新价格）
+        4. 挂新止盈止损单
+        5. 更新数据库记录
+        """
+        try:
+            import time
+            token_ids = market.get('clobTokenIds', [])
+            if isinstance(token_ids, str):
+                token_ids = json.loads(token_ids)
+            token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # 查找同方向OPEN持仓
+            cursor.execute("""
+                SELECT id, entry_token_price, size, value_usdc, take_profit_order_id, stop_loss_order_id
+                FROM positions
+                WHERE token_id = ? AND side = ? AND status = 'open'
+                ORDER BY entry_time DESC
+                LIMIT 1
+            """, (token_id, signal['direction']))
+
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                print(f"       [MERGE] 没有找到{signal['direction']}持仓，无需合并")
+                return False
+
+            pos_id = row[0]
+            old_entry_price = float(row[1])
+            old_size = float(row[2])
+            old_value = float(row[3])
+            old_tp_order_id = row[4]
+            old_sl_order_id = row[5]
+
+            # 获取新订单信息
+            new_size = new_order_result.get('size', 0)
+            if isinstance(new_size, str):
+                new_size = float(new_size)
+            new_value = new_order_result.get('value', 0)
+            if isinstance(new_value, str):
+                new_value = float(new_value)
+            new_entry_price = new_value / max(new_size, 1)
+
+            print(f"       [MERGE] 旧持仓: {old_size}股 @ {old_entry_price:.4f} (${old_value:.2f})")
+            print(f"       [MERGE] 新订单: {new_size}股 @ {new_entry_price:.4f} (${new_value:.2f})")
+
+            # 取消旧止盈止损单
+            if old_tp_order_id:
+                try:
+                    self.cancel_order(old_tp_order_id)
+                    print(f"       [MERGE] ✅ 已取消旧止盈单 {old_tp_order_id[-8:]}")
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"       [MERGE] ⚠️ 取消旧止盈单失败: {e}")
+            if old_sl_order_id and old_sl_order_id.startswith('0x'):
+                try:
+                    self.cancel_order(old_sl_order_id)
+                    print(f"       [MERGE] ✅ 已取消旧止损单 {old_sl_order_id[-8:]}")
+                    time.sleep(1)
+                except Exception as e:
+                    print(f"       [MERGE] ⚠️ 取消旧止损单失败: {e}")
+
+            # 合并持仓（加权平均）
+            merged_size = old_size + new_size
+            merged_value = old_value + new_value
+            merged_entry_price = merged_value / merged_size
+
+            print(f"       [MERGE] 合并后: {merged_size}股 @ {merged_entry_price:.4f} (${merged_value:.2f})")
+
+            # 计算新的止盈止损价格
+            tp_target_price = (merged_value + 1.0) / max(merged_size, 1)
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+            sl_by_pct = merged_entry_price * (1 - sl_pct_max)
+            sl_by_fixed = (merged_value - 1.0) / max(merged_size, 1)
+            sl_target_price = max(sl_by_fixed, sl_by_pct)
+
+            # 对齐价格精度
+            tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
+            def align_price(p):
+                p = round(round(p / tick_size) * tick_size, 4)
+                return max(tick_size, min(1 - tick_size, p))
+
+            tp_target_price = align_price(tp_target_price)
+            sl_target_price = align_price(sl_target_price)
+
+            print(f"       [MERGE] 新止盈: {tp_target_price:.4f} (+{1.0:.2f}U)")
+            print(f"       [MERGE] 新止损: {sl_target_price:.4f} (-{sl_pct_max:.0%})")
+
+            # 挂新的止盈单
+            new_tp_order_id = None
+            try:
+                from py_clob_client.clob_types import OrderArgs
+                tp_args = OrderArgs(
+                    token_id=token_id,
+                    price=tp_target_price,
+                    side='SELL' if signal['direction'] == 'LONG' else 'SELL',
+                    size=merged_size,
+                    order_type='LIMIT',
+                    reduce_only=False,
+                    signature_type=2
+                )
+                tp_order = self.client.create_order(tp_args)
+                if tp_order:
+                    new_tp_order_id = tp_order.get('orderId')
+                    print(f"       [MERGE] ✅ 新止盈单已挂: {new_tp_order_id[-8:]}")
+            except Exception as e:
+                print(f"       [MERGE] ⚠️ 挂新止盈单失败: {e}，将使用本地监控")
+
+            # 更新数据库
+            cursor.execute("""
+                UPDATE positions
+                SET entry_time = ?,
+                    entry_token_price = ?,
+                    size = ?,
+                    value_usdc = ?,
+                    take_profit_order_id = ?,
+                    stop_loss_order_id = ?,
+                    take_profit_usd = ?,
+                    stop_loss_usd = ?
+                WHERE id = ?
+            """, (
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                merged_entry_price,
+                merged_size,
+                merged_value,
+                new_tp_order_id,
+                str(sl_target_price),  # 止损是价格字符串
+                1.0,  # 止盈+1U
+                merged_value * sl_pct_max,  # 止损金额
+                pos_id
+            ))
+
+            self.safe_commit(conn)
+            conn.close()
+
+            print(f"       [MERGE] ✅ 持仓合并完成！")
+            return True
+
+        except Exception as e:
+            print(f"       [MERGE ERROR] {e}")
+            import traceback
+            print(f"       [TRACEBACK] {traceback.format_exc()}")
+            return False
+
     def check_positions(self, current_token_price: float = None, yes_price: float = None, no_price: float = None, market: Dict = None):
         """检查持仓状态，通过检查止盈止损单是否成交来判断
         
@@ -3346,7 +3498,13 @@ class AutoTraderV5:
                         print(f"       Risk: {reason}")
 
                         order_result = self.place_order(market, new_signal)
-                        self.record_trade(market, new_signal, order_result, was_blocked=False)
+
+                        # 🔥 持仓合并：检查是否需要合并到已有持仓
+                        if order_result:
+                            merged = self.merge_position_existing(market, new_signal, order_result)
+                            if not merged:
+                                # 没有合并成功，正常记录新持仓
+                                self.record_trade(market, new_signal, order_result, was_blocked=False)
 
                         self.stats['total_trades'] += 1
                         self.stats['daily_trades'] += 1
