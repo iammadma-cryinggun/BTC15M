@@ -2445,9 +2445,18 @@ class AutoTraderV5:
                     except Exception as tg_error:
                         print(f"       [TELEGRAM ERROR] 发送开仓通知失败: {tg_error}")
 
-                # 👇 新加这一行，彻底消灭未定义报错（如果找不到就默认填 'BTC_15M'）
-                token_id = signal.get('token_id', 'BTC_15M')
-                
+                # 🔧 从 market 中获取 token_id（修复：确保 token_id 在所有路径中都定义）
+                token_ids = market.get('clobTokenIds', [])
+                if isinstance(token_ids, str):
+                    import json
+                    token_ids = json.loads(token_ids)
+                if token_ids and len(token_ids) >= 2:
+                    token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
+                else:
+                    # 如果获取失败，使用默认值（这种情况不应该发生）
+                    print(f"       [WARN] 无法从market获取token_id，使用默认值")
+                    token_id = 'BTC_15M_YES' if signal['direction'] == 'LONG' else 'BTC_15M_NO'
+
                 cursor.execute("""
                     INSERT INTO positions (
                         entry_time, side, entry_token_price,
