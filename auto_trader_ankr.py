@@ -805,7 +805,7 @@ class AutoTraderV5:
             self.client = None
 
     def init_database(self):
-        self.db_path = '/tmp/btc_15min_auto_trades.db'
+        self.db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'btc_15min_auto_trades.db')
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -2380,11 +2380,12 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [DB ERROR] {e}")
 
-    def check_positions(self, current_token_price: float = None, yes_price: float = None, no_price: float = None):
+    def check_positions(self, current_token_price: float = None, yes_price: float = None, no_price: float = None, market: Dict = None):
         """检查持仓状态，通过检查止盈止损单是否成交来判断
         
         注意：current_token_price 参数仅作备用，内部会对每个持仓单独查询准确价格。
         V6模式下由 get_order_book 覆盖返回 WebSocket 实时价格。
+        market: 可选，传入已获取的市场数据避免重复请求。
         """
         try:
             conn = sqlite3.connect(self.db_path)
@@ -2742,9 +2743,9 @@ class AutoTraderV5:
                 if not exit_reason:
                     try:
                         from datetime import timezone
-                        market = self.get_market_data()
-                        if market:
-                            end_date = market.get('endDate')
+                        expiry_market = market if market else self.get_market_data()
+                        if expiry_market:
+                            end_date = expiry_market.get('endDate')
                             if end_date:
                                 end_dt = datetime.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
                                 now_dt = datetime.now(timezone.utc)
@@ -3048,7 +3049,7 @@ class AutoTraderV5:
                 # 检查持仓止盈止损（每次迭代都检查，利用WebSocket实时价格）
                 yes_price = float(outcome_prices[0]) if outcome_prices and len(outcome_prices) > 0 else None
                 no_price = float(outcome_prices[1]) if outcome_prices and len(outcome_prices) > 1 else None
-                self.check_positions(yes_price=yes_price, no_price=no_price)
+                self.check_positions(yes_price=yes_price, no_price=no_price, market=market)
 
                 # 验证待验证的预测（每15秒检查一次）
                 if i % 5 == 0:
