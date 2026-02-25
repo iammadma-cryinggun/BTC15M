@@ -2807,10 +2807,10 @@ class AutoTraderV5:
                                 current_value = size * pos_current_price
                                 current_pnl = size * (pos_current_price - entry_token_price)
 
-                                # 💎 盈利情况：最后60秒提前锁定利润
+                                # 💎 盈利情况：最后60秒强制平仓锁定利润
                                 if current_pnl >= 0 and seconds_left <= 60:
                                     print(f"       [EXPIRY] 💎 市场即将到期({seconds_left:.0f}秒)，当前盈利 ${current_pnl:.2f}")
-                                    print(f"       [EXPIRY] 撤销止盈单，持有到结算锁定利润")
+                                    print(f"       [EXPIRY] 🔄 撤销止盈单，市价平仓锁定利润！")
 
                                     # 撤销止盈单
                                     if tp_order_id:
@@ -2820,9 +2820,31 @@ class AutoTraderV5:
                                         except:
                                             pass
 
-                                    # 标记为持有到结算
-                                    exit_reason = 'HOLD_TO_SETTLEMENT'
-                                    actual_exit_price = pos_current_price
+                                    # 市价平仓锁定利润
+                                    try:
+                                        from py_clob_client.clob_types import OrderArgs
+                                        close_price = max(0.01, min(0.99, pos_current_price * 0.97))
+
+                                        close_order_args = OrderArgs(
+                                            token_id=token_id,
+                                            price=close_price,
+                                            size=float(size),
+                                            side=SELL
+                                        )
+
+                                        close_response = self.client.create_and_post_order(close_order_args)
+
+                                        if close_response and 'orderID' in close_response:
+                                            close_order_id = close_response['orderID']
+                                            exit_reason = 'EXPIRY_FORCE_CLOSE'
+                                            triggered_order_id = close_order_id
+                                            actual_exit_price = pos_current_price
+                                            print(f"       [EXPIRY] ✅ 强制平仓单已挂: {close_order_id[-8:]} @ {close_price:.4f}")
+                                    except Exception as e:
+                                        print(f"       [EXPIRY] ❌ 强制平仓失败: {e}")
+                                        # 平仓失败则持有到结算
+                                        exit_reason = 'HOLD_TO_SETTLEMENT'
+                                        actual_exit_price = pos_current_price
 
                                 # 🩸 亏损情况：最后120秒强制止损
                                 elif current_pnl < 0 and seconds_left <= 120:
