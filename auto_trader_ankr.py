@@ -2469,9 +2469,13 @@ class AutoTraderV5:
                                 if tp_order.get('status') in ('FILLED', 'MATCHED'):
                                     exit_reason = 'TAKE_PROFIT'
                                     triggered_order_id = tp_order_id
-                                    actual_exit_price = tp_order.get('price')
+                                    p = tp_order.get('price')
+                                    actual_exit_price = float(p) if p else None
                                     if actual_exit_price is None:
-                                        actual_exit_price = tp_order.get('matchAmount') / tp_order.get('matchedSize') if tp_order.get('matchedSize') else None
+                                        match_amount = tp_order.get('matchAmount')
+                                        matched_size = tp_order.get('matchedSize')
+                                        if match_amount and matched_size:
+                                            actual_exit_price = float(match_amount) / float(matched_size)
                             break
                         except Exception as e:
                             print(f"       [ORDER CHECK ERROR] TP order {tp_order_id}: {e}")
@@ -2954,7 +2958,10 @@ class AutoTraderV5:
                     if close_order:
                         fetched_price = close_order.get('price')
                         if fetched_price is None and close_order.get('matchedSize'):
-                            fetched_price = close_order.get('matchAmount') / close_order.get('matchedSize')
+                            match_amount = float(close_order.get('matchAmount', 0) or 0)
+                            matched_size = float(close_order.get('matchedSize', 0) or 0)
+                            if matched_size > 0:
+                                fetched_price = match_amount / matched_size
                         if fetched_price is not None:
                             actual_exit_price = float(fetched_price)
                             print(f"       [SIGNAL CHANGE] 实际成交价: {actual_exit_price:.4f}")
