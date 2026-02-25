@@ -84,12 +84,12 @@ CONFIG = {
 
     'signal': {
         'min_confidence': 0.75,  # 默认置信度（保留用于兼容）
-        'min_long_confidence': 0.60,   # 🔥 提高到0.60（减少低质量信号）
-        'min_short_confidence': 0.60,  # 🔥 提高到0.60（减少低质量信号）
-        'min_long_score': 3.0,      # 🔥 提高到3.0（更严格的信号筛选）
-        'min_short_score': -3.0,    # 🔥 降低到-3.0（更严格的信号筛选）
-        'balance_zone_min': 0.49,  # 🔥 收窄到0.49（只在明确信号时开仓）
-        'balance_zone_max': 0.51,  # 🔥 收窄到0.51（只在明确信号时开仓）
+        'min_long_confidence': 0.60,   # LONG最小置信度
+        'min_short_confidence': 0.60,  # SHORT最小置信度
+        'min_long_score': 4.0,      # 🔥 提高到4.0（LONG胜率22%，减少低质量信号）
+        'min_short_score': -3.0,    # SHORT保持-3.0（胜率69%）
+        'balance_zone_min': 0.49,  # 平衡区间下限
+        'balance_zone_max': 0.51,  # 平衡区间上限
         'allow_long': True,   # 允许做多（但会动态调整）
         'allow_short': True,  # 允许做空（但会动态调整）
 
@@ -1587,8 +1587,28 @@ class AutoTraderV5:
                 print(f"       [STOP ORDERS] tp/sl价格方向错误，跳过挂单 tp={tp_target_price:.4f} sl={sl_target_price:.4f} entry={entry_price:.4f}")
                 return None, None, entry_price
 
-            # 止盈止损 size 等于实际买入量（必须是整数）
-            stop_size = int(size)
+            # 止盈止损 size 等于实际买入量（查链上精确余额，避免取整超卖）
+            try:
+                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                bal_params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                    signature_type=2
+                )
+                bal_result = self.client.get_balance_allowance(bal_params)
+                if bal_result:
+                    raw = float(bal_result.get('balance', '0') or '0')
+                    actual_size_on_chain = raw / 1e6
+                    if actual_size_on_chain >= 0.5:
+                        stop_size = actual_size_on_chain
+                        print(f"       [STOP ORDERS] 链上精确余额: {stop_size} (DB size={size})")
+                    else:
+                        stop_size = int(size)
+                else:
+                    stop_size = int(size)
+            except Exception as e:
+                print(f"       [STOP ORDERS] 余额查询失败({e})，使用DB size")
+                stop_size = int(size)
 
             # 如果提供了入场订单ID，等待订单成交后再挂止盈止损单
             if entry_order_id:
@@ -1763,10 +1783,26 @@ class AutoTraderV5:
                 except Exception as e:
                     error_msg = str(e).lower()
                     if 'balance' in error_msg or 'allowance' in error_msg:
-                        # 动态递增等待：第一次等3秒，第二次等6秒，第三次等9秒... 最大限度兼容Polygon的极度拥堵
                         wait_time = attempt * 3
-                        print(f"       [STOP ORDERS] 🔄 链上余额未同步，或RPC节点延迟。等待 {wait_time} 秒后重试...")
+                        print(f"       [STOP ORDERS] 🔄 链上余额未同步，等待 {wait_time} 秒后重试...")
                         time.sleep(wait_time)
+                        # 重新查链上余额，更新 stop_size 和 tp_order_args
+                        try:
+                            bal_result2 = self.client.get_balance_allowance(bal_params)
+                            if bal_result2:
+                                raw2 = float(bal_result2.get('balance', '0') or '0')
+                                new_size = raw2 / 1e6
+                                if new_size >= 0.5:
+                                    stop_size = new_size
+                                    tp_order_args = OrderArgs(
+                                        token_id=token_id,
+                                        price=tp_target_price,
+                                        size=stop_size,
+                                        side=SELL
+                                    )
+                                    print(f"       [STOP ORDERS] 🔄 更新余额: {stop_size}")
+                        except Exception:
+                            pass
                     else:
                         print(f"       [STOP ORDERS] ❌ 挂单发生未知异常: {e}")
                         time.sleep(3)
