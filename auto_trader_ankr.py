@@ -614,21 +614,21 @@ class AutoTraderV5:
                             from py_clob_client.clob_types import OrderArgs
                             import time
 
-                            # 获取当前市场价格（使用 /price API）
+                            # 获取当前市场价格（优先WebSocket实时价，fallback REST）
                             try:
-                                price_url = "https://clob.polymarket.com/price"
-                                # 🚀 使用Session复用TCP连接（提速价格查询）
-                                price_resp = self.http_session.get(
-                                    price_url,
-                                    params={"token_id": token_id, "side": "BUY"},
-                                    proxies=CONFIG['proxy'],
-                                    timeout=10
-                                )
-                                if price_resp.status_code == 200:
-                                    price_data = price_resp.json()
-                                    current_price = float(price_data.get('price', entry_price))
-                                else:
-                                    current_price = entry_price
+                                current_price = self.get_order_book(token_id, side='BUY')
+                                if not current_price or current_price <= 0.01:
+                                    price_url = "https://clob.polymarket.com/price"
+                                    price_resp = self.http_session.get(
+                                        price_url,
+                                        params={"token_id": token_id, "side": "BUY"},
+                                        proxies=CONFIG['proxy'],
+                                        timeout=10
+                                    )
+                                    if price_resp.status_code == 200:
+                                        current_price = float(price_resp.json().get('price', entry_price))
+                                    else:
+                                        current_price = entry_price
                             except:
                                 current_price = entry_price
 
@@ -1173,14 +1173,16 @@ class AutoTraderV5:
         min_long_conf = CONFIG['signal'].get('min_long_confidence', CONFIG['signal']['min_confidence'])
         min_short_conf = CONFIG['signal'].get('min_short_confidence', CONFIG['signal']['min_confidence'])
 
-        # 极端Oracle信号（>8或<-8）直接触发，绕过本地评分门槛
+        # 极端Oracle信号（>8或<-8）需本地评分同向才触发
         if oracle and abs(oracle_score) >= 8.0:
-            if oracle_score >= 8.0 and price <= CONFIG['signal'].get('max_entry_price', 0.65):
+            if oracle_score >= 8.0 and score > 0 and price <= CONFIG['signal'].get('max_entry_price', 0.65):
                 direction = 'LONG'
-                print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，强制触发LONG！")
-            elif oracle_score <= -8.0 and price >= CONFIG['signal'].get('min_entry_price', 0.35):
+                print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，本地同向({score:.2f})，触发LONG！")
+            elif oracle_score <= -8.0 and score < 0 and price >= CONFIG['signal'].get('min_entry_price', 0.35):
                 direction = 'SHORT'
-                print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，强制触发SHORT！")
+                print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，本地同向({score:.2f})，触发SHORT！")
+            else:
+                print(f"       [ORACLE] ⚠️ 极端Oracle信号({oracle_score:+.2f})但本地评分反向({score:.2f})，忽略")
         else:
             if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
                 direction = 'LONG'
@@ -1301,8 +1303,7 @@ class AutoTraderV5:
 
                 except Exception as e:
                     print(f"       [RISK CHECK ERROR] {e}")
-                    # 风控检查失败时保守处理：允许交易（避免因bug错失机会）
-                    pass
+                    return False, f"风控查询异常，拒绝交易: {e}"
 
         # 🛡️ === 第一斧：时间防火墙（拒绝垃圾时间） ===
         # 注意：get_market_data 已过滤过期市场，这里只做二次确认
@@ -1624,10 +1625,8 @@ class AutoTraderV5:
             tp_target_price = align_price(tp_target_price)
             sl_target_price = align_price(sl_target_price)
 
-            # 检查止盈止损价格是否有意义（至少要有1个tick的差距）
-            if tp_target_price <= entry_price or sl_target_price >= entry_price:
-                print(f"       [STOP ORDERS] tp/sl价格方向错误，跳过挂单 tp={tp_target_price:.4f} sl={sl_target_price:.4f} entry={entry_price:.4f}")
-                return None, None, entry_price
+            # 注意：此处不做tp/sl方向校验，因为actual_entry_price还未确认
+            # 校验在获取实际成交价并重算之后进行
 
             # 止盈止损 size 等于实际买入量（查链上精确余额，避免取整超卖）
             try:
@@ -1692,6 +1691,12 @@ class AutoTraderV5:
                                 tp_target_price = align_price(tp_target_price)
                                 sl_target_price = align_price(sl_target_price)
                                 print(f"       [STOP ORDERS] 止盈止损确认: entry={actual_entry_price:.4f}, tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
+                                # 校验tp/sl方向（基于实际成交价）
+                                if tp_target_price <= actual_entry_price or sl_target_price >= actual_entry_price:
+                                    print(f"       [STOP ORDERS] ⚠️ tp/sl方向异常，强制修正: tp={tp_target_price:.4f} sl={sl_target_price:.4f} entry={actual_entry_price:.4f}")
+                                    tp_target_price = align_price(actual_entry_price + 1.0 / max(size, 1))
+                                    sl_target_price = align_price(actual_entry_price * (1 - sl_pct_max))
+                                    print(f"       [STOP ORDERS] 修正后: tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
                                 break
                             elif status in ['CANCELLED', 'EXPIRED']:
                                 print(f"       [STOP ORDERS] ❌ 入场订单已{status}，取消挂止盈止损单")
