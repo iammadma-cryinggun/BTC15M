@@ -805,7 +805,13 @@ class AutoTraderV5:
             self.client = None
 
     def init_database(self):
-        self.db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'btc_15min_auto_trades.db')
+        # 支持通过环境变量配置数据目录（用于Zeabur持久化存储）
+        data_dir = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        self.db_path = os.path.join(data_dir, 'btc_15min_auto_trades.db')
+
+        # 确保数据目录存在
+        os.makedirs(data_dir, exist_ok=True)
+
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
