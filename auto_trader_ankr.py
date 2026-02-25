@@ -504,19 +504,18 @@ class AutoTraderV5:
         self.price_history = deque(maxlen=20)
 
         def safe_commit(self, connection):
-                """带有重试机制的安全数据库提交 (防止多线程高频并发锁死)"""
-                import time
-                import sqlite3
-                for i in range(5):
-                    try:
-                        connection.commit()
-                        break
-                    except sqlite3.OperationalError as e:
-                        if "locked" in str(e).lower():
-                            # 如果遇到别人在写，默默等0.5秒再重试
-                            time.sleep(0.5)
-                        else:
-                            raise e
+        """带有重试机制的安全数据库提交 (防止多线程高频并发锁死)"""
+        import time
+        import sqlite3
+        for i in range(5):
+            try:
+                connection.commit()
+                break
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    time.sleep(0.5)
+                else:
+                    raise e
 
         # 🚀 HTTP Session池（复用TCP连接，提速3-5倍）
         self.http_session = requests.Session()
