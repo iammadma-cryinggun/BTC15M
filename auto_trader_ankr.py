@@ -1090,6 +1090,21 @@ class AutoTraderV5:
         self.vwap.update(price)
         self.price_history.append(price)
 
+    def _read_oracle_signal(self) -> Optional[Dict]:
+        """读取 binance_oracle.py 输出的信号文件，超过10秒视为过期"""
+        try:
+            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_signal.json')
+            if not os.path.exists(oracle_path):
+                return None
+            with open(oracle_path, 'r') as f:
+                data = json.load(f)
+            # 超过10秒的数据视为过期
+            if time.time() - data.get('ts_unix', 0) > 10:
+                return None
+            return data
+        except Exception:
+            return None
+
     def generate_signal(self, market: Dict, price: float) -> Optional[Dict]:
         # 注意：V5主循环在调用generate_signal前已调用update_indicators
         # V6的update_price_from_ws每秒也会调用update_indicators
@@ -1135,16 +1150,36 @@ class AutoTraderV5:
         # 评分（ob_bias固定为0，orderbook_bias权重已禁用）
         score, components = self.scorer.calculate_score(price, rsi, vwap, price_hist)
 
+        # ========== 双核融合：读取币安先知Oracle信号 ==========
+        oracle = self._read_oracle_signal()
+        oracle_score = 0.0
+        if oracle:
+            oracle_score = oracle.get('signal_score', 0.0)
+            # Oracle分数映射到本地评分体系（Oracle±10 → 本地±2加成）
+            oracle_boost = oracle_score / 5.0
+            score += oracle_boost
+            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD(15m): {oracle.get('cvd_15m', 0):+.1f} | 盘口失衡: {oracle.get('wall_imbalance', 0)*100:+.1f}% | 融合后评分: {score:.2f}")
+        # ======================================================
+
         confidence = min(abs(score) / 5.0, 0.99)
 
         direction = None
         min_long_conf = CONFIG['signal'].get('min_long_confidence', CONFIG['signal']['min_confidence'])
         min_short_conf = CONFIG['signal'].get('min_short_confidence', CONFIG['signal']['min_confidence'])
 
-        if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
-            direction = 'LONG'
-        elif score <= CONFIG['signal']['min_short_score'] and confidence >= min_short_conf:
-            direction = 'SHORT'
+        # 极端Oracle信号（>8或<-8）直接触发，绕过本地评分门槛
+        if oracle and abs(oracle_score) >= 8.0:
+            if oracle_score >= 8.0 and price <= CONFIG['signal'].get('max_entry_price', 0.65):
+                direction = 'LONG'
+                print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，强制触发LONG！")
+            elif oracle_score <= -8.0 and price >= CONFIG['signal'].get('min_entry_price', 0.35):
+                direction = 'SHORT'
+                print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，强制触发SHORT！")
+        else:
+            if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
+                direction = 'LONG'
+            elif score <= CONFIG['signal']['min_short_score'] and confidence >= min_short_conf:
+                direction = 'SHORT'
 
         if direction:
             return {
@@ -1155,6 +1190,7 @@ class AutoTraderV5:
                 'vwap': vwap,
                 'price': price,
                 'components': components,
+                'oracle_score': oracle_score,
             }
         return None
 
@@ -1880,6 +1916,30 @@ class AutoTraderV5:
                     close_price = token_price * 0.90  # fallback到公允价9折
                 use_limit_order = False  # 强制市价单
                 print(f"       [止损模式] ⚡ 直接市价砸单 @ {close_price:.4f} (止损优先，不防插针)")
+
+                # ========== 核心修复：止损前撤销所有挂单释放冻结余额 ==========
+                print(f"       [LOCAL SL] 🧹 正在紧急撤销该Token的所有挂单，释放被冻结的余额...")
+                try:
+                    self.client.cancel_all()
+                    time.sleep(0.5)  # 等待服务器把余额退回账户
+                    # 重新查询真实可用余额
+                    from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                    _params = BalanceAllowanceParams(
+                        asset_type=AssetType.CONDITIONAL,
+                        token_id=token_id,
+                        signature_type=2
+                    )
+                    _result = self.client.get_balance_allowance(_params)
+                    actual_balance = float(_result.get('balance', '0') or '0') / 1e6 if _result else 0
+                    print(f"       [LOCAL SL] 🔓 余额释放成功，当前真实可用余额: {actual_balance:.2f} 份")
+                    if actual_balance <= 0:
+                        print(f"       [LOCAL SL] ⚠️ 撤单后余额依然为0，确认已无持仓。")
+                        return None
+                    close_size = actual_balance  # 用真实余额，不四舍五入
+                except Exception as _e:
+                    print(f"       [LOCAL SL 撤单失败] {_e}，退回原逻辑")
+                    close_size = size
+                # ================================================================
             elif best_bid and best_bid >= min_acceptable_price:
                 # 正常止盈：买一价合理，直接市价平仓
                 close_price = best_bid
@@ -2421,9 +2481,37 @@ class AutoTraderV5:
                             # balance 单位是最小精度，需要除以1e6才是实际份数
                             actual_size = amount_float / 1e6
                             if actual_size < 0.5:  # 少于0.5份才认为已平仓
-                                print(f"       [POSITION] ⚠️  Token余额为{actual_size:.2f}份，检测到已手动平仓，停止监控")
-                                exit_reason = 'MANUAL_CLOSED'
-                                actual_exit_price = pos_current_price
+                                # 🔍 关键修复：余额为0需区分两种情况
+                                # 场景A：止盈单成交 → 正收益
+                                # 场景B：市场到期归零（止盈单锁住token未成交）→ 全亏
+                                # 场景C：手动平仓 → 用当前价
+                                # 先检查止盈单是否真的成交了
+                                if tp_order_id and not exit_reason:
+                                    try:
+                                        tp_order_info = self.client.get_order(tp_order_id)
+                                        if tp_order_info:
+                                            tp_status = tp_order_info.get('status', '').upper()
+                                            matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                            if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                                # 止盈单真实成交
+                                                exit_reason = 'TAKE_PROFIT'
+                                                p = tp_order_info.get('price')
+                                                actual_exit_price = float(p) if p else pos_current_price
+                                                print(f"       [POSITION] ✅ 确认止盈单已成交 status={tp_status} @ {actual_exit_price:.4f}")
+                                            else:
+                                                # 止盈单未成交，余额为0 = 市场到期归零
+                                                exit_reason = 'MARKET_SETTLED'
+                                                actual_exit_price = 0.0
+                                                print(f"       [POSITION] 💀 止盈单未成交(status={tp_status})，市场到期归零，记录真实亏损")
+                                    except Exception as e:
+                                        print(f"       [POSITION] 查询止盈单失败: {e}，保守处理为归零")
+                                        exit_reason = 'MARKET_SETTLED'
+                                        actual_exit_price = 0.0
+                                elif not exit_reason:
+                                    # 没有止盈单，余额为0 = 手动平仓
+                                    print(f"       [POSITION] ⚠️  Token余额为{actual_size:.2f}份，检测到已手动平仓，停止监控")
+                                    exit_reason = 'MANUAL_CLOSED'
+                                    actual_exit_price = pos_current_price
                             else:
                                 print(f"       [POSITION] [DEBUG] 余额查询成功，balance={actual_size:.2f}份")
                 except Exception as e:
@@ -2491,24 +2579,64 @@ class AutoTraderV5:
 
                             # 💡 增加识别 "NO_BALANCE" 的逻辑
                             if close_order_id == "NO_BALANCE":
-                                print(f"       [LOCAL TP] 🛑 检测到余额为空！证明限价单已成交或已手动平仓。结束监控。")
-                                exit_reason = 'AUTO_CLOSED_OR_MANUAL'  # 赋值后就能跳出 while 循环
-                                actual_exit_price = pos_current_price  # 象征性记录
+                                # 🔍 关键修复：余额为0不代表止盈成交，必须查止盈单实际状态
+                                # 场景A：止盈限价单成交 → 正收益 ✅
+                                # 场景B：止盈限价单锁住token，市场到期归零 → 亏损 ❌
+                                tp_actually_filled = False
+                                tp_filled_price = None
+                                if tp_order_id:
+                                    try:
+                                        tp_order_info = self.client.get_order(tp_order_id)
+                                        if tp_order_info:
+                                            tp_status = tp_order_info.get('status', '').upper()
+                                            matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                            if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                                tp_actually_filled = True
+                                                p = tp_order_info.get('price')
+                                                if p is not None:
+                                                    tp_filled_price = float(p)
+                                                print(f"       [LOCAL TP] ✅ 确认止盈单已成交 status={tp_status} price={tp_filled_price}")
+                                            else:
+                                                print(f"       [LOCAL TP] ❌ 止盈单未成交(status={tp_status})，余额为0是因为市场到期归零！")
+                                    except Exception as e:
+                                        print(f"       [LOCAL TP] 查询止盈单状态失败: {e}，保守处理为归零")
+
+                                if tp_actually_filled:
+                                    exit_reason = 'AUTO_CLOSED_OR_MANUAL'
+                                    actual_exit_price = tp_filled_price if tp_filled_price else pos_current_price
+                                else:
+                                    # 市场到期归零，真实亏损
+                                    exit_reason = 'MARKET_SETTLED'
+                                    actual_exit_price = 0.0  # 归零，PnL = 0 - value_usdc = 全亏
+                                    print(f"       [LOCAL TP] 💀 仓位已归零，记录真实亏损")
                             elif close_order_id:
                                 exit_reason = 'TAKE_PROFIT_LOCAL'
                                 triggered_order_id = close_order_id
-                                actual_exit_price = pos_current_price
-                                try:
-                                    time.sleep(2)
-                                    close_order = self.client.get_order(close_order_id)
-                                    if close_order:
-                                        p = close_order.get('price')
-                                        if p is None and close_order.get('matchedSize'):
-                                            p = close_order.get('matchAmount') / close_order.get('matchedSize')
-                                        if p is not None:
-                                            actual_exit_price = float(p)
-                                except Exception as e:
-                                    print(f"       [LOCAL TP] 查询成交价失败: {e}")
+                                actual_exit_price = pos_current_price  # fallback
+                                # 🔍 修复：重试查询实际成交价
+                                for _tp_attempt in range(5):
+                                    try:
+                                        time.sleep(3)
+                                        close_order = self.client.get_order(close_order_id)
+                                        if close_order:
+                                            tp_status = close_order.get('status', '').upper()
+                                            matched_size = float(close_order.get('matchedSize', 0) or 0)
+                                            if tp_status in ('FILLED', 'MATCHED') or matched_size > 0:
+                                                match_amount = float(close_order.get('matchAmount', 0) or 0)
+                                                if matched_size > 0 and match_amount > 0:
+                                                    actual_exit_price = match_amount / matched_size
+                                                else:
+                                                    p = close_order.get('price')
+                                                    if p is not None:
+                                                        actual_exit_price = float(p)
+                                                print(f"       [LOCAL TP] ✅ 止盈实际成交价: {actual_exit_price:.4f} (尝试{_tp_attempt+1}次)")
+                                                break
+                                            else:
+                                                print(f"       [LOCAL TP] ⏳ 止盈单未成交(status={tp_status})，继续等待({_tp_attempt+1}/5)...")
+                                    except Exception as e:
+                                        print(f"       [LOCAL TP] 查询成交价失败({_tp_attempt+1}/5): {e}")
+                                else:
+                                    print(f"       [LOCAL TP] ⚠️ 止盈单15秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
                                 print(f"       [LOCAL TP] 本地止盈执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
                                 print(f"       [LOCAL TP] 市价平仓失败(非余额原因)，下次继续尝试")
@@ -2532,24 +2660,65 @@ class AutoTraderV5:
 
                             # 💡 增加识别 "NO_BALANCE" 的逻辑
                             if close_order_id == "NO_BALANCE":
-                                print(f"       [LOCAL SL] 🛑 检测到余额为空！可能已手动平仓。结束监控。")
-                                exit_reason = 'AUTO_CLOSED_OR_MANUAL'
-                                actual_exit_price = pos_current_price
+                                # 🔍 关键修复：止损时余额为0，同样需要区分两种情况
+                                # 场景A：止盈限价单已提前成交（好事）
+                                # 场景B：市场到期归零（坏事）
+                                tp_actually_filled = False
+                                tp_filled_price = None
+                                if tp_order_id:
+                                    try:
+                                        tp_order_info = self.client.get_order(tp_order_id)
+                                        if tp_order_info:
+                                            tp_status = tp_order_info.get('status', '').upper()
+                                            matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                            if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                                tp_actually_filled = True
+                                                p = tp_order_info.get('price')
+                                                if p is not None:
+                                                    tp_filled_price = float(p)
+                                                print(f"       [LOCAL SL] ✅ 止盈单已提前成交 status={tp_status}，非归零")
+                                            else:
+                                                print(f"       [LOCAL SL] ❌ 止盈单未成交(status={tp_status})，市场到期归零！")
+                                    except Exception as e:
+                                        print(f"       [LOCAL SL] 查询止盈单状态失败: {e}，保守处理为归零")
+
+                                if tp_actually_filled:
+                                    exit_reason = 'AUTO_CLOSED_OR_MANUAL'
+                                    actual_exit_price = tp_filled_price if tp_filled_price else pos_current_price
+                                else:
+                                    exit_reason = 'MARKET_SETTLED'
+                                    actual_exit_price = 0.0
+                                    print(f"       [LOCAL SL] 💀 仓位已归零，记录真实亏损")
                             elif close_order_id:
                                 exit_reason = 'STOP_LOSS_LOCAL'
                                 triggered_order_id = close_order_id
-                                actual_exit_price = pos_current_price
-                                try:
-                                    time.sleep(2)
-                                    close_order = self.client.get_order(close_order_id)
-                                    if close_order:
-                                        p = close_order.get('price')
-                                        if p is None and close_order.get('matchedSize'):
-                                            p = close_order.get('matchAmount') / close_order.get('matchedSize')
-                                        if p is not None:
-                                            actual_exit_price = float(p)
-                                except Exception as e:
-                                    print(f"       [LOCAL SL] 查询成交价失败: {e}")
+                                actual_exit_price = pos_current_price  # fallback
+                                # 🔍 修复：重试查询实际成交价，避免滑点被掩盖
+                                # 极端行情下2秒不够，最多等15秒（5次×3秒）
+                                for _sl_attempt in range(5):
+                                    try:
+                                        time.sleep(3)
+                                        close_order = self.client.get_order(close_order_id)
+                                        if close_order:
+                                            sl_status = close_order.get('status', '').upper()
+                                            matched_size = float(close_order.get('matchedSize', 0) or 0)
+                                            if sl_status in ('FILLED', 'MATCHED') or matched_size > 0:
+                                                # 优先用 matchAmount/matchedSize 算加权均价
+                                                match_amount = float(close_order.get('matchAmount', 0) or 0)
+                                                if matched_size > 0 and match_amount > 0:
+                                                    actual_exit_price = match_amount / matched_size
+                                                else:
+                                                    p = close_order.get('price')
+                                                    if p is not None:
+                                                        actual_exit_price = float(p)
+                                                print(f"       [LOCAL SL] ✅ 止损实际成交价: {actual_exit_price:.4f} (尝试{_sl_attempt+1}次)")
+                                                break
+                                            else:
+                                                print(f"       [LOCAL SL] ⏳ 止损单未成交(status={sl_status})，继续等待({_sl_attempt+1}/5)...")
+                                    except Exception as e:
+                                        print(f"       [LOCAL SL] 查询成交价失败({_sl_attempt+1}/5): {e}")
+                                else:
+                                    print(f"       [LOCAL SL] ⚠️ 止损单15秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
                                 print(f"       [LOCAL SL] 止损执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
                                 print(f"       [LOCAL SL] 市价平仓失败(非余额原因)，下次继续尝试")

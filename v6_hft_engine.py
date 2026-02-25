@@ -179,20 +179,16 @@ class V6HFTEngine:
 
                     # 根据asset_id判断是YES还是NO token
                     if asset_id == self.token_yes_id:
-                        # 价格合理性检查：拒绝极端异常值（可能是旧市场数据）
                         if 0.02 <= token_price <= 0.98:
                             self.current_yes_price = token_price
                             self.current_price = token_price
-                        else:
-                            print(f"       [WS FILTER] 拒绝异常价格 YES={token_price:.4f}，可能是旧市场数据")
+                        # 静默过滤旧市场极端价格，不打印
                     elif asset_id == self.token_no_id:
                         if 0.02 <= token_price <= 0.98:
                             self.current_no_price = token_price
-                            # 只有YES价格还未收到时，才用NO反推
                             if self.current_yes_price is None:
                                 self.current_price = 1.0 - token_price
-                        else:
-                            print(f"       [WS FILTER] 拒绝异常价格 NO={token_price:.4f}，可能是旧市场数据")
+                        # 静默过滤旧市场极端价格，不打印
 
                 # 每秒最多更新一次指标
                 now = time.time()
