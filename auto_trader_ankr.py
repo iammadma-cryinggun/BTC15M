@@ -2075,25 +2075,35 @@ class AutoTraderV5:
 
             # 🔥 止损场景：智能止损保护
             if is_stop_loss:
-                # ⚡ 止损模式：根据市场情况选择最优执行方式
-                # 设置最低价格为止损线的90%（防止滑点过大）
-                min_acceptable_sl = entry_price * 0.90  # 最多接受10%额外滑点
-                if best_bid and best_bid >= min_acceptable_sl:
-                    # 情况1：best_bid合理，使用市价单快速成交
-                    close_price = best_bid
+                # 检查entry_price是否提供
+                if entry_price is None:
+                    # 未提供entry_price，回退到原始市价逻辑
+                    if best_bid and best_bid > 0.01:
+                        close_price = best_bid
+                    else:
+                        close_price = token_price
                     use_limit_order = False
-                    print(f"       [止损模式] ⚡ 市价砸单 @ {close_price:.4f} (止损线{entry_price*0.8:.4f})")
-                elif best_bid and best_bid > 0.01:
-                    # 情况2：best_bid太低（极端滑点），使用限价单保护
-                    # 关键修复：必须用限价单才能确保以止损线成交！
-                    close_price = entry_price * 0.80
-                    use_limit_order = True  # ✅ 使用限价单，拒绝低价
-                    print(f"       [止损模式] ⚠️ best_bid太低({best_bid:.4f})，挂限价单 @ {close_price:.4f}")
+                    print(f"       [止损模式] ⚠️ 无entry_price，市价砸单 @ {close_price:.4f}")
                 else:
-                    # 情况3：无法获取best_bid，使用止损价限价单
-                    close_price = entry_price * 0.80
-                    use_limit_order = True
-                    print(f"       [止损模式] ❓ 无best_bid，挂限价单 @ {close_price:.4f}")
+                    # ⚡ 止损模式：根据市场情况选择最优执行方式
+                    # 设置最低价格为止损线的90%（防止滑点过大）
+                    min_acceptable_sl = entry_price * 0.90  # 最多接受10%额外滑点
+                    if best_bid and best_bid >= min_acceptable_sl:
+                        # 情况1：best_bid合理，使用市价单快速成交
+                        close_price = best_bid
+                        use_limit_order = False
+                        print(f"       [止损模式] ⚡ 市价砸单 @ {close_price:.4f} (止损线{entry_price*0.8:.4f})")
+                    elif best_bid and best_bid > 0.01:
+                        # 情况2：best_bid太低（极端滑点），使用限价单保护
+                        # 关键修复：必须用限价单才能确保以止损线成交！
+                        close_price = entry_price * 0.80
+                        use_limit_order = True  # ✅ 使用限价单，拒绝低价
+                        print(f"       [止损模式] ⚠️ best_bid太低({best_bid:.4f})，挂限价单 @ {close_price:.4f}")
+                    else:
+                        # 情况3：无法获取best_bid，使用止损价限价单
+                        close_price = entry_price * 0.80
+                        use_limit_order = True
+                        print(f"       [止损模式] ❓ 无best_bid，挂限价单 @ {close_price:.4f}")
 
                 # ========== 核心修复：止损前撤销所有挂单释放冻结余额 ==========
                 print(f"       [LOCAL SL] 🧹 正在紧急撤销该Token的所有挂单，释放被冻结的余额...")
