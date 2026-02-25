@@ -78,7 +78,7 @@ CONFIG = {
         'pause_hours': 0.5,            # 缩短到0.5小时（2小时太长）
         'max_same_direction_bullets': 2,  # 同市场同方向最大持仓数（允许止盈后再开1单）
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
-        'max_trades_per_window': 4,       # 每个15分钟窗口最多开单总数（防止过度交易）
+        'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
         'max_stop_loss_pct': 0.20,      # 最大止损20%（扩大止损空间，避免正常波动触发）
     },
 
@@ -1292,6 +1292,21 @@ class AutoTraderV5:
 
                     if total_window_trades >= max_per_window:
                         return False, f"窗口限制: 本15分钟窗口已开{total_window_trades}单，最多{max_per_window}单"
+
+                    # 🛡️ 禁止同时反向交易（不能同时持有多空）
+                    opposite_direction = 'SHORT' if signal['direction'] == 'LONG' else 'LONG'
+                    opposite_token_id = no_token_id if signal['direction'] == 'LONG' else yes_token_id
+
+                    cursor.execute("""
+                        SELECT count(*) FROM positions
+                        WHERE token_id = ? AND side = ? AND status = 'OPEN'
+                    """, (opposite_token_id, opposite_direction))
+
+                    opposite_row = cursor.fetchone()
+                    opposite_count = opposite_row[0] if opposite_row else 0
+
+                    if opposite_count > 0:
+                        return False, f"🛡️ 反向持仓冲突: 已有{opposite_direction}持仓({opposite_count}单)，禁止同时开{signal['direction']}"
 
                     # 弹匣限制：同一市场同一方向最多N发子弹
                     max_bullets = CONFIG['risk']['max_same_direction_bullets']
