@@ -2405,6 +2405,9 @@ class AutoTraderV5:
 
             for pos in positions:
                 pos_id, entry_time, side, entry_token_price, size, value_usdc, tp_order_id, sl_order_id, token_id = pos
+                entry_token_price = float(entry_token_price)
+                size = float(size)
+                value_usdc = float(value_usdc) if value_usdc else 0.0
 
                 # 优先使用传入的实时价格（WebSocket），避免REST查询延迟
                 pos_current_price = current_token_price if current_token_price else None
@@ -2821,8 +2824,8 @@ class AutoTraderV5:
                     # 计算实际盈亏
                     # LONG买YES，SHORT买NO，两者都是现货做多，公式统一：
                     # PnL = size * (exit_token_price - entry_token_price)
-                    pnl_usd = size * (actual_exit_price - entry_token_price)
-                    pnl_pct = (pnl_usd / value_usdc) * 100 if value_usdc > 0 else 0
+                    pnl_usd = float(size) * (float(actual_exit_price) - float(entry_token_price))
+                    pnl_pct = (pnl_usd / float(value_usdc)) * 100 if value_usdc and float(value_usdc) > 0 else 0
 
                     # 更新持仓状态
                     cursor.execute("""
