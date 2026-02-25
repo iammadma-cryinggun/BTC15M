@@ -503,7 +503,7 @@ class AutoTraderV5:
         self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
 
-            def safe_commit(self, connection):
+        def safe_commit(self, connection):
                 """带有重试机制的安全数据库提交 (防止多线程高频并发锁死)"""
                 import time
                 import sqlite3
