@@ -29,8 +29,10 @@ class BinanceOracle:
     def __init__(self):
         self.cvd = 0.0                          # 累计主动买卖量差
         self.cvd_window = deque()               # (timestamp, delta) 滚动窗口
-        self.buy_wall = 0.0                     # 盘口买单墙
-        self.sell_wall = 0.0                    # 盘口卖单墙
+        self.buy_wall = 0.0                     # 盘口买单墙（实时值）
+        self.sell_wall = 0.0                    # 盘口卖单墙（实时值）
+        self.buy_wall_history = deque(maxlen=10) # 买单墙历史（用于平滑）
+        self.sell_wall_history = deque(maxlen=10) # 卖墙历史（用于平滑）
         self.last_price = 0.0                   # 最新成交价
         self.trade_count = 0                    # 成交笔数
         self.last_signal_score = 0.0            # 上次信号分
@@ -49,7 +51,7 @@ class BinanceOracle:
         """
         计算综合信号分 (-10 到 +10)
         - CVD贡献：±5分
-        - 盘口失衡贡献：±5分
+        - 盘口失衡贡献：±5分（使用10次移动平均平滑噪音）
         """
         score = 0.0
 
@@ -57,10 +59,12 @@ class BinanceOracle:
         cvd_score = max(-5.0, min(5.0, self.cvd / 20.0))
         score += cvd_score
 
-        # 盘口失衡分
-        total_wall = self.buy_wall + self.sell_wall
+        # 盘口失衡分（使用移动平均平滑）
+        avg_buy_wall = sum(self.buy_wall_history) / len(self.buy_wall_history) if self.buy_wall_history else 0
+        avg_sell_wall = sum(self.sell_wall_history) / len(self.sell_wall_history) if self.sell_wall_history else 0
+        total_wall = avg_buy_wall + avg_sell_wall
         if total_wall > 0:
-            imbalance = (self.buy_wall - self.sell_wall) / total_wall
+            imbalance = (avg_buy_wall - avg_sell_wall) / total_wall
             wall_score = imbalance * 5.0
             score += wall_score
 
@@ -138,8 +142,12 @@ class BinanceOracle:
                     while True:
                         msg = await ws.recv()
                         data = json.loads(msg)
+                        # 更新实时值
                         self.buy_wall = sum(float(b[1]) for b in data['bids'])
                         self.sell_wall = sum(float(a[1]) for a in data['asks'])
+                        # 推入历史记录（用于平滑）
+                        self.buy_wall_history.append(self.buy_wall)
+                        self.sell_wall_history.append(self.sell_wall)
             except Exception as e:
                 print(f"[ORACLE] Depth断线: {e}，3秒后重连...")
                 await asyncio.sleep(3)
@@ -148,16 +156,19 @@ class BinanceOracle:
         """每2秒打印一次状态"""
         while True:
             await asyncio.sleep(2)
-            total_wall = self.buy_wall + self.sell_wall
-            imbalance = (self.buy_wall - self.sell_wall) / total_wall if total_wall > 0 else 0.0
+            # 使用平滑后的盘口值
+            avg_buy = sum(self.buy_wall_history) / len(self.buy_wall_history) if self.buy_wall_history else self.buy_wall
+            avg_sell = sum(self.sell_wall_history) / len(self.sell_wall_history) if self.sell_wall_history else self.sell_wall
+            total_wall = avg_buy + avg_sell
+            imbalance = (avg_buy - avg_sell) / total_wall if total_wall > 0 else 0.0
             score = self.last_signal_score
             now = datetime.now().strftime("%H:%M:%S")
             color = "\033[92m" if score > 0 else "\033[91m"
             reset = "\033[0m"
             print(f"[{now}] 🔮 先知 | 分数: {color}{score:+.2f}{reset} | "
                   f"CVD(15m): {color}{self.cvd:+.1f} USD{reset} | "
-                  f"盘口失衡: {imbalance*100:+.1f}% | "
-                  f"买墙: {self.buy_wall:.1f} / 卖墙: {self.sell_wall:.1f} | "
+                  f"盘口失衡(平滑): {imbalance*100:+.1f}% | "
+                  f"买墙: {avg_buy:.1f} / 卖墙: {avg_sell:.1f} | "
                   f"BTC: {self.last_price:.1f}")
 
     async def run(self):
