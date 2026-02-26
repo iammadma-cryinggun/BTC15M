@@ -897,7 +897,8 @@ class AutoTraderV5:
                     
     def init_database(self):
         # 支持通过环境变量配置数据目录（用于Zeabur持久化存储）
-        data_dir = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        # 默认使用 /app/data (Zeabur持久化卷)，如果环境变量未设置则使用当前目录
+        data_dir = os.getenv('DATA_DIR', '/app/data')
         self.db_path = os.path.join(data_dir, 'btc_15min_auto_trades.db')
 
         # 确保数据目录存在

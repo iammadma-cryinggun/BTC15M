@@ -49,7 +49,16 @@ class PolymarketPredictionLearning:
     """Polymarket预测学习系统"""
 
     def __init__(self, db_path='btc_15min_predictionsv2.db', current_params=None):
-        self.db_path = db_path
+        # 🔧 支持环境变量配置数据目录（用于Zeabur持久化存储）
+        import os
+        data_dir = os.getenv('DATA_DIR', '/app/data')
+        if db_path == 'btc_15min_predictionsv2.db':
+            # 使用默认路径时，放到持久化目录
+            self.db_path = os.path.join(data_dir, 'btc_15min_predictionsv2.db')
+        else:
+            # 自定义路径保持不变
+            self.db_path = db_path
+
         self.current_params = current_params or {
             'min_confidence': 0.30,
             'min_long_score': 2.5,
