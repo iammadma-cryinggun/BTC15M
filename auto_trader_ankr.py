@@ -3050,6 +3050,14 @@ class AutoTraderV5:
                     if pos_current_price >= tp_target_price:
                         print(f"       [LOCAL TP] 触发本地止盈！当前价 {pos_current_price:.4f} >= 目标 {tp_target_price:.4f}")
 
+                        # 🔥 状态锁：立即更新数据库状态为 'closing'，防止重复触发
+                        try:
+                            cursor.execute("UPDATE positions SET status = 'closing' WHERE id = ?", (pos_id,))
+                            conn.commit()
+                            print(f"       [LOCAL TP] 🔒 状态已锁为 'closing'，防止重复触发")
+                        except Exception as lock_e:
+                            print(f"       [LOCAL TP] ⚠️ 状态锁失败: {lock_e}")
+
                         # 🔥 关键修复：先查询止盈单状态，再决定是否撤销
                         # 避免撤销已成交的订单导致状态变成CANCELED，误判为"市场归零"
                         tp_already_filled = False
@@ -3164,6 +3172,14 @@ class AutoTraderV5:
                         print(f"       [LOCAL SL] 触发本地止损！当前价 {pos_current_price:.4f} <= 止损线 {sl_price:.4f}")
                         time_remaining = f"{int(seconds_left)}s" if seconds_left else "未知"
                         print(f"       [LOCAL SL] ⏰ 市场剩余 {time_remaining}，立即执行止损保护")
+
+                        # 🔥 状态锁：立即更新数据库状态为 'closing'，防止重复触发
+                        try:
+                            cursor.execute("UPDATE positions SET status = 'closing' WHERE id = ?", (pos_id,))
+                            conn.commit()
+                            print(f"       [LOCAL SL] 🔒 状态已锁为 'closing'，防止重复触发")
+                        except Exception as lock_e:
+                            print(f"       [LOCAL SL] ⚠️ 状态锁失败: {lock_e}")
 
                         # 🔥 关键修复：先查询止盈单状态，避免撤销已成交订单导致误判
                         tp_already_filled = False
