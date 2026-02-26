@@ -20,12 +20,10 @@ try:
     print()
 
     # 连接数据库
-    # 🔧 支持环境变量配置数据目录（与prediction_learning_polymarket.py保持一致）
-    data_dir = os.getenv('DATA_DIR', None)
-    if data_dir:
-        db_path = os.path.join(data_dir, 'btc_15min_predictionsv2.db')
-    else:
-        db_path = 'btc_15min_predictionsv2.db'
+    # 🔧 支持环境变量配置数据目录（与auto_trader_ankr.py保持一致）
+    # 默认使用/app/data（Zeabur持久化卷），如果环境变量未设置则使用当前目录
+    data_dir = os.getenv('DATA_DIR', '/app/data')
+    db_path = os.path.join(data_dir, 'btc_15min_predictionsv2.db')
 
     if not os.path.exists(db_path):
         print(f"ℹ️  学习数据库尚不存在（新部署正常情况）")

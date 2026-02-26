@@ -53,16 +53,14 @@ class PolymarketPredictionLearning:
         import os
         import sys
 
-        data_dir = os.getenv('DATA_DIR', None)
+        # 🔥 修复：与auto_trader_ankr.py保持一致，默认使用/app/data
+        data_dir = os.getenv('DATA_DIR', '/app/data')
 
         if db_path == 'btc_15min_predictionsv2.db':
-            # 使用默认路径时，根据环境决定
-            if data_dir:
-                # Zeabur环境：使用持久化目录
-                self.db_path = os.path.join(data_dir, 'btc_15min_predictionsv2.db')
-            else:
-                # 本地开发环境：使用当前目录
-                self.db_path = db_path
+            # 使用默认路径时，使用data_dir（Zeabur上为/app/data，本地为当前目录）
+            self.db_path = os.path.join(data_dir, 'btc_15min_predictionsv2.db')
+            # 确保目录存在
+            os.makedirs(data_dir, exist_ok=True)
         else:
             # 自定义路径保持不变
             self.db_path = db_path
