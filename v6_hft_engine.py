@@ -63,6 +63,9 @@ class V6HFTEngine:
         # 🔒 状态锁：防止并发幽灵（重复下单）
         self._processing_orders = set()  # 正在处理中的订单/动作集合
 
+        # 🛡️ GC防护：抓住后台任务，防止被垃圾回收器提前销毁
+        self._background_tasks = set()  # 存储所有活跃的后台Task
+
         # 加载动态参数（与V5保持一致）
         self.v5.load_dynamic_params()
 
@@ -429,6 +432,10 @@ class V6HFTEngine:
 
                     task = asyncio.create_task(task_with_unlock())
 
+                    # 🛡️ GC防护：抓住任务，防止被提前回收
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+
                     # 立即更新统计（不等待下单完成）
                     self.v5.stats['total_trades'] += 1
                     self.v5.stats['daily_trades'] += 1
@@ -455,7 +462,10 @@ class V6HFTEngine:
                         finally:
                             self._processing_orders.discard(action_key)
 
-                    asyncio.create_task(learning_task_with_unlock())
+                    # 🛡️ GC防护：抓住任务，防止被提前回收
+                    task = asyncio.create_task(learning_task_with_unlock())
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
 
     async def check_positions(self):
         """检查持仓止盈止损（复用V5逻辑）- 异步模式"""
@@ -479,7 +489,10 @@ class V6HFTEngine:
                 finally:
                     self._processing_orders.discard(action_key)
 
-            asyncio.create_task(positions_task_with_unlock())
+            # 🛡️ GC防护：抓住任务，防止被提前回收
+            task = asyncio.create_task(positions_task_with_unlock())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
     async def verify_predictions(self):
         """验证待验证的预测（修复：只调用一次，避免重复验证）- 异步模式"""
@@ -501,7 +514,10 @@ class V6HFTEngine:
             finally:
                 self._processing_orders.discard(action_key)
 
-        asyncio.create_task(verify_task_with_unlock())
+        # 🛡️ GC防护：抓住任务，防止被提前回收
+        task = asyncio.create_task(verify_task_with_unlock())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def auto_adjust(self):
         """定期自动调整参数（复用V5逻辑）- 异步模式"""
@@ -523,7 +539,10 @@ class V6HFTEngine:
             finally:
                 self._processing_orders.discard(action_key)
 
-        asyncio.create_task(adjust_task_with_unlock())
+        # 🛡️ GC防护：抓住任务，防止被提前回收
+        task = asyncio.create_task(adjust_task_with_unlock())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def websocket_loop(self):
         """WebSocket主循环"""
@@ -632,7 +651,10 @@ class V6HFTEngine:
                                     finally:
                                         self._processing_orders.discard(action_key)
 
-                                asyncio.create_task(cleanup_task_with_unlock())
+                                # 🛡️ GC防护：抓住任务，防止被提前回收
+                                task = asyncio.create_task(cleanup_task_with_unlock())
+                                self._background_tasks.add(task)
+                                task.add_done_callback(self._background_tasks.discard)
 
                             last_cleanup_check = now
 
