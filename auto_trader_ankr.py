@@ -3684,10 +3684,9 @@ class AutoTraderV5:
                         stats = self.learning_system.get_accuracy_stats(hours=24)
                         if stats['total'] > 0:
                             print(f"       [LEARNING] 准确率: {stats['accuracy']:.1f}% ({stats['total']}次)")
-
-                    if i % 50 == 0:
-                        print()
-                        self.print_learning_reports()
+                            # 每10次迭代也输出详细报告
+                            print()
+                            self.print_learning_reports()
 
                     # 验证待验证的预测（每10次迭代检查一次）
                     if i % 10 == 0:
