@@ -344,13 +344,14 @@ class PositionManager:
     def __init__(self, balance_usdc: float):
         self.balance = balance_usdc
 
-    def calculate_position(self, confidence: float, score: float = 0.0) -> float:
+    def calculate_position(self, confidence: float, score: float = 0.0, ut_bot_neutral: bool = False) -> float:
         """
         智能动态仓位：根据信号强度（score）自动调整
 
         Args:
             confidence: 置信度（0-1）
             score: 信号分数（-10到+10）
+            ut_bot_neutral: UT Bot趋势是否中性（True时限制为基础仓位）
 
         Returns:
             实际下单金额（USDC）
@@ -363,21 +364,26 @@ class PositionManager:
         # 基础仓位：15%
         base = self.balance * 0.15
 
-        # 🎯 根据信号分数分段调整（方案A：智能分段）
-        abs_score = abs(score)
-
-        if abs_score >= 6.0:
-            # 🔥 超强信号：30%
-            multiplier = 2.0
-        elif abs_score >= 4.5:
-            # 💪 强信号：25%
-            multiplier = 1.67
-        elif abs_score >= 3.5:
-            # 👌 中等信号：20%
-            multiplier = 1.33
-        else:
-            # ⚠️ 弱信号：15%
+        # 🛡️ UT Bot中性时强制基础仓位（不应用信号强度加成）
+        if ut_bot_neutral:
+            print(f"       [POSITION] ⚠️ UT Bot中性，仓位限制为基础15%（风控保护）")
             multiplier = 1.0
+        else:
+            # 🎯 根据信号分数分段调整（方案A：智能分段）
+            abs_score = abs(score)
+
+            if abs_score >= 6.0:
+                # 🔥 超强信号：30%
+                multiplier = 2.0
+            elif abs_score >= 4.5:
+                # 💪 强信号：25%
+                multiplier = 1.67
+            elif abs_score >= 3.5:
+                # 👌 中等信号：20%
+                multiplier = 1.33
+            else:
+                # ⚠️ 弱信号：15%
+                multiplier = 1.0
 
         # 结合confidence微调（±10%）
         confidence_adj = 0.9 + (confidence * 0.2)  # 0.9 - 1.1
@@ -1512,6 +1518,9 @@ class AutoTraderV5:
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
             print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | UT+Hull: {ut_hull_trend} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
 
+            # 🛡️ UT Bot中性时的仓位限制：降低为最低仓位
+            ut_bot_neutral = (ut_hull_trend == 'NEUTRAL')
+
             # 双重确认逻辑：UT Bot 趋势必须与 Oracle 信号方向一致
             if ut_hull_trend != 'NEUTRAL':
                 # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
@@ -1525,7 +1534,7 @@ class AutoTraderV5:
                 else:
                     print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与Oracle({score:+.2f})一致")
             else:
-                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仅使用Oracle信号")
+                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仅使用Oracle信号，仓位限制为15%")
 
         # ======================================================
 
@@ -1563,6 +1572,7 @@ class AutoTraderV5:
                 'price': price,
                 'components': components,
                 'oracle_score': oracle_score,
+                'ut_bot_neutral': ut_bot_neutral,  # 🛡️ 标记UT Bot是否中性（用于仓位限制）
             }
         return None
 
@@ -2627,7 +2637,12 @@ class AutoTraderV5:
                 return None
             self.position_mgr.balance = fresh_usdc
             # 🎯 智能动态仓位：根据信号强度自动调整（15%-30%）
-            position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
+            # 🛡️ UT Bot中性时限制为基础15%仓位
+            position_value = self.position_mgr.calculate_position(
+                signal['confidence'],
+                signal['score'],
+                ut_bot_neutral=signal.get('ut_bot_neutral', False)
+            )
 
             if not self.position_mgr.can_afford(position_value):
                 print(f"       [RISK] Cannot afford {position_value:.2f}")
