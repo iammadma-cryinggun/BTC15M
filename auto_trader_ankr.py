@@ -1980,34 +1980,29 @@ class AutoTraderV5:
             # LONG平仓卖YES，SHORT平仓卖NO
             token_id = str(token_ids[0] if side == 'LONG' else token_ids[1])
 
-            # 止盈计算
-            # ✅ 修改后：彻底解除 1U 封印，独立计算 30% 止盈
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 获取止盈专属参数，默认 30%
-            tp_target_price = entry_price * (1 + tp_pct_max)          # 严格执行目标止盈价
+            # --- 止盈计算 ---
+            # ✅ 彻底解除 1U 封印，独立计算 30% 止盈
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  
+            tp_target_price = entry_price * (1 + tp_pct_max)          
             
-            # 🛡️ 极限价格保护：Polymarket 的最高挂单价不能超过 0.99
-            tp_target_price = min(tp_target_price, 0.99)
+            # 🛡️ 极限价格保护 + 精度控制（保留2位小数，最高不超过0.99）
+            tp_target_price = round(min(tp_target_price, 0.99), 2)
 
-            # 止损计算
-            # ✅ 修改后：彻底删除 1U 限制，使用纯百分比，并为滑点预留空间
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)  # 默认改为 20% 触发（实盘防滑点）
-            sl_target_price = entry_price * (1 - sl_pct_max)  # 纯粹的百分比止损线
+            # --- 止损计算 ---
+            # ✅ 彻底删除 1U 限制，默认 20% 触发（实盘防滑点）
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)  
+            sl_target_price = entry_price * (1 - sl_pct_max)  
+            
+            # 🛡️ 极限价格保护 + 精度控制（保留2位小数，最低不低于0.01）
+            sl_target_price = round(max(sl_target_price, 0.01), 2)
 
-            # 🛡️ 极限价格保护：止损底线兜底（虽然数学上不会小于0，但防一手极端归零）
-            sl_target_price = max(sl_target_price, 0.01)
-
-            # 计算实际止盈止损百分比
+            # --- 计算实际止盈止损百分比 ---
             actual_tp_pct = (tp_target_price - entry_price) / entry_price
             actual_sl_pct = (entry_price - sl_target_price) / entry_price
 
+            # --- 打印完美日志 ---
             print(f"       [STOP ORDERS] entry={entry_price:.4f}, size={size}, value={value_usdc:.4f}")
-            print(f"       [STOP ORDERS] tp={tp_target_price:.4f} (止盈{actual_tp_pct:.1%}), sl={sl_target_price:.4f} (止损{actual_sl_pct:.1%})")
-
-            # 🛡️ 极限价格保护 + 精度控制（保留2位小数，符合Polymarket规则）
-            tp_target_price = round(min(tp_target_price, 0.99), 2)
-            
-            # ... 下面算完 sl_target_price 后：
-            sl_target_price = round(max(sl_target_price, 0.01), 2)
+            print(f"       [STOP ORDERS] tp={tp_target_price:.2f} (止盈{actual_tp_pct:.1%}), sl={sl_target_price:.2f} (止损{actual_sl_pct:.1%})")
 
             # 确保价格在 Polymarket 有效范围内，精度对齐 tick_size
             # 从市场数据获取 tick_size（默认 0.01）
