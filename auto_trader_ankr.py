@@ -69,8 +69,8 @@ CONFIG = {
 
     'risk': {
         'base_position_pct': 0.10,      # 🔥 基础仓位10%（对应6手≈3U≈总资金10%）
-        'max_position_pct': 0.30,       # 🔥 最高仓位30%（信号很强时）
-        'max_total_exposure_pct': 0.60,  # 同一窗口累计持仓上限60%
+        'max_position_pct': 0.30,       # 🔥 单笔最高仓位30%（信号很强时）
+        'max_total_exposure_pct': 0.30,  # 🔥 同一窗口累计持仓上限30%（关键风控）
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
@@ -401,20 +401,19 @@ class PositionManager:
                 print(f"       [POSITION] ⚠️ Oracle反向({oracle_score:+.1f})，使用本地信号强度: {abs_score:.1f}")
 
             # 🎯 根据综合信号分数分段调整
+            # 4.0是开仓门槛，刚好达到时开最小仓位
+            # Oracle越强，信号强度越大，仓位越大
             if abs_score >= 7.0:
-                # 🔥 信号很强：30%
+                # 🔥 信号很强：30%（Oracle强烈确认）
                 multiplier = 3.0
-            elif abs_score >= 5.5:
-                # 💪 信号强：25%
-                multiplier = 2.5
-            elif abs_score >= 4.0:
-                # 👌 信号中等：20%
+            elif abs_score >= 5.0:
+                # 💪 信号较强：20%（Oracle较好确认）
                 multiplier = 2.0
-            elif abs_score >= 3.0:
-                # ⚠️ 信号弱：15%
-                multiplier = 1.5
+            elif abs_score >= 4.0:
+                # 👌 刚好达到门槛：10%（基础仓位）
+                multiplier = 1.0
             else:
-                # 🔻 信号很弱：10%（最低）
+                # 🔻 低于门槛：不应该触发
                 multiplier = 1.0
 
         # 结合confidence微调（±10%）
