@@ -23,10 +23,11 @@ try:
     db_path = 'btc_15min_predictionsv2.db'
 
     if not os.path.exists(db_path):
-        print(f"❌ 数据库文件不存在: {db_path}")
+        print(f"ℹ️  学习数据库尚不存在（新部署正常情况）")
+        print(f"   预期路径: {db_path}")
         print(f"   当前目录: {os.getcwd()}")
-        print(f"   文件列表: {os.listdir('.')}")
-        sys.exit(1)
+        print(f"   将在首次预测时自动创建")
+        sys.exit(0)  # 返回0而不是1，这是正常情况
 
     file_size = os.path.getsize(db_path)
     print(f"📁 数据库: {db_path} ({file_size} bytes)")
@@ -38,8 +39,9 @@ try:
     # 检查表是否存在
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='predictions'")
     if not cursor.fetchone():
-        print("❌ predictions表不存在，数据库可能是空的")
-        sys.exit(1)
+        print("ℹ️  predictions表尚不存在（首次运行时会自动创建）")
+        conn.close()
+        sys.exit(0)  # 返回0而不是1，这是正常情况
 
     # 统计数据
     cursor.execute('SELECT COUNT(*) FROM predictions')
