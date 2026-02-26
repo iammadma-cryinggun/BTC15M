@@ -56,6 +56,10 @@ class V6HFTEngine:
         print("\n[INFO] V5组件初始化完成，WebSocket连接准备中...\n")
         self._patch_v5_order_book()
 
+        # 🚀 Fire-and-Forget：异步任务跟踪
+        self.pending_tasks = []  # 跟踪后台任务
+        self.completed_tasks = 0  # 完成的任务计数
+
         # 加载动态参数（与V5保持一致）
         self.v5.load_dynamic_params()
 
@@ -109,6 +113,63 @@ class V6HFTEngine:
         self.no_best_ask = None
         self._last_indicator_update = 0
         print("[SWITCH] 价格缓存已重置")
+
+    async def _async_fire_and_forget(self, func, *args, task_name: str = "后台任务"):
+        """
+        🚀 后台异步任务包装器：Fire-and-Forget 模式
+
+        在子线程中执行同步代码（如 py_clob_client SDK），
+        主WebSocket循环完全不阻塞，继续监听价格更新
+
+        Args:
+            func: 要执行的同步函数
+            *args: 函数参数
+            task_name: 任务名称（用于日志）
+        """
+        try:
+            # 🚀 关键：使用 asyncio.to_thread 在后台线程执行
+            # 主循环立即返回，继续监听WebSocket！
+            result = await asyncio.to_thread(func, *args)
+
+            # 后台任务完成，记录结果
+            self.completed_tasks += 1
+            print(f"       [后台捷报] ✅ {task_name}执行成功")
+            return result
+        except Exception as e:
+            print(f"       [后台警报] ❌ {task_name}执行失败: {str(e)[:100]}")
+            return None
+
+    async def _async_execute_trade(self, func, *args, task_name: str = "交易任务"):
+        """
+        🚀 后台执行完整交易流程：下单 + 记录
+
+        Args:
+            func: 下单函数
+            *args: 下单参数
+            task_name: 任务名称
+        """
+        try:
+            # 步骤1：后台下单（不阻塞主循环）
+            order_result = await asyncio.to_thread(func, *args)
+            self.completed_tasks += 1
+
+            if order_result:
+                print(f"       [后台捷报] 🚀 {task_name}成功: {order_result.get('orderId', 'N/A')[:8]}")
+
+                # 步骤2：后台记录交易（不阻塞主循环）
+                market = args[0]  # self.current_market
+                signal = args[1]  # signal
+
+                await asyncio.to_thread(
+                    self.v5.record_trade,
+                    market, signal, order_result, False
+                )
+                print(f"       [后台捷报] ✅ 交易记录已保存")
+            else:
+                print(f"       [后台警报] ⚠️  {task_name}失败: 返回空结果")
+
+        except Exception as e:
+            print(f"       [后台警报] ❌ {task_name}异常: {str(e)[:150]}")
 
     async def fetch_market_info_via_rest(self):
         # 尝试当前窗口，过期则尝试下一个
@@ -340,54 +401,67 @@ class V6HFTEngine:
 
             if can_trade:
                 print(f"[TRADE] 风控通过: {reason}")
-                loop = asyncio.get_running_loop()
+                print(f"[TRADE] 🚀 发射后台下单任务（0延迟）...")
 
-                # 下单（线程池，避免阻塞WebSocket）
-                order_result = await loop.run_in_executor(
-                    self.executor, self.v5.place_order, self.current_market, signal
+                # 🚀 关键优化：Fire-and-Forget 模式
+                # 下单不阻塞，主循环立即继续监听WebSocket！
+                task = asyncio.create_task(
+                    self._async_execute_trade(
+                        self.v5.place_order, self.current_market, signal,
+                        task_name="下单"
+                    )
                 )
 
-                # 记录交易
-                await loop.run_in_executor(
-                    self.executor, self.v5.record_trade,
-                    self.current_market, signal, order_result, False
-                )
-
-                # 更新统计
+                # 立即更新统计（不等待下单完成）
                 self.v5.stats['total_trades'] += 1
                 self.v5.stats['daily_trades'] += 1
                 self.v5.stats['last_trade_time'] = datetime.now()
                 self.v5.last_traded_market = self.current_market.get('slug', '')
-
-                # 修复：更新V6自己的冷却时间戳
                 self.last_trade_time = time.time()
+
+                print(f"[TRADE] ✅ 下单任务已发射，WebSocket继续监听（0阻塞）")
 
             else:
                 print(f"[BLOCK] 风控拦截: {reason}")
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    self.executor, self.v5.record_prediction_learning,
-                    self.current_market, signal, None, True
+                # 🚀 Fire-and-Forget：异步记录学习
+                asyncio.create_task(
+                    self._async_fire_and_forget(
+                        self.v5.record_prediction_learning,
+                        self.current_market, signal, None, True,
+                        task_name="记录学习数据"
+                    )
                 )
 
     async def check_positions(self):
-        """检查持仓止盈止损（复用V5逻辑）"""
+        """检查持仓止盈止损（复用V5逻辑）- 异步模式"""
         if self.current_price:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                self.executor, self.v5.check_positions, self.current_price
+            # 🚀 Fire-and-Forget：不阻塞WebSocket
+            asyncio.create_task(
+                self._async_fire_and_forget(
+                    self.v5.check_positions, self.current_price,
+                    task_name="检查持仓"
+                )
             )
 
     async def verify_predictions(self):
-        """验证待验证的预测（修复：只调用一次，避免重复验证）"""
-        loop = asyncio.get_running_loop()
-        # 只通过v5.verify_pending_predictions调用，内部已包含learning_system调用
-        await loop.run_in_executor(self.executor, self.v5.verify_pending_predictions)
+        """验证待验证的预测（修复：只调用一次，避免重复验证）- 异步模式"""
+        # 🚀 Fire-and-Forget：不阻塞WebSocket
+        asyncio.create_task(
+            self._async_fire_and_forget(
+                self.v5.verify_pending_predictions,
+                task_name="验证预测"
+            )
+        )
 
     async def auto_adjust(self):
-        """定期自动调整参数（复用V5逻辑）"""
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(self.executor, self.v5.auto_adjust_parameters)
+        """定期自动调整参数（复用V5逻辑）- 异步模式"""
+        # 🚀 Fire-and-Forget：不阻塞WebSocket
+        asyncio.create_task(
+            self._async_fire_and_forget(
+                self.v5.auto_adjust_parameters,
+                task_name="自动调整参数"
+            )
+        )
 
     async def websocket_loop(self):
         """WebSocket主循环"""
@@ -480,8 +554,13 @@ class V6HFTEngine:
 
                         # 每5分钟清理过期持仓
                         if now - last_cleanup_check >= 300:
-                            loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(self.executor, self.v5.cleanup_stale_positions)
+                            # 🚀 Fire-and-Forget：异步清理，不阻塞WebSocket
+                            asyncio.create_task(
+                                self._async_fire_and_forget(
+                                    self.v5.cleanup_stale_positions,
+                                    task_name="清理过期持仓"
+                                )
+                            )
                             last_cleanup_check = now
 
                         # 检查是否需要切换市场
