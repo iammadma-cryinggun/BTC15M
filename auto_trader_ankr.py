@@ -2003,6 +2003,12 @@ class AutoTraderV5:
             print(f"       [STOP ORDERS] entry={entry_price:.4f}, size={size}, value={value_usdc:.4f}")
             print(f"       [STOP ORDERS] tp={tp_target_price:.4f} (止盈{actual_tp_pct:.1%}), sl={sl_target_price:.4f} (止损{actual_sl_pct:.1%})")
 
+            # 🛡️ 极限价格保护 + 精度控制（保留2位小数，符合Polymarket规则）
+            tp_target_price = round(min(tp_target_price, 0.99), 2)
+            
+            # ... 下面算完 sl_target_price 后：
+            sl_target_price = round(max(sl_target_price, 0.01), 2)
+
             # 确保价格在 Polymarket 有效范围内，精度对齐 tick_size
             # 从市场数据获取 tick_size（默认 0.01）
             tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
