@@ -3022,51 +3022,84 @@ class AutoTraderV5:
                     if pos_current_price >= tp_target_price:
                         print(f"       [LOCAL TP] 触发本地止盈！当前价 {pos_current_price:.4f} >= 目标 {tp_target_price:.4f}")
 
-                        # 撤销原有的止盈单（如果存在）
+                        # 🔥 关键修复：先查询止盈单状态，再决定是否撤销
+                        # 避免撤销已成交的订单导致状态变成CANCELED，误判为"市场归零"
+                        tp_already_filled = False
+                        tp_filled_price = None
+
                         if tp_order_id:
                             try:
-                                self.cancel_order(tp_order_id)
-                                print(f"       [LOCAL TP] 已撤销原止盈单 {tp_order_id[-8:]}")
-                            except:
-                                pass
+                                tp_order_info = self.client.get_order(tp_order_id)
+                                if tp_order_info:
+                                    tp_status = tp_order_info.get('status', '').upper()
+                                    matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                    if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                        tp_already_filled = True
+                                        avg_p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
+                                        if avg_p:
+                                            parsed = float(avg_p)
+                                            if 0.01 <= parsed <= 0.99:
+                                                tp_filled_price = parsed
+                                        print(f"       [LOCAL TP] ✅ 检测到止盈单已成交 status={tp_status} @ {tp_filled_price or 'unknown'}")
+                                    else:
+                                        print(f"       [LOCAL TP] 📋 止盈单未成交(status={tp_status})，准备撤销并市价平仓")
+                            except Exception as e:
+                                print(f"       [LOCAL TP] ⚠️ 查询止盈单状态失败: {e}，继续尝试撤销")
 
-                        # 市价平仓
-                        close_market = self.get_market_data()
-                        if close_market:
-                            close_order_id = self.close_position(close_market, side, size)
+                        # 如果止盈单已成交，直接记录盈利
+                        if tp_already_filled:
+                            exit_reason = 'AUTO_CLOSED_OR_MANUAL'
+                            actual_exit_price = tp_filled_price if tp_filled_price else pos_current_price
+                            print(f"       [LOCAL TP] 🎉 止盈单已成交，无需市价平仓")
+                        else:
+                            # 止盈单未成交，撤销后市价平仓
+                            if tp_order_id:
+                                try:
+                                    self.cancel_order(tp_order_id)
+                                    print(f"       [LOCAL TP] 已撤销原止盈单 {tp_order_id[-8:]}")
+                                except:
+                                    pass
 
-                            # 💡 增加识别 "NO_BALANCE" 的逻辑
-                            if close_order_id == "NO_BALANCE":
-                                # 🔍 关键修复：余额为0不代表止盈成交，必须查止盈单实际状态
-                                # 场景A：止盈限价单成交 → 正收益 ✅
-                                # 场景B：止盈限价单锁住token，市场到期归零 → 亏损 ❌
-                                tp_actually_filled = False
-                                tp_filled_price = None
-                                if tp_order_id:
-                                    try:
-                                        tp_order_info = self.client.get_order(tp_order_id)
-                                        if tp_order_info:
-                                            tp_status = tp_order_info.get('status', '').upper()
-                                            matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
-                                            if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
-                                                tp_actually_filled = True
-                                                p = tp_order_info.get('price')
-                                                if p is not None:
-                                                    tp_filled_price = float(p)
-                                                print(f"       [LOCAL TP] ✅ 确认止盈单已成交 status={tp_status} price={tp_filled_price}")
-                                            else:
-                                                print(f"       [LOCAL TP] ❌ 止盈单未成交(status={tp_status})，余额为0是因为市场到期归零！")
-                                    except Exception as e:
-                                        print(f"       [LOCAL TP] 查询止盈单状态失败: {e}，保守处理为归零")
+                            # 市价平仓
+                            close_market = self.get_market_data()
+                            if close_market:
+                                close_order_id = self.close_position(close_market, side, size)
 
-                                if tp_actually_filled:
-                                    exit_reason = 'AUTO_CLOSED_OR_MANUAL'
-                                    actual_exit_price = tp_filled_price if tp_filled_price else pos_current_price
-                                else:
-                                    # 市场到期归零，真实亏损
-                                    exit_reason = 'MARKET_SETTLED'
-                                    actual_exit_price = 0.0  # 归零，PnL = 0 - value_usdc = 全亏
-                                    print(f"       [LOCAL TP] 💀 仓位已归零，记录真实亏损")
+                                # 💡 增加识别 "NO_BALANCE" 的逻辑
+                                if close_order_id == "NO_BALANCE":
+                                    # 🔍 再次确认：撤销后仍为NO_BALANCE，可能是真的市场归零
+                                    # 或者止盈单在撤销操作期间成交了
+                                    tp_actually_filled = False
+                                    tp_check_price = None
+                                    if tp_order_id:
+                                        try:
+                                            time.sleep(1)  # 等待1秒让链上状态同步
+                                            tp_order_info = self.client.get_order(tp_order_id)
+                                            if tp_order_info:
+                                                tp_status = tp_order_info.get('status', '').upper()
+                                                matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                                if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                                    tp_actually_filled = True
+                                                    p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
+                                                    if p:
+                                                        parsed = float(p)
+                                                        if 0.01 <= parsed <= 0.99:
+                                                            tp_check_price = parsed
+                                                    print(f"       [LOCAL TP] ✅ 复查确认止盈单已成交 status={tp_status}")
+                                                else:
+                                                    print(f"       [LOCAL TP] ❌ 止盈单未成交(status={tp_status})，可能是市场到期归零")
+                                        except Exception as e:
+                                            print(f"       [LOCAL TP] ⚠️ 复查止盈单状态失败: {e}")
+
+                                    if tp_actually_filled:
+                                        exit_reason = 'AUTO_CLOSED_OR_MANUAL'
+                                        actual_exit_price = tp_check_price if tp_check_price else pos_current_price
+                                        print(f"       [LOCAL TP] 🎉 止盈单在撤销期间成交，使用成交价: {actual_exit_price:.4f}")
+                                    else:
+                                        # 真正的市场归零
+                                        exit_reason = 'MARKET_SETTLED'
+                                        actual_exit_price = 0.0
+                                        print(f"       [LOCAL TP] 💀 确认市场归零，记录真实亏损")
                             elif close_order_id:
                                 exit_reason = 'TAKE_PROFIT_LOCAL'
                                 triggered_order_id = close_order_id
@@ -3103,50 +3136,81 @@ class AutoTraderV5:
                         time_remaining = f"{int(seconds_left)}s" if seconds_left else "未知"
                         print(f"       [LOCAL SL] ⏰ 市场剩余 {time_remaining}，立即执行止损保护")
 
-                        # 先撤止盈单，释放token（等待3秒让余额解冻）
+                        # 🔥 关键修复：先查询止盈单状态，避免撤销已成交订单导致误判
+                        tp_already_filled = False
+                        tp_filled_price = None
+
                         if tp_order_id:
-                            print(f"       [LOCAL SL] 撤销止盈单 {tp_order_id[-8:]}...")
-                            self.cancel_order(tp_order_id)
-                            time.sleep(3)  # 等待链上余额解冻，避免误判NO_BALANCE
+                            try:
+                                tp_order_info = self.client.get_order(tp_order_id)
+                                if tp_order_info:
+                                    tp_status = tp_order_info.get('status', '').upper()
+                                    matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                    if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                        tp_already_filled = True
+                                        avg_p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
+                                        if avg_p:
+                                            parsed = float(avg_p)
+                                            if 0.01 <= parsed <= 0.99:
+                                                tp_filled_price = parsed
+                                        print(f"       [LOCAL SL] ✅ 检测到止盈单已成交 status={tp_status} @ {tp_filled_price or 'unknown'}")
+                                    else:
+                                        print(f"       [LOCAL SL] 📋 止盈单未成交，准备撤销")
+                            except Exception as e:
+                                print(f"       [LOCAL SL] ⚠️ 查询止盈单状态失败: {e}")
 
-                        # 市价平仓（止损模式，直接砸单不防插针）
-                        close_market = market if market else self.get_market_data()
-                        if close_market:
-                            close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price)
+                        # 如果止盈单已成交，直接记录盈利（止损前已止盈）
+                        if tp_already_filled:
+                            exit_reason = 'AUTO_CLOSED_OR_MANUAL'
+                            actual_exit_price = tp_filled_price if tp_filled_price else pos_current_price
+                            print(f"       [LOCAL SL] 🎉 止盈单已成交，无需止损平仓")
+                        else:
+                            # 止盈单未成交，撤销并执行止损
+                            if tp_order_id:
+                                print(f"       [LOCAL SL] 撤销止盈单 {tp_order_id[-8:]}...")
+                                self.cancel_order(tp_order_id)
+                                time.sleep(3)  # 等待链上余额解冻，避免误判NO_BALANCE
 
-                            # 💡 增加识别 "NO_BALANCE" 的逻辑
-                            if close_order_id == "NO_BALANCE":
-                                # 🔍 关键修复：止损时余额为0，同样需要区分两种情况
-                                # 场景A：止盈限价单已提前成交（好事）
-                                # 场景B：市场到期归零（坏事）
-                                tp_actually_filled = False
-                                tp_filled_price = None
-                                if tp_order_id:
-                                    try:
-                                        tp_order_info = self.client.get_order(tp_order_id)
-                                        if tp_order_info:
-                                            tp_status = tp_order_info.get('status', '').upper()
-                                            matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
-                                            if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
-                                                tp_actually_filled = True
-                                                avg_p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
-                                                if avg_p:
-                                                    parsed = float(avg_p)
-                                                    if 0.01 <= parsed <= 0.99:
-                                                        tp_filled_price = parsed
-                                                print(f"       [LOCAL SL] ✅ 止盈单已提前成交 status={tp_status}，非归零")
-                                            else:
-                                                print(f"       [LOCAL SL] ❌ 止盈单未成交(status={tp_status})，市场到期归零！")
-                                    except Exception as e:
-                                        print(f"       [LOCAL SL] 查询止盈单状态失败: {e}，保守处理为归零")
+                            # 市价平仓（止损模式，直接砸单不防插针）
+                            close_market = market if market else self.get_market_data()
+                            if close_market:
+                                close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price)
 
-                                if tp_actually_filled:
-                                    exit_reason = 'AUTO_CLOSED_OR_MANUAL'
-                                    actual_exit_price = tp_filled_price if tp_filled_price else pos_current_price
-                                else:
-                                    exit_reason = 'MARKET_SETTLED'
-                                    actual_exit_price = 0.0
-                                    print(f"       [LOCAL SL] 💀 仓位已归零，记录真实亏损")
+                                # 💡 增加识别 "NO_BALANCE" 的逻辑
+                                if close_order_id == "NO_BALANCE":
+                                    # 🔍 再次确认：撤销后仍为NO_BALANCE，可能是真的市场归零
+                                    # 或者止盈单在撤销操作期间成交了
+                                    tp_actually_filled = False
+                                    tp_check_price = None
+                                    if tp_order_id:
+                                        try:
+                                            time.sleep(1)  # 等待1秒让链上状态同步
+                                            tp_order_info = self.client.get_order(tp_order_id)
+                                            if tp_order_info:
+                                                tp_status = tp_order_info.get('status', '').upper()
+                                                matched_size = float(tp_order_info.get('matchedSize', 0) or 0)
+                                                if tp_status in ('MATCHED', 'FILLED') or matched_size > 0:
+                                                    tp_actually_filled = True
+                                                    avg_p = tp_order_info.get('avgPrice') or tp_order_info.get('price')
+                                                    if avg_p:
+                                                        parsed = float(avg_p)
+                                                        if 0.01 <= parsed <= 0.99:
+                                                            tp_check_price = parsed
+                                                    print(f"       [LOCAL SL] ✅ 复查确认止盈单已成交 status={tp_status}")
+                                                else:
+                                                    print(f"       [LOCAL SL] ❌ 止盈单未成交(status={tp_status})，可能是市场到期归零")
+                                        except Exception as e:
+                                            print(f"       [LOCAL SL] ⚠️ 复查止盈单状态失败: {e}")
+
+                                    if tp_actually_filled:
+                                        exit_reason = 'AUTO_CLOSED_OR_MANUAL'
+                                        actual_exit_price = tp_check_price if tp_check_price else pos_current_price
+                                        print(f"       [LOCAL SL] 🎉 止盈单在撤销期间成交，止损前已盈利")
+                                    else:
+                                        # 真正的市场归零
+                                        exit_reason = 'MARKET_SETTLED'
+                                        actual_exit_price = 0.0
+                                        print(f"       [LOCAL SL] 💀 确认市场归零，记录真实亏损")
                             elif close_order_id:
                                 exit_reason = 'STOP_LOSS_LOCAL'
                                 triggered_order_id = close_order_id
