@@ -751,9 +751,7 @@ class AutoTraderV5:
                                 current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
                                 if not exit_price_row or not exit_price_row[0]:
-                                    # 没有exit记录，需要根据情况判断
-                                    # 如果市场已过期，标记为MARKET_SETTLED
-                                    # 否则标记为MANUAL_CLOSED
+                                    # 没有exit记录，标记为MARKET_SETTLED
                                     cursor.execute("""
                                         UPDATE positions
                                         SET exit_time = ?, exit_token_price = ?, exit_reason = ?, status = 'closed'
@@ -764,18 +762,19 @@ class AutoTraderV5:
                                         'MARKET_SETTLED',
                                         pos_id
                                     ))
-                                    else:
-                                        cursor.execute("""
-                                            UPDATE positions
-                                            SET status = 'closed', exit_reason = 'MANUAL_CLOSED'
-                                            WHERE id = ?
-                                        """, (pos_id,))
-
-                                    print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已标记为closed")
+                                    print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已标记为MARKET_SETTLED")
                                 else:
-                                    # 余额不为0，重置为open状态，让监控系统继续处理
-                                    print(f"[CLEANUP] 🔓 持仓 #{pos_id} 余额为{actual_size:.2f}，重置为'open'")
-                                    cursor.execute("UPDATE positions SET status = 'open' WHERE id = ?", (pos_id,))
+                                    # 有exit记录，标记为MANUAL_CLOSED
+                                    cursor.execute("""
+                                        UPDATE positions
+                                        SET status = 'closed', exit_reason = 'MANUAL_CLOSED'
+                                        WHERE id = ?
+                                    """, (pos_id,))
+                                    print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已标记为MANUAL_CLOSED")
+                            else:
+                                # 余额不为0，重置为open状态，让监控系统继续处理
+                                print(f"[CLEANUP] 🔓 持仓 #{pos_id} 余额为{actual_size:.2f}，重置为'open'")
+                                cursor.execute("UPDATE positions SET status = 'open' WHERE id = ?", (pos_id,))
 
                     except Exception as e:
                         print(f"[CLEANUP] ⚠️ 处理持仓 #{pos_id} 失败: {e}，重置为'open'")
