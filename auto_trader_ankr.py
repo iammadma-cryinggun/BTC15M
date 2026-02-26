@@ -1580,6 +1580,16 @@ class AutoTraderV5:
                     print(f"       [CANCEL] ✅ 订单已取消: {order_id[-8:]}")
                     return True
                 else:
+                    # 🔥 canceled=[] 时，查询订单状态确认（可能是已成交/已取消）
+                    try:
+                        order_info = self.client.get_order(order_id)
+                        if order_info:
+                            status = order_info.get('status', '').upper()
+                            if status in ('FILLED', 'MATCHED', 'CANCELED', 'TRIGGERED'):
+                                print(f"       [CANCEL] ℹ️ 订单已{status}，无需撤销: {order_id[-8:]}")
+                                return True
+                    except:
+                        pass  # 查询失败，继续报错
                     # success 字段可能不准确，主要看 canceled 数组
                     print(f"       [CANCEL FAIL] {order_id[-8:]}: canceled={canceled_list}")
                     return False
