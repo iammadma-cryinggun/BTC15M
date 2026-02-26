@@ -237,8 +237,10 @@ class V6HFTEngine:
             asks = data.get("asks", [])
             if not bids or not asks:
                 return
-            best_bid = float(bids[0]['price'])
-            best_ask = float(asks[0]['price'])
+            # 🔥 关键修复：必须用min/max，不能假设列表已排序
+            # bids[0]可能不是最高价，asks[0]可能不是最低价
+            best_bid = max(float(bid['price']) for bid in bids)   # 买一 = 最高买价
+            best_ask = min(float(ask['price']) for ask in asks)   # 卖一 = 最低卖价
             mid_price = (best_bid + best_ask) / 2
             asset_id = data.get("asset_id")
             if asset_id == self.token_yes_id:
@@ -271,8 +273,9 @@ class V6HFTEngine:
                 asks = item.get("asks", [])
                 if not bids or not asks:
                     return
-                best_bid = float(bids[0]['price'])
-                best_ask = float(asks[0]['price'])
+                # 🔥 关键修复：必须用min/max，不能假设列表已排序
+                best_bid = max(float(bid['price']) for bid in bids)   # 买一 = 最高买价
+                best_ask = min(float(ask['price']) for ask in asks)   # 卖一 = 最低卖价
                 mid_price = (best_bid + best_ask) / 2
 
                 asset_id = item.get("asset_id")
