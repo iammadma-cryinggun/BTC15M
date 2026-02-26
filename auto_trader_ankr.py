@@ -203,15 +203,28 @@ class RealBalanceDetector:
         # 主力节点：Alchemy（从环境变量读取）
         alchemy_key = os.getenv('ALCHEMY_POLYGON_KEY')
         if alchemy_key:
-            self.rpc_pool.append(f"https://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}")
-            print(f"[RPC] ✅ Alchemy节点已配置")
+            # 🔍 调试：检查密钥格式
+            if len(alchemy_key) < 10:
+                print(f"[RPC] ⚠️  ALCHEMY_POLYGON_KEY格式异常（长度{len(alchemy_key)}），可能无效")
+            else:
+                alchemy_url = f"https://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}"
+                self.rpc_pool.append(alchemy_url)
+                print(f"[RPC] ✅ Alchemy节点已配置（密钥长度: {len(alchemy_key)}）")
         else:
             print("[RPC] ⚠️  未设置ALCHEMY_POLYGON_KEY环境变量，跳过Alchemy节点")
 
         # 备用节点：QuickNode（从环境变量读取）
         quicknode_key = os.getenv('QUICKNODE_POLYGON_KEY')
         if quicknode_key:
-            self.rpc_pool.append(f"https://flashy-attentive-road.matic.quiknode.pro/{quicknode_key}/")
+            # 🔧 智能识别：完整URL直接用，只有密钥则拼接示例URL
+            if quicknode_key.startswith('http'):
+                quicknode_url = quicknode_key  # 用户提供了完整URL
+            else:
+                # 用户只提供了密钥，使用旧格式（注意：这需要您的endpoint匹配）
+                quicknode_url = f"https://flashy-attentive-road.matic.quiknode.pro/{quicknode_key}/"
+                print("[RPC] ⚠️  检测到只提供了QuickNode密钥，使用默认URL格式（可能不匹配您的endpoint）")
+
+            self.rpc_pool.append(quicknode_url)
             print(f"[RPC] ✅ QuickNode节点已配置")
         else:
             print("[RPC] ⚠️  未设置QUICKNODE_POLYGON_KEY环境变量，跳过QuickNode节点")

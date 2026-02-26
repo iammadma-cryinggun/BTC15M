@@ -23,8 +23,8 @@
 2. 注册/登录账号
 3. 创建新端点：`Polymarket Trading`
 4. 选择网络：`Polygon`
-5. 复制你的端点 URL
-6. 格式类似：`bb4ccab51795871b1d38fe9683b9dd3dda4097e7`
+5. **复制完整的 HTTP Endpoint URL**（不是密钥！）
+6. 格式类似：`https://your-endpoint-name.matic.quiknode.pro/your_key/`
 
 ---
 
@@ -38,11 +38,11 @@
 4. 添加以下变量：
 
 ```bash
-# Alchemy Polygon 主网密钥
+# Alchemy Polygon 主网密钥（只填密钥部分）
 ALCHEMY_POLYGON_KEY=your_alchemy_key_here
 
-# QuickNode Polygon 密钥（只需要最后那部分）
-QUICKNODE_POLYGON_KEY=your_quicknode_key_here
+# QuickNode Polygon 完整Endpoint URL（重要：填完整URL，不是密钥！）
+QUICKNODE_POLYGON_KEY=https://your-endpoint-name.matic.quiknode.pro/your_key/
 ```
 
 5. 保存并重启服务
@@ -52,8 +52,11 @@ QUICKNODE_POLYGON_KEY=your_quicknode_key_here
 创建 `.env` 文件（已在 .gitignore 中）：
 
 ```bash
+# Alchemy: 只填密钥
 ALCHEMY_POLYGON_KEY=your_alchemy_key_here
-QUICKNODE_POLYGON_KEY=your_quicknode_key_here
+
+# QuickNode: 填完整URL（重要！）
+QUICKNODE_POLYGON_KEY=https://your-endpoint.matic.quiknode.pro/your_key/
 ```
 
 ---
@@ -127,6 +130,52 @@ QUICKNODE_POLYGON_KEY=your_quicknode_key_here
 4. 所有节点都失败
    └─ 报错，停止交易 🚨
 ```
+
+---
+
+## 🚨 故障排查
+
+### 问题1：Alchemy 返回 404 Not Found
+**原因：** 密钥无效或格式错误
+
+**解决：**
+1. 检查环境变量 `ALCHEMY_POLYGON_KEY` 是否为空
+2. 确认密钥格式正确（通常是一长串字符）
+3. 重新登录 Alchemy 控制台复制密钥
+
+**调试日志：**
+```
+[RPC] ⚠️  ALCHEMY_POLYGON_KEY格式异常（长度5），可能无效
+```
+
+---
+
+### 问题2：QuickNode 返回 401 Unauthorized
+**原因：** URL格式错误或使用了示例子域名
+
+**解决：**
+1. **不要只填密钥！** 需要填写完整的 Endpoint URL
+2. 登录 QuickNode 控制台
+3. 复制完整的 HTTP Endpoint URL（类似：`https://xxx.matic.quiknode.pro/xxx/`）
+4. 粘贴到环境变量 `QUICKNODE_POLYGON_KEY`
+
+**正确示例：**
+```bash
+# ❌ 错误（只填密钥）
+QUICKNODE_POLYGON_KEY=bb4ccab51795871b1d38fe9683b9dd3dda4097e7
+
+# ✅ 正确（完整URL）
+QUICKNODE_POLYGON_KEY=https://my-endpoint-a1b2c3.matic.quiknode.pro/bb4ccab51795871b1d38fe9683b9dd3dda4097e7/
+```
+
+---
+
+### 问题3：两个节点都失败，但公共节点能用
+**原因：** 环境变量未配置或密钥无效
+
+**解决：** 暂时使用公共节点（速度慢但可用），后续按文档配置
+
+**临时方案：** 不配置环境变量，系统会自动使用公共节点
 
 ---
 
