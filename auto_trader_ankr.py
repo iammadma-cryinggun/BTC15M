@@ -1980,21 +1980,21 @@ class AutoTraderV5:
             # LONG平仓卖YES，SHORT平仓卖NO
             token_id = str(token_ids[0] if side == 'LONG' else token_ids[1])
 
-            # 计算止盈止损价格（对称逻辑：都是30%或1U取更容易达到的）
-            # 止盈：取30%和+1U中较低的（更容易达到）
-            # 止损：取30%和-1U中较高的（更保守）
-
             # 止盈计算
-            tp_by_fixed = (value_usdc + 1.0) / max(size, 1)  # +1U
-            tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)  # 30%
-            tp_by_pct = entry_price * (1 + tp_pct_max)  # +30%
-            tp_target_price = min(tp_by_fixed, tp_by_pct)  # 取较低者（更容易达到）
+            # ✅ 修改后：彻底解除 1U 封印，独立计算 30% 止盈
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 获取止盈专属参数，默认 30%
+            tp_target_price = entry_price * (1 + tp_pct_max)          # 严格执行目标止盈价
+            
+            # 🛡️ 极限价格保护：Polymarket 的最高挂单价不能超过 0.99
+            tp_target_price = min(tp_target_price, 0.99)
 
             # 止损计算
-            sl_by_fixed = (value_usdc - 1.0) / max(size, 1)  # -1U
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)  # 30%
-            sl_by_pct = entry_price * (1 - sl_pct_max)  # -30%
-            sl_target_price = max(sl_by_fixed, sl_by_pct)  # 取较高者（更保守）
+            # ✅ 修改后：彻底删除 1U 限制，使用纯百分比，并为滑点预留空间
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)  # 默认改为 20% 触发（实盘防滑点）
+            sl_target_price = entry_price * (1 - sl_pct_max)  # 纯粹的百分比止损线
+
+            # 🛡️ 极限价格保护：止损底线兜底（虽然数学上不会小于0，但防一手极端归零）
+            sl_target_price = max(sl_target_price, 0.01)
 
             # 计算实际止盈止损百分比
             actual_tp_pct = (tp_target_price - entry_price) / entry_price
