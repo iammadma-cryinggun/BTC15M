@@ -2082,7 +2082,7 @@ class AutoTraderV5:
                 token_id=token_id,
                 price=tp_target_price,  # 这里的 tp_target_price 必须是你之前修改过的绝对价格
                 size=stop_size,
-                side=SELL
+                side='SELL'
             )
 
             max_retries = 6  # 增加重试次数，确保万无一失
@@ -2120,7 +2120,7 @@ class AutoTraderV5:
                                         token_id=token_id,
                                         price=tp_target_price,
                                         size=stop_size,
-                                        side=SELL
+                                        side='SELL'
                                     )
                                     print(f"       [STOP ORDERS] 🔄 更新余额: {stop_size}")
                         except Exception:
@@ -2172,7 +2172,7 @@ class AutoTraderV5:
             # Polymarket机制：平仓永远是SELL（平多卖YES，平空卖NO）
             # clobTokenIds[0]=YES, clobTokenIds[1]=NO（固定顺序）
             token_id = str(token_ids[0] if side == 'LONG' else token_ids[1])
-            opposite_side = SELL  # 平仓永远是SELL
+            opposite_side = 'SELL'  # 平仓永远是SELL
 
             # 获取outcomePrices用于计算平仓价格
             outcome_prices = market.get('outcomePrices', [])
