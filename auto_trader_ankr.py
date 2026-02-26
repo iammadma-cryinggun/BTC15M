@@ -187,7 +187,7 @@ class TelegramNotifier:
         return False
 
 class RealBalanceDetector:
-    """Get REAL balance using Ankr API"""
+    """Get REAL balance using Polygon RPC (with dual-node fallback)"""
 
     def __init__(self, wallet: str):
         self.wallet = wallet
@@ -195,6 +195,69 @@ class RealBalanceDetector:
         self.balance_pol = 0.0
         # 🚀 HTTP Session（复用TCP连接，提速RPC调用）
         self.http_session = requests.Session()
+
+        # 🚀 性能优化：双节点容灾架构（Alchemy + QuickNode）
+        # 从环境变量读取，避免硬编码密钥
+        self.rpc_pool = []
+
+        # 主力节点：Alchemy（从环境变量读取）
+        alchemy_key = os.getenv('ALCHEMY_POLYGON_KEY')
+        if alchemy_key:
+            self.rpc_pool.append(f"https://polygon-mainnet.g.alchemy.com/v2/{alchemy_key}")
+            print(f"[RPC] ✅ Alchemy节点已配置")
+        else:
+            print("[RPC] ⚠️  未设置ALCHEMY_POLYGON_KEY环境变量，跳过Alchemy节点")
+
+        # 备用节点：QuickNode（从环境变量读取）
+        quicknode_key = os.getenv('QUICKNODE_POLYGON_KEY')
+        if quicknode_key:
+            self.rpc_pool.append(f"https://flashy-attentive-road.matic.quiknode.pro/{quicknode_key}/")
+            print(f"[RPC] ✅ QuickNode节点已配置")
+        else:
+            print("[RPC] ⚠️  未设置QUICKNODE_POLYGON_KEY环境变量，跳过QuickNode节点")
+
+        # 公共备用节点（保底方案，速度慢但可用）
+        self.rpc_pool.append("https://polygon-bor.publicnode.com")
+        print(f"[RPC] ✅ 公共备用节点已配置（保底）")
+
+        print(f"[RPC] 🚀 RPC节点池大小: {len(self.rpc_pool)} (双节点容灾架构)")
+
+    def _rpc_call(self, payload: dict, timeout: float = 3.0) -> dict:
+        """
+        带有自动故障转移(Fallback)的 RPC 请求发送器
+
+        Args:
+            payload: JSON-RPC payload
+            timeout: 请求超时时间（秒）
+
+        Returns:
+            响应JSON，如果所有节点都失败则返回None
+        """
+        for i, rpc_url in enumerate(self.rpc_pool):
+            try:
+                resp = self.http_session.post(
+                    rpc_url,
+                    json=payload,
+                    proxies=CONFIG.get('proxy'),
+                    timeout=timeout
+                )
+                resp.raise_for_status()
+                result = resp.json()
+
+                # 打印使用的节点（只在第一次成功时）
+                if i == 0:
+                    node_name = rpc_url.split('/')[2].split('.')[0]
+                    print(f"[RPC] ✅ 使用节点: {node_name}")
+
+                return result
+
+            except Exception as e:
+                node_name = rpc_url.split('/')[2].split('.')[0] if '/' in rpc_url else '未知'
+                print(f"[RPC] ⚠️  节点 {node_name} 失败: {str(e)[:50]}")
+                continue
+
+        print(f"[RPC] 🚨 所有RPC节点均不可用！")
+        return None
 
     def fetch(self) -> Tuple[float, float]:
         """Fetch real balance from Polygon"""
@@ -204,8 +267,6 @@ class RealBalanceDetector:
         print("[BALANCE] Fetching REAL balance from Polygon...")
 
         try:
-            # Use PublicNode RPC (works through proxy)
-            url = "https://polygon-bor.publicnode.com"
             usdce_contract = CONFIG['usdce_contract']
 
             # Correctly format data for balanceOf call
@@ -223,21 +284,16 @@ class RealBalanceDetector:
                 "id": 1
             }
 
-            # 🚀 使用Session复用TCP连接（提速RPC调用）
-            resp = self.http_session.post(url, json=payload, proxies=CONFIG['proxy'], timeout=10)
+            # 🚀 使用双节点容灾架构（自动故障转移）
+            result = self._rpc_call(payload, timeout=3.0)
 
-            if resp.status_code == 200:
-                result = resp.json()
-                if 'result' in result and result['result']:
-                    result_hex = result['result']
-                    balance_wei = int(result_hex, 16)
-                    self.balance_usdc = balance_wei / 1e6  # USDC.e has 6 decimals
-                    print(f"[OK] USDC.e balance: {self.balance_usdc:.2f}")
-                else:
-                    print("[WARN] No USDC.e found")
-                    self.balance_usdc = 0.0
+            if result and 'result' in result and result['result']:
+                result_hex = result['result']
+                balance_wei = int(result_hex, 16)
+                self.balance_usdc = balance_wei / 1e6  # USDC.e has 6 decimals
+                print(f"[OK] USDC.e balance: {self.balance_usdc:.2f}")
             else:
-                print(f"[FAIL] Status {resp.status_code}")
+                print("[WARN] No USDC.e found")
                 self.balance_usdc = 0.0
 
             # Get POL balance
@@ -248,15 +304,13 @@ class RealBalanceDetector:
                 "id": 2
             }
 
-            # 🚀 使用Session复用TCP连接（提速RPC调用）
-            resp2 = self.http_session.post(url, json=payload2, proxies=CONFIG['proxy'], timeout=10)
+            # 🚀 使用双节点容灾架构（自动故障转移）
+            result2 = self._rpc_call(payload2, timeout=3.0)
 
-            if resp2.status_code == 200:
-                result2 = resp2.json()
-                if 'result' in result2:
-                    balance_wei = int(result2['result'], 16)
-                    self.balance_pol = balance_wei / 1e18
-                    print(f"[OK] POL balance: {self.balance_pol:.4f}")
+            if result2 and 'result' in result2:
+                balance_wei = int(result2['result'], 16)
+                self.balance_pol = balance_wei / 1e18
+                print(f"[OK] POL balance: {self.balance_pol:.4f}")
 
             print()
             return self.balance_usdc, self.balance_pol
@@ -265,7 +319,7 @@ class RealBalanceDetector:
             print(f"[ERROR] Balance fetch failed: {e}")
             print()
             print("[FATAL] 无法获取余额，为安全起见停止运行")
-            print("[INFO] 请检查代理设置或网络连接")
+            print("[INFO] 请检查RPC节点配置或网络连接")
             self.balance_usdc = 0.0
             self.balance_pol = 0.0
             return self.balance_usdc, self.balance_pol
