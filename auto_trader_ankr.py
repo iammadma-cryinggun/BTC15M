@@ -544,6 +544,8 @@ class AutoTraderV5:
         self.last_reset_date = datetime.now().date()
         self.last_traded_market = None  # 追踪最后交易的市场
         self.last_signal_direction = None  # 追踪上一次信号方向（用于信号改变检测）
+        # 🔥 防止止盈止损重复触发的集合（存储正在处理的持仓ID）
+        self.processing_positions = set()
         self.init_database()
 
         # 从数据库恢复当天的亏损和交易统计（防止重启后风控失效）
@@ -2333,6 +2335,16 @@ class AutoTraderV5:
             # --- 加滑点确保瞬间吃单成交，对齐 tick_size ---
             slippage_ticks = 2  # 加2个tick滑点
             adjusted_price = align_price(base_price + tick_size_float * slippage_ticks)
+
+            # 🔥 关键修复：调整后价格仍需遵守价格限制
+            max_entry_price = CONFIG['signal'].get('max_entry_price', 0.80)
+            min_entry_price = CONFIG['signal'].get('min_entry_price', 0.20)
+            if adjusted_price > max_entry_price:
+                print(f"       [RISK] ⚠️ 调整后价格超限: {adjusted_price:.4f} > {max_entry_price:.2f}，拒绝开仓")
+                return None
+            if adjusted_price < min_entry_price:
+                print(f"       [RISK] ⚠️ 调整后价格过低: {adjusted_price:.4f} < {min_entry_price:.2f}，拒绝开仓")
+                return None
 
             # Calculate based on REAL balance（每次开仓前刷新链上余额）
             fresh_usdc, _ = self.balance_detector.fetch()
