@@ -60,6 +60,9 @@ class V6HFTEngine:
         self.pending_tasks = []  # 跟踪后台任务
         self.completed_tasks = 0  # 完成的任务计数
 
+        # 🔒 状态锁：防止并发幽灵（重复下单）
+        self._processing_orders = set()  # 正在处理中的订单/动作集合
+
         # 加载动态参数（与V5保持一致）
         self.v5.load_dynamic_params()
 
@@ -401,67 +404,126 @@ class V6HFTEngine:
 
             if can_trade:
                 print(f"[TRADE] 风控通过: {reason}")
-                print(f"[TRADE] 🚀 发射后台下单任务（0延迟）...")
 
-                # 🚀 关键优化：Fire-and-Forget 模式
-                # 下单不阻塞，主循环立即继续监听WebSocket！
-                task = asyncio.create_task(
-                    self._async_execute_trade(
-                        self.v5.place_order, self.current_market, signal,
-                        task_name="下单"
-                    )
-                )
+                # 🔒 状态锁：防止同一市场重复下单
+                action_key = f"trade_{self.current_market.get('slug', 'unknown')}"
 
-                # 立即更新统计（不等待下单完成）
-                self.v5.stats['total_trades'] += 1
-                self.v5.stats['daily_trades'] += 1
-                self.v5.stats['last_trade_time'] = datetime.now()
-                self.v5.last_traded_market = self.current_market.get('slug', '')
-                self.last_trade_time = time.time()
+                if action_key in self._processing_orders:
+                    print(f"[LOCK] ⚠️  该市场正在处理中，跳过重复下单: {action_key}")
+                else:
+                    print(f"[TRADE] 🚀 发射后台下单任务（0延迟）...")
 
-                print(f"[TRADE] ✅ 下单任务已发射，WebSocket继续监听（0阻塞）")
+                    # 🔒 加锁：标记正在处理
+                    self._processing_orders.add(action_key)
+
+                    # 🚀 关键优化：Fire-and-Forget 模式 + 状态锁
+                    async def task_with_unlock():
+                        try:
+                            await self._async_execute_trade(
+                                self.v5.place_order, self.current_market, signal,
+                                task_name="下单"
+                            )
+                        finally:
+                            # 🔒 解锁：无论成功失败都释放锁
+                            self._processing_orders.discard(action_key)
+
+                    task = asyncio.create_task(task_with_unlock())
+
+                    # 立即更新统计（不等待下单完成）
+                    self.v5.stats['total_trades'] += 1
+                    self.v5.stats['daily_trades'] += 1
+                    self.v5.stats['last_trade_time'] = datetime.now()
+                    self.v5.last_traded_market = self.current_market.get('slug', '')
+                    self.last_trade_time = time.time()
+
+                    print(f"[TRADE] ✅ 下单任务已发射，WebSocket继续监听（0阻塞）")
 
             else:
                 print(f"[BLOCK] 风控拦截: {reason}")
                 # 🚀 Fire-and-Forget：异步记录学习
-                asyncio.create_task(
-                    self._async_fire_and_forget(
-                        self.v5.record_prediction_learning,
-                        self.current_market, signal, None, True,
-                        task_name="记录学习数据"
-                    )
-                )
+                action_key = "record_learning"
+                if action_key not in self._processing_orders:
+                    self._processing_orders.add(action_key)
+
+                    async def learning_task_with_unlock():
+                        try:
+                            await self._async_fire_and_forget(
+                                self.v5.record_prediction_learning,
+                                self.current_market, signal, None, True,
+                                task_name="记录学习数据"
+                            )
+                        finally:
+                            self._processing_orders.discard(action_key)
+
+                    asyncio.create_task(learning_task_with_unlock())
 
     async def check_positions(self):
         """检查持仓止盈止损（复用V5逻辑）- 异步模式"""
         if self.current_price:
+            # 🔒 状态锁：防止持仓检查重复执行
+            action_key = "check_positions"
+
+            if action_key in self._processing_orders:
+                # 上一次检查还在进行中，跳过本次
+                return
+
+            self._processing_orders.add(action_key)
+
             # 🚀 Fire-and-Forget：不阻塞WebSocket
-            asyncio.create_task(
-                self._async_fire_and_forget(
-                    self.v5.check_positions, self.current_price,
-                    task_name="检查持仓"
-                )
-            )
+            async def positions_task_with_unlock():
+                try:
+                    await self._async_fire_and_forget(
+                        self.v5.check_positions, self.current_price,
+                        task_name="检查持仓"
+                    )
+                finally:
+                    self._processing_orders.discard(action_key)
+
+            asyncio.create_task(positions_task_with_unlock())
 
     async def verify_predictions(self):
         """验证待验证的预测（修复：只调用一次，避免重复验证）- 异步模式"""
+        # 🔒 状态锁：防止预测验证重复执行
+        action_key = "verify_predictions"
+
+        if action_key in self._processing_orders:
+            return
+
+        self._processing_orders.add(action_key)
+
         # 🚀 Fire-and-Forget：不阻塞WebSocket
-        asyncio.create_task(
-            self._async_fire_and_forget(
-                self.v5.verify_pending_predictions,
-                task_name="验证预测"
-            )
-        )
+        async def verify_task_with_unlock():
+            try:
+                await self._async_fire_and_forget(
+                    self.v5.verify_pending_predictions,
+                    task_name="验证预测"
+                )
+            finally:
+                self._processing_orders.discard(action_key)
+
+        asyncio.create_task(verify_task_with_unlock())
 
     async def auto_adjust(self):
         """定期自动调整参数（复用V5逻辑）- 异步模式"""
+        # 🔒 状态锁：防止参数调整重复执行
+        action_key = "auto_adjust"
+
+        if action_key in self._processing_orders:
+            return
+
+        self._processing_orders.add(action_key)
+
         # 🚀 Fire-and-Forget：不阻塞WebSocket
-        asyncio.create_task(
-            self._async_fire_and_forget(
-                self.v5.auto_adjust_parameters,
-                task_name="自动调整参数"
-            )
-        )
+        async def adjust_task_with_unlock():
+            try:
+                await self._async_fire_and_forget(
+                    self.v5.auto_adjust_parameters,
+                    task_name="自动调整参数"
+                )
+            finally:
+                self._processing_orders.discard(action_key)
+
+        asyncio.create_task(adjust_task_with_unlock())
 
     async def websocket_loop(self):
         """WebSocket主循环"""
@@ -554,13 +616,24 @@ class V6HFTEngine:
 
                         # 每5分钟清理过期持仓
                         if now - last_cleanup_check >= 300:
-                            # 🚀 Fire-and-Forget：异步清理，不阻塞WebSocket
-                            asyncio.create_task(
-                                self._async_fire_and_forget(
-                                    self.v5.cleanup_stale_positions,
-                                    task_name="清理过期持仓"
-                                )
-                            )
+                            # 🔒 状态锁：防止清理任务重复执行
+                            action_key = "cleanup_stale_positions"
+
+                            if action_key not in self._processing_orders:
+                                self._processing_orders.add(action_key)
+
+                                # 🚀 Fire-and-Forget：异步清理，不阻塞WebSocket
+                                async def cleanup_task_with_unlock():
+                                    try:
+                                        await self._async_fire_and_forget(
+                                            self.v5.cleanup_stale_positions,
+                                            task_name="清理过期持仓"
+                                        )
+                                    finally:
+                                        self._processing_orders.discard(action_key)
+
+                                asyncio.create_task(cleanup_task_with_unlock())
+
                             last_cleanup_check = now
 
                         # 检查是否需要切换市场
