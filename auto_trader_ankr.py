@@ -2280,7 +2280,7 @@ class AutoTraderV5:
             print(f"       [TRACEBACK] {traceback.format_exc()}")
             return None, None, entry_price
 
-    def close_position(self, market: Dict, side: str, size: float, is_stop_loss: bool = False, entry_price: float = None):
+    def close_position(self, market: Dict, side: str, size: float, is_stop_loss: bool = False, entry_price: float = None, sl_price: float = None):
         """平仓函数
 
         Args:
@@ -2289,6 +2289,7 @@ class AutoTraderV5:
             size: 平仓数量
             is_stop_loss: 是否是止损调用（止损时直接市价，不防插针）
             entry_price: 入场价格（止损时需要，用于设置最低可接受价格）
+            sl_price: 真实止损价（优先用于极端暴跌判断，替代 entry_price * 0.70）
         """
         try:
             token_ids = market.get('clobTokenIds', [])
@@ -2341,8 +2342,8 @@ class AutoTraderV5:
                     # Polymarket 15分钟期权市场：价格=概率，暴跌=基本面变化，不会反弹
                     # 即使只能拿回10-30%本金，也比100%归零强！
 
-                    # 计算止损线（30%止损）
-                    sl_line = entry_price * 0.70 if entry_price else 0.30
+                    # 计算止损线：优先用真实止损价，否则用入场价70%
+                    sl_line = sl_price if sl_price else (entry_price * 0.70 if entry_price else 0.30)
 
                     if best_bid and best_bid > 0.01:
                         # 🚨 极端暴跌检测：best_bid已经远低于止损线
@@ -3445,8 +3446,8 @@ class AutoTraderV5:
                                     print(f"       [LOCAL TP] ❌ 状态重置失败: {reset_err}")
 
                     # 2. 检查止损（价格下跌触发）- 🔥 立即执行，不再等待最后5分钟
-                    elif sl_price and pos_current_price <= sl_price:
-                        print(f"       [LOCAL SL] 触发本地止损！当前价 {pos_current_price:.4f} <= 止损线 {sl_price:.4f}")
+                    elif sl_price and pos_current_price < sl_price:
+                        print(f"       [LOCAL SL] 触发本地止损！当前价 {pos_current_price:.4f} < 止损线 {sl_price:.4f}")
                         time_remaining = f"{int(seconds_left)}s" if seconds_left else "未知"
                         print(f"       [LOCAL SL] ⏰ 市场剩余 {time_remaining}，立即执行止损保护")
 
@@ -3496,7 +3497,7 @@ class AutoTraderV5:
                             # 市价平仓（止损模式，直接砸单不防插针）
                             close_market = market if market else self.get_market_data()
                             if close_market:
-                                close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price)
+                                close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price, sl_price=sl_price)
 
                                 # 💡 增加识别 "NO_BALANCE" 的逻辑
                                 if close_order_id == "NO_BALANCE":
