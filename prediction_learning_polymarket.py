@@ -306,18 +306,27 @@ class PolymarketPredictionLearning:
     def get_accuracy_stats(self, hours: int = 24) -> Dict:
         """
         获取准确率统计
+
+        参数:
+            hours: 时间范围（小时），None表示全量统计
         """
         conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
 
-        time_threshold = datetime.now() - timedelta(hours=hours)
-
-        # 获取已验证的预测
-        cursor.execute('''
-            SELECT direction, correct, score, confidence
-            FROM predictions
-            WHERE verified = 1 AND timestamp >= ?
-        ''', (time_threshold.strftime('%Y-%m-%d %H:%M:%S'),))
+        # 🔥 修复：当hours=None时全量统计，不限制时间
+        if hours is None:
+            cursor.execute('''
+                SELECT direction, correct, score, confidence
+                FROM predictions
+                WHERE verified = 1
+            ''')
+        else:
+            time_threshold = datetime.now() - timedelta(hours=hours)
+            cursor.execute('''
+                SELECT direction, correct, score, confidence
+                FROM predictions
+                WHERE verified = 1 AND timestamp >= ?
+            ''', (time_threshold.strftime('%Y-%m-%d %H:%M:%S'),))
 
         results = cursor.fetchall()
         conn.close()
