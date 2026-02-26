@@ -2841,9 +2841,13 @@ class AutoTraderV5:
                 value_usdc = float(value_usdc) if value_usdc else 0.0
 
                 # 优先用WebSocket实时价（get_order_book），outcomePrices是REST旧数据不可靠
+                # 🔥 关键修复：止盈止损监控必须用"对手价"（如果现在平仓能拿到的价格）
+                # LONG平仓=卖出YES → 用YES的bid（买一价）
+                # SHORT平仓=卖出NO → 用NO的bid（买一价）
                 pos_current_price = None
                 if token_id:
-                    pos_current_price = self.get_order_book(token_id, side='BUY')
+                    # 平仓都是SELL操作，用bid价格计算真实净值
+                    pos_current_price = self.get_order_book(token_id, side='SELL')
 
                 # fallback：传入的outcomePrices
                 if pos_current_price is None:
