@@ -725,6 +725,23 @@ class PolymarketPredictionLearning:
                 recommended['allow_short'] = True
                 recommended['reasons'].append(f"做空准确率 {short_acc:.1f}% ≥ 60%，建议启用做空")
 
+        # ── UT Bot 推荐参数（基于整体胜率）────────────────────────────────
+        overall_acc = stats.get('accuracy', 50.0)  # 整体准确率（百分比）
+        if overall_acc < 45.0:
+            # 胜率低：推荐收紧过滤参数
+            recommended['ut_bot_key_value'] = 1.0
+            recommended['hull_length'] = 15
+            recommended['reasons'].append(f"整体胜率 {overall_acc:.1f}% < 45%，推荐收紧 UT Bot 过滤")
+        elif overall_acc > 60.0:
+            # 胜率高：推荐放松过滤参数
+            recommended['ut_bot_key_value'] = 2.0
+            recommended['hull_length'] = 25
+            recommended['reasons'].append(f"整体胜率 {overall_acc:.1f}% > 60%，推荐放松 UT Bot 过滤")
+        else:
+            # 胜率正常：保持默认参数
+            recommended['ut_bot_key_value'] = 1.5
+            recommended['hull_length'] = 20
+
         return recommended
 
     def verify_pending_predictions(self) -> int:

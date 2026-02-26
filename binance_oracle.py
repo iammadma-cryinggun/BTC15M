@@ -31,10 +31,43 @@ SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_s
 # CVD滚动窗口（秒）
 CVD_WINDOW_SEC = 900  # 15分钟
 
-# UT Bot + Hull 参数（敏捷小猎犬配置）
+# UT Bot + Hull 参数（敏捷小猎犬配置）- 硬编码默认值，可被 oracle_params.json 覆盖
 UT_BOT_KEY_VALUE = 1.5  # 🔥 敏捷模式：降低门槛，对反转更敏感（提前1~2根K线）
 UT_BOT_ATR_PERIOD = 10  # 保持不变
 HULL_LENGTH = 20        # 🔥 缩短到过去5小时，紧跟近期波动（原34期→20期）
+
+# 动态参数文件路径（支持 DATA_DIR 环境变量）
+_DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+ORACLE_PARAMS_FILE = os.path.join(_DATA_DIR, 'oracle_params.json')
+
+# 参数热更新间隔（秒）
+PARAMS_RELOAD_INTERVAL = 300  # 5分钟
+
+
+def load_oracle_params() -> dict:
+    """从 oracle_params.json 加载动态参数，失败时返回硬编码默认值"""
+    defaults = {
+        'ut_bot_key_value': UT_BOT_KEY_VALUE,
+        'ut_bot_atr_period': UT_BOT_ATR_PERIOD,
+        'hull_length': HULL_LENGTH,
+    }
+    try:
+        if os.path.exists(ORACLE_PARAMS_FILE):
+            with open(ORACLE_PARAMS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # 只取已知字段，其余忽略
+            params = {
+                'ut_bot_key_value': float(data.get('ut_bot_key_value', defaults['ut_bot_key_value'])),
+                'ut_bot_atr_period': int(data.get('ut_bot_atr_period', defaults['ut_bot_atr_period'])),
+                'hull_length': int(data.get('hull_length', defaults['hull_length'])),
+            }
+            print(f"[ORACLE] 已加载动态参数: key_value={params['ut_bot_key_value']}, "
+                  f"atr_period={params['ut_bot_atr_period']}, hull_length={params['hull_length']} "
+                  f"(原因: {data.get('reason', 'unknown')})")
+            return params
+    except Exception as e:
+        print(f"[ORACLE] 加载 oracle_params.json 失败，使用默认值: {e}")
+    return defaults
 
 
 class TechnicalIndicators:
@@ -84,10 +117,17 @@ class BinanceOracle:
         self.klines_data = []                   # 存储 K 线数据
         self.max_klines = 200                   # 最多存储200根K线
 
+        # 动态参数（启动时从 oracle_params.json 加载）
+        params = load_oracle_params()
+        self.ut_bot_key_value = params['ut_bot_key_value']
+        self.ut_bot_atr_period = params['ut_bot_atr_period']
+        self.hull_length = params['hull_length']
+        self.last_params_reload = time.time()   # 上次重载参数的时间戳
+
         print("[ORACLE] Binance Oracle initialized...")
         print(f"[ORACLE] Signal output: {SIGNAL_FILE}")
-        print(f"[ORACLE] UT Bot: Key={UT_BOT_KEY_VALUE}, ATR={UT_BOT_ATR_PERIOD}")
-        print(f"[ORACLE] Hull MA: Length={HULL_LENGTH}")
+        print(f"[ORACLE] UT Bot: Key={self.ut_bot_key_value}, ATR={self.ut_bot_atr_period}")
+        print(f"[ORACLE] Hull MA: Length={self.hull_length}")
 
     async def load_historical_klines(self):
         """启动时加载历史K线数据（解决UT Bot一直NEUTRAL的问题）"""
@@ -185,9 +225,24 @@ class BinanceOracle:
         if len(self.klines_data) > self.max_klines:
             self.klines_data.pop(0)
 
+    def reload_params_if_needed(self):
+        """每 5 分钟热重载一次 oracle_params.json（无需重启）"""
+        if time.time() - self.last_params_reload < PARAMS_RELOAD_INTERVAL:
+            return
+        params = load_oracle_params()
+        self.ut_bot_key_value = params['ut_bot_key_value']
+        self.ut_bot_atr_period = params['ut_bot_atr_period']
+        self.hull_length = params['hull_length']
+        self.last_params_reload = time.time()
+        print(f"[ORACLE] 参数热重载完成: key_value={self.ut_bot_key_value}, "
+              f"atr_period={self.ut_bot_atr_period}, hull_length={self.hull_length}")
+
     def get_ut_bot_hull_trend(self):
         """获取 UT Bot + Hull 趋势判断"""
-        if len(self.klines_data) < max(UT_BOT_ATR_PERIOD, HULL_LENGTH) + 5:
+        # 热重载参数（每5分钟检查一次）
+        self.reload_params_if_needed()
+
+        if len(self.klines_data) < max(self.ut_bot_atr_period, self.hull_length) + 5:
             return None  # 数据不足
 
         # 转换为 DataFrame
@@ -196,8 +251,8 @@ class BinanceOracle:
 
         # 计算 UT Bot 信号
         close = df['close'].values
-        atr = TechnicalIndicators.calculate_atr(df, UT_BOT_ATR_PERIOD).values
-        n_loss = UT_BOT_KEY_VALUE * atr
+        atr = TechnicalIndicators.calculate_atr(df, self.ut_bot_atr_period).values
+        n_loss = self.ut_bot_key_value * atr
 
         xatr_trailing_stop = np.zeros(len(df))
         for i in range(1, len(df)):
@@ -216,8 +271,8 @@ class BinanceOracle:
 
         ut_trend = close[-1] > xatr_trailing_stop[-1]
 
-        # 计算 Hull MA
-        hull = TechnicalIndicators.calculate_hma(df['close'], HULL_LENGTH)
+        # 计算 Hull MA（使用实例变量，支持热更新）
+        hull = TechnicalIndicators.calculate_hma(df['close'], self.hull_length)
         hull_trend = hull.iloc[-1] > hull.iloc[-3]
 
         # 综合判断

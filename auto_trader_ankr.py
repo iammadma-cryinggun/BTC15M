@@ -4084,8 +4084,114 @@ class AutoTraderV5:
                 # 持久化到文件，重启后生效
                 self.save_dynamic_params()
 
+            # ── UT Bot 参数动态反馈闭环 ──────────────────────────────────────
+            self._adjust_ut_bot_params()
+
         except Exception as e:
             print(f"       [AUTO-ADJUST ERROR] {e}")
+
+    def _oracle_params_file(self) -> str:
+        """oracle_params.json 路径（与 DATA_DIR 保持一致）"""
+        data_dir = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(data_dir, 'oracle_params.json')
+
+    def _adjust_ut_bot_params(self):
+        """
+        根据近期胜率动态调整 UT Bot 参数，并写入 oracle_params.json。
+        调整规则：
+          - 胜率 < 45%：收紧过滤，key_value=1.0，hull_length=15
+          - 胜率 45%~60%：保持不变
+          - 胜率 > 60%：放松过滤，key_value=2.0，hull_length=25
+        保护：至少 30 分钟调整一次，避免频繁抖动。
+        """
+        try:
+            # 最小调整间隔保护（30分钟）
+            last_adjust_attr = '_last_ut_bot_adjust_time'
+            last_adjust = getattr(self, last_adjust_attr, 0)
+            if time.time() - last_adjust < 1800:
+                return
+
+            # 读取近期胜率（lookback=100次）
+            if not self.learning_system:
+                return
+            stats = self.learning_system.get_accuracy_stats(hours=None)  # 全量统计
+            total = stats.get('total', 0)
+            if total < 20:
+                return  # 样本不足，不调整
+
+            win_rate = stats.get('accuracy', 50.0)  # 百分比，如 55.0
+
+            # 读取当前 oracle_params.json
+            params_file = self._oracle_params_file()
+            current_params = {
+                'ut_bot_key_value': 1.5,
+                'ut_bot_atr_period': 10,
+                'hull_length': 20,
+            }
+            try:
+                if os.path.exists(params_file):
+                    with open(params_file, 'r', encoding='utf-8') as f:
+                        current_params.update(json.load(f))
+            except Exception:
+                pass
+
+            new_key_value = current_params['ut_bot_key_value']
+            new_hull_length = current_params['hull_length']
+            reason = None
+
+            if win_rate < 45.0:
+                # 胜率低：收紧过滤（每次最多调整一档）
+                if new_key_value > 1.0:
+                    new_key_value = 1.0
+                    new_hull_length = 15
+                    reason = f"胜率 {win_rate:.1f}% < 45%，收紧过滤"
+            elif win_rate > 60.0:
+                # 胜率高：放松过滤（每次最多调整一档）
+                if new_key_value < 2.0:
+                    new_key_value = 2.0
+                    new_hull_length = 25
+                    reason = f"胜率 {win_rate:.1f}% > 60%，放松过滤"
+            # 45%~60% 区间：保持不变
+
+            if reason is None:
+                return  # 无需调整
+
+            # 写入 oracle_params.json
+            new_params = {
+                'ut_bot_key_value': new_key_value,
+                'ut_bot_atr_period': int(current_params.get('ut_bot_atr_period', 10)),
+                'hull_length': new_hull_length,
+                'updated_at': datetime.now().strftime('%Y-%m-%dT%H:%M:%S'),
+                'reason': reason,
+            }
+            try:
+                with open(params_file, 'w', encoding='utf-8') as f:
+                    json.dump(new_params, f, indent=2, ensure_ascii=False)
+            except Exception as e:
+                print(f"[UT-BOT-ADJUST] 写入 oracle_params.json 失败: {e}")
+                return
+
+            # 更新调整时间戳
+            setattr(self, last_adjust_attr, time.time())
+
+            from colorama import Fore
+            print(f"\n{Fore.MAGENTA}[UT-BOT-ADJUST] {reason}{Fore.RESET}")
+            print(f"  key_value: {current_params['ut_bot_key_value']} → {new_key_value}")
+            print(f"  hull_length: {current_params['hull_length']} → {new_hull_length}\n")
+
+            # 发送 Telegram 通知
+            if self.telegram and self.telegram.enabled:
+                msg = (
+                    f"🔧 UT Bot 参数自动调整\n"
+                    f"原因: {reason}\n"
+                    f"key_value: {current_params['ut_bot_key_value']} → {new_key_value}\n"
+                    f"hull_length: {current_params['hull_length']} → {new_hull_length}\n"
+                    f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                self.telegram.send(msg)
+
+        except Exception as e:
+            print(f"[UT-BOT-ADJUST ERROR] {e}")
 
 def main():
     trader = AutoTraderV5()
