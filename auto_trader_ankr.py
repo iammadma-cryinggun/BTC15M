@@ -1291,11 +1291,13 @@ class AutoTraderV5:
         min_short_conf = CONFIG['signal'].get('min_short_confidence', CONFIG['signal']['min_confidence'])
 
         # 极端Oracle信号（>8或<-8）需本地评分同向才触发
+        # 🔥 修复：极端信号提高价格限制，0.95以下允许交易
+        # 理由：极端价格（0.99）代表市场共识极强，趋势最确定
         if oracle and abs(oracle_score) >= 8.0:
-            if oracle_score >= 8.0 and score > 0 and price <= CONFIG['signal'].get('max_entry_price', 0.65):
+            if oracle_score >= 8.0 and score > 0 and price <= 0.95:
                 direction = 'LONG'
                 print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，本地同向({score:.2f})，触发LONG！")
-            elif oracle_score <= -8.0 and score < 0 and price >= CONFIG['signal'].get('min_entry_price', 0.35):
+            elif oracle_score <= -8.0 and score < 0 and price >= 0.05:
                 direction = 'SHORT'
                 print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，本地同向({score:.2f})，触发SHORT！")
             else:
