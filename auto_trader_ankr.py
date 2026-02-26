@@ -80,6 +80,7 @@ CONFIG = {
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
         'max_stop_loss_pct': 0.30,      # 最大止损30%（放宽以减少假止损触发）
+        'take_profit_pct': 0.30,        # 止盈30%（与止损对称，解除1U封印）
     },
 
     'signal': {
