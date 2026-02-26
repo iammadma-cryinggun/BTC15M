@@ -1609,18 +1609,24 @@ class AutoTraderV5:
             return False, f"Conflict: 已有 {positions['LONG']:.0f} 多头仓位，无法做空"
 
         # 🛡️ === 总持仓额度限制（防止多笔交易累计超仓）===
+        # ⚠️ 重要：只统计未过期市场的持仓（过期市场已结算，不应占用额度）
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             # 🔥 激活WAL模式
             conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
-            # 查询所有当前持仓的总价值
+            # 🔥 查询未过期市场的持仓总价值（entry_time在最近25分钟内）
+            # 15分钟市场通常在结束前2-3分钟有交易机会，所以25分钟是一个安全窗口
+            cutoff_time = (datetime.now() - timedelta(minutes=25)).strftime('%Y-%m-%d %H:%M:%S')
+
             cursor.execute("""
                 SELECT SUM(value_usdc)
                 FROM positions
                 WHERE status IN ('open', 'closing')
-            """)
+                  AND entry_time >= ?
+            """, (cutoff_time,))
+
             total_exposure_row = cursor.fetchone()
             total_exposure = float(total_exposure_row[0]) if total_exposure_row and total_exposure_row[0] else 0.0
 
@@ -1634,17 +1640,17 @@ class AutoTraderV5:
 
             max_total_exposure = current_balance * CONFIG['risk']['max_total_exposure_pct']
 
-            # 🔥 关键风控：总持仓不能超过max_total_exposure_pct（60%）
+            # 🔥 关键风控：未过期市场的总持仓不能超过max_total_exposure_pct（60%）
             if total_exposure >= max_total_exposure:
                 conn.close()
                 exposure_pct = (total_exposure / current_balance) * 100
-                return False, f"🛡️ 总仓位限制: 当前持仓${total_exposure:.2f} ({exposure_pct:.1f}%)已达上限{CONFIG['risk']['max_total_exposure_pct']*100:.0f}%，拒绝开新仓"
+                return False, f"🛡️ 当前窗口持仓限制: 未过期市场持仓${total_exposure:.2f} ({exposure_pct:.1f}%)已达上限{CONFIG['risk']['max_total_exposure_pct']*100:.0f}%，拒绝开新仓"
 
             conn.close()
         except Exception as e:
             print(f"       [EXPOSURE CHECK ERROR] {e}")
             # 查询失败时为了安全，拒绝开仓
-            return False, f"总仓位查询异常，拒绝交易: {e}"
+            return False, f"当前窗口持仓查询异常，拒绝交易: {e}"
 
 
         # 🛡️ === 核心风控：同市场同向"弹匣限制"与"射击冷却" ===
