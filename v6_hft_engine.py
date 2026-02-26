@@ -38,6 +38,9 @@ class V6HFTEngine:
         self.yes_best_ask = None  # YES卖一价（买入时用）
         self.no_best_bid = None   # NO买一价（卖出时用）
         self.no_best_ask = None   # NO卖一价（买入时用）
+        # 🔧 修复：初始化current_yes_price和current_no_price，避免AttributeError
+        self.current_yes_price = None
+        self.current_no_price = None
         self.token_yes_id = None
         self.token_no_id = None
         self.last_trade_time = 0
