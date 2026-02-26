@@ -70,7 +70,7 @@ CONFIG = {
     'risk': {
         'base_position_pct': 0.10,      # 🔥 基础仓位10%（对应6手≈3U≈总资金10%）
         'max_position_pct': 0.30,       # 🔥 单笔最高仓位30%（信号很强时）
-        'max_total_exposure_pct': 0.30,  # 🔥 同一窗口累计持仓上限30%（关键风控）
+        'max_total_exposure_pct': 0.60,  # 🔥 同一窗口累计持仓上限60%（防止多笔累计超仓）
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
