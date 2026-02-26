@@ -3107,7 +3107,7 @@ class AutoTraderV5:
                                 # 🔍 修复：重试查询实际成交价
                                 for _tp_attempt in range(5):
                                     try:
-                                        time.sleep(3)
+                                        time.sleep(1)  # 🔥 优化：从3秒缩短到1秒
                                         close_order = self.client.get_order(close_order_id)
                                         if close_order:
                                             tp_status = close_order.get('status', '').upper()
@@ -3169,7 +3169,7 @@ class AutoTraderV5:
                             if tp_order_id:
                                 print(f"       [LOCAL SL] 撤销止盈单 {tp_order_id[-8:]}...")
                                 self.cancel_order(tp_order_id)
-                                time.sleep(3)  # 等待链上余额解冻，避免误判NO_BALANCE
+                                time.sleep(1)  # 🔥 优化：从3秒缩短到1秒，减少监控阻塞
 
                             # 市价平仓（止损模式，直接砸单不防插针）
                             close_market = market if market else self.get_market_data()
@@ -3216,10 +3216,10 @@ class AutoTraderV5:
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
                                 # 🔍 修复：重试查询实际成交价，避免滑点被掩盖
-                                # 极端行情下2秒不够，最多等15秒（5次×3秒）
+                                # 极端行情下快速重试，最多等5秒（5次×1秒）
                                 for _sl_attempt in range(5):
                                     try:
-                                        time.sleep(3)
+                                        time.sleep(1)  # 🔥 优化：从3秒缩短到1秒
                                         close_order = self.client.get_order(close_order_id)
                                         if close_order:
                                             sl_status = close_order.get('status', '').upper()
