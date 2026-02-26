@@ -88,8 +88,8 @@ CONFIG = {
         'min_confidence': 0.75,  # 默认置信度（保留用于兼容）
         'min_long_confidence': 0.60,   # LONG最小置信度
         'min_short_confidence': 0.60,  # SHORT最小置信度
-        'min_long_score': 4.0,      # 🔥 提高到4.0（LONG胜率22%，减少低质量信号）
-        'min_short_score': -3.0,    # SHORT保持-3.0（胜率69%）
+        'min_long_score': 4.0,      # LONG最低分数（对称）
+        'min_short_score': -4.0,    # 🔥 改为-4.0（与LONG对称，风控一致）
         'balance_zone_min': 0.49,  # 平衡区间下限
         'balance_zone_max': 0.51,  # 平衡区间上限
         'allow_long': True,   # 允许做多（但会动态调整）
@@ -98,6 +98,10 @@ CONFIG = {
         # 🛡️ 价格限制（允许追强势单，但拒绝极高位接盘）
         'max_entry_price': 0.80,  # 最高入场价：0.80（允许追涨，但28%止损保护）
         'min_entry_price': 0.20,  # 最低入场价：0.20（允许抄底，但28%止损保护）
+
+        # 🔥 币安Oracle数据融合权重（本地 vs Oracle）
+        'local_weight': 0.30,      # 本地指标权重（RSI、VWAP、动量等）
+        'oracle_weight': 0.70,     # Oracle权重（CVD、盘口失衡、UT Bot趋势等）
 
         # 动态调整参数
         'dynamic_lookback': 100,  # 最近100次交易用于评估
@@ -1510,43 +1514,52 @@ class AutoTraderV5:
             pass
 
         # 评分（ob_bias固定为0，orderbook_bias权重已禁用）
-        score, components = self.scorer.calculate_score(price, rsi, vwap, price_hist)
+        local_score, components = self.scorer.calculate_score(price, rsi, vwap, price_hist)
 
-        # ========== 双核融合：读取币安先知Oracle信号 ==========
+        # ========== 🔥 双核融合：本地指标 + 币安Oracle数据 ==========
         oracle = self._read_oracle_signal()
         oracle_score = 0.0
+        ut_hull_trend = 'NEUTRAL'
+        ut_bot_neutral = False
+
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
-            # 同向增强（权重20%），反向削弱（权重10%）
-            # 避免Oracle把弱信号推过门槛，或把强信号压下去
-            if oracle_score * score > 0:
-                oracle_boost = oracle_score / 5.0   # 同向：最多±2
-            else:
-                oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
-            score += oracle_boost
+            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
+            cvd_15m = oracle.get('cvd_15m', 0)
+            wall_imbalance = oracle.get('wall_imbalance', 0)
+
+            # 🔥 加权融合：本地指标 vs Oracle数据
+            local_weight = CONFIG['signal']['local_weight']  # 0.30
+            oracle_weight = CONFIG['signal']['oracle_weight']  # 0.70
+
+            # 融合评分（直接加权平均，不再是小幅boost）
+            score = local_score * local_weight + oracle_score * oracle_weight
             score = max(-10, min(10, score))
 
-            # 🛡️ 双重确认：UT Bot + Hull 趋势过滤
-            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
-            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | UT+Hull: {ut_hull_trend} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
+            print(f"       [FUSION] 本地评分: {local_score:+.2f} | Oracle评分: {oracle_score:+.2f} | 融合: {score:+.2f} (本地{local_weight*100:.0f}% vs Oracle{oracle_weight*100:.0f}%)")
+            print(f"       [ORACLE] CVD: {cvd_15m:+.1f} USD | 盘口失衡: {wall_imbalance*100:+.1f}% | UT+Hull: {ut_hull_trend}")
 
             # 🛡️ UT Bot中性时的仓位限制：降低为最低仓位
             ut_bot_neutral = (ut_hull_trend == 'NEUTRAL')
 
             # 双重确认逻辑：UT Bot 趋势必须与 Oracle 信号方向一致
             if ut_hull_trend != 'NEUTRAL':
-                # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
+                # 如果融合后看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
                 if score > 0 and ut_hull_trend == 'SHORT':
-                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
+                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: 融合看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
                     return None
-                # 如果 Oracle 看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
+                # 如果融合后看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
                 elif score < 0 and ut_hull_trend == 'LONG':
-                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看跌({score:+.2f})但UT Bot LONG，拒绝开空")
+                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: 融合看跌({score:+.2f})但UT Bot LONG，拒绝开空")
                     return None
                 else:
-                    print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与Oracle({score:+.2f})一致")
+                    print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与融合({score:+.2f})一致")
             else:
-                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仅使用Oracle信号，仓位限制为15%")
+                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仓位限制为最低{CONFIG['risk']['base_position_pct']*100:.0f}%")
+        else:
+            # 🔥 Oracle不可用时的回退：使用本地评分
+            score = local_score
+            print(f"       [FUSION] ⚠️ Oracle信号不可用，使用本地评分: {score:+.2f}")
 
         # ======================================================
 
@@ -1556,18 +1569,18 @@ class AutoTraderV5:
         min_long_conf = CONFIG['signal'].get('min_long_confidence', CONFIG['signal']['min_confidence'])
         min_short_conf = CONFIG['signal'].get('min_short_confidence', CONFIG['signal']['min_confidence'])
 
-        # 极端Oracle信号（>8或<-8）需本地评分同向才触发
+        # 极端Oracle信号（>8或<-8）需融合评分同向才触发
         # 🔥 修复：极端信号提高价格限制，0.95以下允许交易
         # 理由：极端价格（0.99）代表市场共识极强，趋势最确定
         if oracle and abs(oracle_score) >= 8.0:
             if oracle_score >= 8.0 and score > 0 and price <= 0.95:
                 direction = 'LONG'
-                print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，本地同向({score:.2f})，触发LONG！")
+                print(f"       [ORACLE] 🚀 极端看涨Oracle({oracle_score:+.2f})，融合同向({score:+.2f})，触发LONG！")
             elif oracle_score <= -8.0 and score < 0 and price >= 0.05:
                 direction = 'SHORT'
-                print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，本地同向({score:.2f})，触发SHORT！")
+                print(f"       [ORACLE] 🔻 极端看跌Oracle({oracle_score:+.2f})，融合同向({score:+.2f})，触发SHORT！")
             else:
-                print(f"       [ORACLE] ⚠️ 极端Oracle信号({oracle_score:+.2f})但本地评分反向({score:.2f})，忽略")
+                print(f"       [ORACLE] ⚠️ 极端Oracle({oracle_score:+.2f})但融合评分反向({score:+.2f})，忽略")
         else:
             if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
                 direction = 'LONG'
