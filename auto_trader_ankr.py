@@ -3428,6 +3428,26 @@ class AutoTraderV5:
                                 exit_reason = 'TAKE_PROFIT_LOCAL'
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
+
+                                # 🔥 关键修复：平仓单已上链，立即更新数据库防止"幽灵归零"
+                                # 即使后续查询成交价失败，至少status已不是'open'
+                                try:
+                                    cursor.execute("""
+                                        UPDATE positions
+                                        SET exit_time = ?, exit_token_price = ?,
+                                            exit_reason = ?, status = 'closing'
+                                        WHERE id = ?
+                                    """, (
+                                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                        actual_exit_price,
+                                        exit_reason,
+                                        pos_id
+                                    ))
+                                    conn.commit()
+                                    print(f"       [LOCAL TP] 🔐 平仓订单已上链，数据库状态已更新为'closing'")
+                                except Exception as update_err:
+                                    print(f"       [LOCAL TP] ⚠️ 初步数据库更新失败: {update_err}")
+
                                 # 🔍 修复：重试查询实际成交价（保守优化：3次×0.5秒=1.5秒）
                                 # 确保订单有时间成交，同时减少监控阻塞
                                 for _tp_attempt in range(3):
@@ -3555,6 +3575,26 @@ class AutoTraderV5:
                                 exit_reason = 'STOP_LOSS_LOCAL'
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
+
+                                # 🔥 关键修复：平仓单已上链，立即更新数据库防止"幽灵归零"
+                                # 即使后续查询成交价失败，至少status已不是'open'
+                                try:
+                                    cursor.execute("""
+                                        UPDATE positions
+                                        SET exit_time = ?, exit_token_price = ?,
+                                            exit_reason = ?, status = 'closing'
+                                        WHERE id = ?
+                                    """, (
+                                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                        actual_exit_price,
+                                        exit_reason,
+                                        pos_id
+                                    ))
+                                    conn.commit()
+                                    print(f"       [LOCAL SL] 🔐 平仓订单已上链，数据库状态已更新为'closing'")
+                                except Exception as update_err:
+                                    print(f"       [LOCAL SL] ⚠️ 初步数据库更新失败: {update_err}")
+
                                 # 🔍 修复：重试查询实际成交价，避免滑点被掩盖
                                 # 极端行情下快速重试，保守优化：3次×0.5秒=1.5秒
                                 for _sl_attempt in range(3):
@@ -3711,12 +3751,13 @@ class AutoTraderV5:
                     pnl_usd = float(size) * (float(actual_exit_price) - float(entry_token_price))
                     pnl_pct = (pnl_usd / float(value_usdc)) * 100 if value_usdc and float(value_usdc) > 0 else 0
 
-                    # 更新持仓状态
+                    # 更新持仓状态为最终closed状态（覆盖之前的'closing'保险状态）
+                    # 🔥 包含pnl_usd和pnl_pct的完整记录，确保不出现"幽灵归零"
                     cursor.execute("""
                         UPDATE positions
                         SET exit_time = ?, exit_token_price = ?, pnl_usd = ?,
                             pnl_pct = ?, exit_reason = ?, status = 'closed'
-                        WHERE id = ?
+                        WHERE id = ? AND status IN ('open', 'closing')
                     """, (
                         datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                         actual_exit_price,  # 使用实际成交价格
@@ -3725,6 +3766,12 @@ class AutoTraderV5:
                         exit_reason,
                         pos_id
                     ))
+
+                    # 验证UPDATE是否成功
+                    if cursor.rowcount == 0:
+                        print(f"       [POSITION WARNING] 数据库UPDATE影响0行，可能已被其他进程处理")
+                    else:
+                        print(f"       [POSITION DB] ✅ 已更新数据库: status='closed', pnl=${pnl_usd:+.2f}")
 
                     result_text = "盈利" if pnl_usd > 0 else "亏损"
                     print(f"       [POSITION] {exit_reason}: {side} {result_text} ${pnl_usd:+.2f} ({pnl_pct:+.1f}%) - 订单 {triggered_order_id}")
