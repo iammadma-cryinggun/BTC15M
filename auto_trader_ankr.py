@@ -4361,6 +4361,24 @@ class AutoTraderV5:
             print(f"[UT-BOT-ADJUST ERROR] {e}")
 
 def main():
+    # 🔥 启动学习报告API（后台线程）
+    import threading
+    import time
+
+    def start_learning_api():
+        try:
+            from learning_report_api import app as learning_app
+            port = int(os.getenv('LEARNING_PORT', 5002))
+            learning_app.run(host='0.0.0.0', port=port, use_reloader=False, debug=False)
+            print(f"[LEARNING] 学习报告API已启动: http://0.0.0.0:{port}/learning/report")
+        except Exception as e:
+            print(f"[LEARNING] API启动失败: {e}")
+
+    # 延迟启动API（避免端口冲突）
+    api_thread = threading.Thread(target=start_learning_api, daemon=True)
+    api_thread.start()
+
+    # 启动主交易程序
     trader = AutoTraderV5()
     trader.run()
 
