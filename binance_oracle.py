@@ -31,10 +31,10 @@ SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_s
 # CVD滚动窗口（秒）
 CVD_WINDOW_SEC = 900  # 15分钟
 
-# UT Bot + Hull 参数（优化后的最佳参数）
-UT_BOT_KEY_VALUE = 2.0  # 🔥 修复：从0.5提高到2.0，避免过于敏感
-UT_BOT_ATR_PERIOD = 10
-HULL_LENGTH = 34
+# UT Bot + Hull 参数（敏捷小猎犬配置）
+UT_BOT_KEY_VALUE = 1.5  # 🔥 敏捷模式：降低门槛，对反转更敏感（提前1~2根K线）
+UT_BOT_ATR_PERIOD = 10  # 保持不变
+HULL_LENGTH = 20        # 🔥 缩短到过去5小时，紧跟近期波动（原34期→20期）
 
 
 class TechnicalIndicators:
