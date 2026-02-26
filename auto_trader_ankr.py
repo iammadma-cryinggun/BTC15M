@@ -3116,10 +3116,11 @@ class AutoTraderV5:
                                 exit_reason = 'TAKE_PROFIT_LOCAL'
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
-                                # 🔍 修复：重试查询实际成交价
-                                for _tp_attempt in range(5):
+                                # 🔍 修复：重试查询实际成交价（保守优化：3次×0.5秒=1.5秒）
+                                # 确保订单有时间成交，同时减少监控阻塞
+                                for _tp_attempt in range(3):
                                     try:
-                                        time.sleep(1)  # 🔥 优化：从3秒缩短到1秒
+                                        time.sleep(0.5)  # 🔥 优化：从1秒缩短到0.5秒
                                         close_order = self.client.get_order(close_order_id)
                                         if close_order:
                                             tp_status = close_order.get('status', '').upper()
@@ -3133,11 +3134,11 @@ class AutoTraderV5:
                                                 print(f"       [LOCAL TP] ✅ 止盈实际成交价: {actual_exit_price:.4f} (尝试{_tp_attempt+1}次)")
                                                 break
                                             else:
-                                                print(f"       [LOCAL TP] ⏳ 止盈单未成交(status={tp_status})，继续等待({_tp_attempt+1}/5)...")
+                                                print(f"       [LOCAL TP] ⏳ 止盈单未成交(status={tp_status})，继续等待({_tp_attempt+1}/3)...")
                                     except Exception as e:
-                                        print(f"       [LOCAL TP] 查询成交价失败({_tp_attempt+1}/5): {e}")
+                                        print(f"       [LOCAL TP] 查询成交价失败({_tp_attempt+1}/3): {e}")
                                 else:
-                                    print(f"       [LOCAL TP] ⚠️ 止盈单15秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
+                                    print(f"       [LOCAL TP] ⚠️ 止盈单1.5秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
                                 print(f"       [LOCAL TP] 本地止盈执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
                                 print(f"       [LOCAL TP] 市价平仓失败(非余额原因)，下次继续尝试")
@@ -3228,10 +3229,10 @@ class AutoTraderV5:
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
                                 # 🔍 修复：重试查询实际成交价，避免滑点被掩盖
-                                # 极端行情下快速重试，最多等5秒（5次×1秒）
-                                for _sl_attempt in range(5):
+                                # 极端行情下快速重试，保守优化：3次×0.5秒=1.5秒
+                                for _sl_attempt in range(3):
                                     try:
-                                        time.sleep(1)  # 🔥 优化：从3秒缩短到1秒
+                                        time.sleep(0.5)  # 🔥 优化：从1秒缩短到0.5秒
                                         close_order = self.client.get_order(close_order_id)
                                         if close_order:
                                             sl_status = close_order.get('status', '').upper()
@@ -3245,11 +3246,11 @@ class AutoTraderV5:
                                                 print(f"       [LOCAL SL] ✅ 止损实际成交价: {actual_exit_price:.4f} (尝试{_sl_attempt+1}次)")
                                                 break
                                             else:
-                                                print(f"       [LOCAL SL] ⏳ 止损单未成交(status={sl_status})，继续等待({_sl_attempt+1}/5)...")
+                                                print(f"       [LOCAL SL] ⏳ 止损单未成交(status={sl_status})，继续等待({_sl_attempt+1}/3)...")
                                     except Exception as e:
-                                        print(f"       [LOCAL SL] 查询成交价失败({_sl_attempt+1}/5): {e}")
+                                        print(f"       [LOCAL SL] 查询成交价失败({_sl_attempt+1}/3): {e}")
                                 else:
-                                    print(f"       [LOCAL SL] ⚠️ 止损单15秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
+                                    print(f"       [LOCAL SL] ⚠️ 止损单1.5秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
                                 print(f"       [LOCAL SL] 止损执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
                                 print(f"       [LOCAL SL] 市价平仓失败(非余额原因)，下次继续尝试")
