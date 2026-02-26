@@ -70,7 +70,7 @@ class TechnicalIndicators:
 class BinanceOracle:
     def __init__(self):
         self.cvd = 0.0                          # 累计主动买卖量差
-        self.cvd_window = deque()               # (timestamp, delta) 滚动窗口
+        self.cvd_window = deque(maxlen=10000)               # (timestamp, delta) 滚动窗口（限制最大长度防内存泄漏）
         self.buy_wall = 0.0                     # 盘口买单墙（实时值）
         self.sell_wall = 0.0                    # 盘口卖单墙（实时值）
         self.buy_wall_history = deque(maxlen=10) # 买单墙历史（用于平滑）

@@ -1153,7 +1153,8 @@ class AutoTraderV5:
         except:
             pass  # 列已存在，忽略
 
-        conn.close()
+        # 🔧 F1修复：self.conn 是持久连接，不能在这里关闭
+        # conn.close() 已移除，self.conn 在整个生命周期保持打开
 
     def _restore_daily_stats(self):
         """从数据库恢复当天的亏损和交易统计，防止重启后风控失效"""
@@ -1209,12 +1210,13 @@ class AutoTraderV5:
             # 记录该窗口该方向的信号
             self._last_signals[signal_key] = datetime.now()
 
-            # 清理过期的信号记录（1小时前的）
+            # 清理过期的信号记录（1小时前的）- 每50次调用清理一次，避免每次O(n)重建
             current_time = datetime.now()
-            self._last_signals = {
-                k: v for k, v in self._last_signals.items()
-                if (current_time - v).total_seconds() < 3600
-            }
+            if len(self._last_signals) > 200:
+                self._last_signals = {
+                    k: v for k, v in self._last_signals.items()
+                    if (current_time - v).total_seconds() < 3600
+                }
 
             order_value = order_result.get('value', 0) if order_result else 0
             order_status = order_result.get('status', 'failed') if order_result else 'failed'
@@ -3175,15 +3177,33 @@ class AutoTraderV5:
                             if tp_order:
                                 # Polymarket 成交状态可能是 FILLED 或 MATCHED
                                 if tp_order.get('status') in ('FILLED', 'MATCHED'):
-                                    exit_reason = 'TAKE_PROFIT'
-                                    triggered_order_id = tp_order_id
-                                    # 优先用avgPrice，合理性校验
-                                    avg_p = tp_order.get('avgPrice') or tp_order.get('price')
-                                    if avg_p:
-                                        parsed = float(avg_p)
-                                        actual_exit_price = parsed if 0.01 <= parsed <= 0.99 else None
-                                    if actual_exit_price is None:
-                                        actual_exit_price = entry_token_price  # fallback入场价
+                                    # 🔧 F2修复：检查部分成交 matchedSize vs size
+                                    tp_matched = float(tp_order.get('matchedSize', 0) or 0)
+                                    tp_order_size = float(tp_order.get('size', size) or size)
+                                    if tp_matched < tp_order_size * 0.95:
+                                        # 部分成交：更新剩余 size，保持 open 继续监控
+                                        remaining_size = size - tp_matched
+                                        print(f"       [TP PARTIAL] 部分成交: matched={tp_matched:.2f} / size={tp_order_size:.2f}，剩余={remaining_size:.2f}，继续监控")
+                                        try:
+                                            cursor.execute(
+                                                "UPDATE positions SET size = ? WHERE id = ?",
+                                                (remaining_size, pos_id)
+                                            )
+                                            conn.commit()
+                                        except Exception as db_e:
+                                            print(f"       [TP PARTIAL] 更新剩余size失败: {db_e}")
+                                        # 不设置 exit_reason，让监控继续处理剩余仓位
+                                    else:
+                                        # 完全成交（>=95%）
+                                        exit_reason = 'TAKE_PROFIT'
+                                        triggered_order_id = tp_order_id
+                                        # 优先用avgPrice，合理性校验
+                                        avg_p = tp_order.get('avgPrice') or tp_order.get('price')
+                                        if avg_p:
+                                            parsed = float(avg_p)
+                                            actual_exit_price = parsed if 0.01 <= parsed <= 0.99 else None
+                                        if actual_exit_price is None:
+                                            actual_exit_price = entry_token_price  # fallback入场价
                             break
                         except Exception as e:
                             print(f"       [ORDER CHECK ERROR] TP order {tp_order_id}: {e}")
@@ -3713,6 +3733,10 @@ class AutoTraderV5:
 
         except Exception as e:
             print(f"       [POSITION CHECK ERROR] {e}")
+            try:
+                conn.close()
+            except:
+                pass
 
     def get_open_positions_count(self) -> int:
         """获取当前open持仓数量"""

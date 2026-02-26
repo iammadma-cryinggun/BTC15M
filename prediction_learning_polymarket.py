@@ -76,8 +76,10 @@ class PolymarketPredictionLearning:
 
     def _init_db(self):
         """初始化数据库"""
-        conn = sqlite3.connect(self.db_path)
+        # 🔧 F3修复：多线程安全 + WAL模式
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
+        cursor.execute('PRAGMA journal_mode=WAL;')
 
         # 预测记录表
         cursor.execute('''
@@ -180,7 +182,7 @@ class PolymarketPredictionLearning:
 
         返回: 记录ID
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
 
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -216,7 +218,7 @@ class PolymarketPredictionLearning:
 
         返回: 验证结果
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
 
         # 获取预测记录
@@ -281,7 +283,7 @@ class PolymarketPredictionLearning:
             exit_reason: 'TAKE_PROFIT' / 'STOP_LOSS' / 'SIGNAL_CHANGE'
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE predictions
@@ -305,7 +307,7 @@ class PolymarketPredictionLearning:
         """
         获取准确率统计
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
 
         time_threshold = datetime.now() - timedelta(hours=hours)
@@ -362,7 +364,7 @@ class PolymarketPredictionLearning:
 
     def analyze_by_score_range(self) -> List[Dict]:
         """按评分区间分析准确率（8档精细分析）"""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
 
         cursor.execute('''
@@ -408,7 +410,7 @@ class PolymarketPredictionLearning:
     def find_best_confidence_threshold(self) -> float:
         """遍历50%-90%找最优置信度阈值"""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute('SELECT confidence, correct FROM predictions WHERE verified = 1')
             rows = cursor.fetchall()
@@ -439,7 +441,7 @@ class PolymarketPredictionLearning:
         返回：各退出原因的统计、推荐最优 tp_pct / sl_pct
         """
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
             # 按退出原因统计
@@ -586,7 +588,7 @@ class PolymarketPredictionLearning:
 
         # 建议3: 置信度阈值建议（直接查询数据库）
         if stats['total'] > 10:
-            conn = sqlite3.connect(self.db_path)
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT COUNT(*) as total, SUM(correct) as correct
@@ -732,7 +734,7 @@ class PolymarketPredictionLearning:
         参数:
             current_btc_price: 当前BTC价格（如果为0则从API获取）
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
 
         # 找出15分钟前未验证的记录
