@@ -3,15 +3,13 @@
 """
 学习报告Web API
 访问：http://your-zeabur-app-url/learning/report
+或者：http://your-zeabur-app-url/learning/export (导出静态文件)
 """
 
 import sqlite3
 import os
 from datetime import datetime
-from flask import Flask, jsonify
-from colorama import Fore, init
-
-init(autoreset=True)
+from flask import Flask, jsonify, send_file
 
 app = Flask(__name__)
 
@@ -157,23 +155,8 @@ def get_overall_stats():
         'avg_pnl_pct': round((avg_pnl * 100) if avg_pnl else 0, 2)
     }
 
-@app.route('/learning/report')
-def learning_report():
-    """学习报告API"""
-
-    # 检查数据库是否存在
-    if not os.path.exists(prediction_db):
-        return jsonify({
-            'error': '学习数据库尚不存在',
-            'message': '系统运行一段时间后会自动创建数据库'
-        }), 404
-
-    # 收集所有数据
-    overall = get_overall_stats()
-    oracle = get_oracle_accuracy()
-    threshold = get_threshold_search()
-
-    # 生成HTML报告
+def generate_html_report(overall, oracle, threshold):
+    """生成HTML报告"""
     html = f"""
     <!DOCTYPE html>
     <html>
@@ -296,7 +279,65 @@ def learning_report():
 
     return html
 
+@app.route('/learning/report')
+def learning_report():
+    """学习报告API - 直接返回HTML"""
+
+    if not os.path.exists(prediction_db):
+        return """
+        <!DOCTYPE html>
+        <html>
+        <body>
+            <h1>学习报告</h1>
+            <p>学习数据库尚不存在，系统运行一段时间后会自动创建。</p>
+        </body>
+        </html>
+        """, 200
+
+    overall = get_overall_stats()
+    oracle = get_oracle_accuracy()
+    threshold = get_threshold_search()
+
+    html = generate_html_report(overall, oracle, threshold)
+    return html
+
+@app.route('/learning/export')
+def export_report():
+    """导出静态HTML报告到文件"""
+    try:
+        overall = get_overall_stats()
+        oracle = get_oracle_accuracy()
+        threshold = get_threshold_search()
+
+        html = generate_html_report(overall, oracle, threshold)
+
+        # 导出到文件
+        output_path = os.path.join(DATA_DIR, 'learning_report.html')
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(html)
+
+        return jsonify({
+            'success': True,
+            'message': '报告已导出',
+            'url': '/learning_report.html'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/learning_report.html')
+def serve_static_report():
+    """提供静态HTML报告"""
+    output_path = os.path.join(DATA_DIR, 'learning_report.html')
+    if os.path.exists(output_path):
+        return send_file(output_path)
+    else:
+        return "报告尚未生成，请先访问 /learning/export", 404
+
 if __name__ == '__main__':
     port = int(os.getenv('LEARNING_PORT', 5002))
     print(f"学习报告API启动: http://0.0.0.0:{port}/learning/report")
+    print(f"静态报告: http://0.0.0.0:{port}/learning_report.html")
     app.run(host='0.0.0.0', port=port)
