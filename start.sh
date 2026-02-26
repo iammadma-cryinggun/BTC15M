@@ -13,6 +13,23 @@ print("  BTC 15min 双核架构 - 启动中")
 print("=" * 70)
 print()
 
+# 📊 第0步：导出学习系统数据（方便查看）
+print("[0/3] 导出学习系统历史数据...")
+try:
+    result = subprocess.run(
+        [sys.executable, 'export_learning.py'],
+        capture_output=True,
+        text=True,
+        timeout=10
+    )
+    if result.returncode == 0:
+        print(result.stdout)
+    else:
+        print(f"[WARN] 学习数据导出失败: {result.stderr}")
+except Exception as e:
+    print(f"[WARN] 无法导出学习数据: {e}")
+print()
+
 # 检查文件
 if not os.path.exists('binance_oracle.py'):
     print("[ERROR] binance_oracle.py not found!")
@@ -26,7 +43,7 @@ if not os.path.exists('v6_hft_engine.py'):
 if os.path.exists('oracle.log'):
     os.remove('oracle.log')
 
-print("[1/2] 启动币安先知 (后台)...")
+print("[1/3] 启动币安先知 (后台)...")
 # 启动Oracle，后台运行
 oracle_log = open('oracle.log', 'w')
 oracle_process = subprocess.Popen(
@@ -64,7 +81,7 @@ else:
     print("[WARN] oracle_signal.json 尚未生成（可能正在初始化）")
 
 print()
-print("[2/2] 启动V6高频引擎 (前台)...")
+print("[2/3] 启动V6高频引擎 (前台)...")
 print("=" * 70)
 print()
 
