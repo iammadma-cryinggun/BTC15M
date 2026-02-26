@@ -564,6 +564,14 @@ class AutoTraderV5:
                 }
                 self.learning_system = PolymarketPredictionLearning(current_params=current_params)
                 print("[OK] 预测学习系统已启用")
+                # 🔥 启动时立即输出历史学习数据
+                print()
+                print("=" * 70)
+                print("📊 历史学习数据")
+                print("=" * 70)
+                self.print_learning_reports()
+                print("=" * 70)
+                print()
             except Exception as e:
                 print(f"[WARN] 学习系统初始化失败: {e}")
 
