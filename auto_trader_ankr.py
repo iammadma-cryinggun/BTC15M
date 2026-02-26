@@ -343,22 +343,54 @@ class PositionManager:
     def __init__(self, balance_usdc: float):
         self.balance = balance_usdc
 
-    def calculate_position(self, confidence: float) -> float:
+    def calculate_position(self, confidence: float, score: float = 0.0) -> float:
+        """
+        智能动态仓位：根据信号强度（score）自动调整
+
+        Args:
+            confidence: 置信度（0-1）
+            score: 信号分数（-10到+10）
+
+        Returns:
+            实际下单金额（USDC）
+        """
         available = self.balance - CONFIG['risk']['reserve_usdc']
 
         if available <= CONFIG['risk']['min_position_usdc']:
             return 0.0  # Not enough to meet minimum
 
-        # Base position: 15% of balance
-        base = self.balance * CONFIG['risk']['max_position_pct']
+        # 基础仓位：15%
+        base = self.balance * 0.15
 
-        # Adjust by confidence (0.3-1.0) -> (0.65-1.0 multiplier)
-        mult = 0.5 + (confidence * 0.5)
-        adjusted = base * mult
+        # 🎯 根据信号分数分段调整（方案A：智能分段）
+        abs_score = abs(score)
+
+        if abs_score >= 6.0:
+            # 🔥 超强信号：30%
+            multiplier = 2.0
+        elif abs_score >= 4.5:
+            # 💪 强信号：25%
+            multiplier = 1.67
+        elif abs_score >= 3.5:
+            # 👌 中等信号：20%
+            multiplier = 1.33
+        else:
+            # ⚠️ 弱信号：15%
+            multiplier = 1.0
+
+        # 结合confidence微调（±10%）
+        confidence_adj = 0.9 + (confidence * 0.2)  # 0.9 - 1.1
+
+        adjusted = base * multiplier * confidence_adj
+
+        # 限制在15%-30%范围内
+        min_pos = self.balance * 0.15
+        max_pos = self.balance * 0.30
+        final = max(min_pos, min(adjusted, max_pos))
 
         # IMPORTANT: Must be at least 2 USDC
         min_required = CONFIG['risk']['min_position_usdc']
-        final = max(adjusted, min_required)
+        final = max(final, min_required)
 
         # But never exceed available balance (minus small buffer)
         max_safe = available * 0.95
@@ -2452,7 +2484,8 @@ class AutoTraderV5:
                 print(f"       [RISK] 余额查询失败或余额为0，拒绝开仓（安全保护）")
                 return None
             self.position_mgr.balance = fresh_usdc
-            position_value = self.position_mgr.calculate_position(signal['confidence'])
+            # 🎯 智能动态仓位：根据信号强度自动调整（15%-30%）
+            position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
 
             if not self.position_mgr.can_afford(position_value):
                 print(f"       [RISK] Cannot afford {position_value:.2f}")
