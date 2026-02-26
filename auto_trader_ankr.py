@@ -700,6 +700,8 @@ class AutoTraderV5:
                 return
 
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 🔥 新增：清理卡在'closing'状态的持仓（修复止损/止盈失败bug）
@@ -1161,6 +1163,8 @@ class AutoTraderV5:
         try:
             today = datetime.now().date().strftime('%Y-%m-%d')
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 恢复当天已关闭持仓的亏损总额
@@ -1284,6 +1288,8 @@ class AutoTraderV5:
         """
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
             if pos_id:
                 # 通过 token_id 直接匹配 predictions 表的 market_slug
@@ -1328,6 +1334,8 @@ class AutoTraderV5:
         """打印最近的交易记录（用于调试）"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 查询最近的N天交易
@@ -1756,6 +1764,8 @@ class AutoTraderV5:
         positions = {}  # {side: size}
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 从 positions 表获取当前持仓
@@ -2701,6 +2711,8 @@ class AutoTraderV5:
         try:
             # 🔥 防止数据库锁定：设置timeout和check_same_thread
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             value = order_result.get('value', 0) if order_result else 0
@@ -2926,6 +2938,8 @@ class AutoTraderV5:
             token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
 
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 查找同方向OPEN持仓（不依赖token_id，因为每小时市场会切换）
@@ -3083,6 +3097,8 @@ class AutoTraderV5:
         """
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 获取所有open和closing状态的持仓（包括订单ID）
@@ -3744,6 +3760,8 @@ class AutoTraderV5:
         """获取当前open持仓数量"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM positions WHERE status = 'open'")
             count = cursor.fetchone()[0]
@@ -3756,6 +3774,8 @@ class AutoTraderV5:
         """信号改变时平掉所有相反方向的持仓，先取消止盈止损单，再市价平仓"""
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
+            conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
             # 确定需要平仓的方向（与当前信号相反）
