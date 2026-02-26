@@ -32,7 +32,7 @@ SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_s
 CVD_WINDOW_SEC = 900  # 15分钟
 
 # UT Bot + Hull 参数（优化后的最佳参数）
-UT_BOT_KEY_VALUE = 0.5
+UT_BOT_KEY_VALUE = 2.0  # 🔥 修复：从0.5提高到2.0，避免过于敏感
 UT_BOT_ATR_PERIOD = 10
 HULL_LENGTH = 34
 
@@ -156,14 +156,30 @@ class BinanceOracle:
         return round(max(-10.0, min(10.0, score)), 3)
 
     def add_kline(self, timestamp, open_price, high, low, close, volume):
-        """添加新的 K 线数据"""
+        """添加新的 K 线数据（旧方法，保持兼容）"""
         kline = {
             'timestamp': timestamp,
             'open': open_price,
             'high': high,
             'low': low,
             'close': close,
-            'volume': volume
+            'volume': volume,
+            'closed': True  # 默认为已闭合
+        }
+        self.klines_data.append(kline)
+        if len(self.klines_data) > self.max_klines:
+            self.klines_data.pop(0)
+
+    def add_kline_with_closed(self, timestamp, open_price, high, low, close, volume, is_closed):
+        """添加新的 K 线数据（带闭合状态）"""
+        kline = {
+            'timestamp': timestamp,
+            'open': open_price,
+            'high': high,
+            'low': low,
+            'close': close,
+            'volume': volume,
+            'closed': is_closed
         }
         self.klines_data.append(kline)
         if len(self.klines_data) > self.max_klines:
@@ -311,20 +327,40 @@ class BinanceOracle:
                         data = json.loads(msg)
 
                         kline = data.get('k', {})
-                        if kline.get('x'):  # K线已闭合
-                            self.add_kline(
-                                kline['t'],
-                                float(kline['o']),
-                                float(kline['h']),
-                                float(kline['l']),
-                                float(kline['c']),
-                                float(kline['v'])
-                            )
+                        is_closed = kline.get('x', False)
+                        kline_timestamp = kline['t']
+                        kline_open = float(kline['o'])
+                        kline_high = float(kline['h'])
+                        kline_low = float(kline['l'])
+                        kline_close = float(kline['c'])
+                        kline_volume = float(kline['v'])
 
-                            # 每10根K线打印一次趋势
-                            if len(self.klines_data) % 10 == 0:
-                                trend = self.get_ut_bot_hull_trend()
-                                print(f"[KLINE] Collected {len(self.klines_data)} bars | UT+Hull trend: {trend or 'CALCULATING...'}")
+                        # 🔥 关键修复：实时更新未闭合的K线，避免14分钟滞后
+                        if not self.klines_data:
+                            # 第一次添加K线
+                            self.add_kline_with_closed(kline_timestamp, kline_open, kline_high, kline_low, kline_close, kline_volume, is_closed)
+                        elif self.klines_data[-1].get('timestamp') == kline_timestamp:
+                            # 同一根K线，更新未闭合的数据
+                            if not is_closed:
+                                self.klines_data[-1]['high'] = max(self.klines_data[-1]['high'], kline_high)
+                                self.klines_data[-1]['low'] = min(self.klines_data[-1]['low'], kline_low)
+                                self.klines_data[-1]['close'] = kline_close
+                                self.klines_data[-1]['volume'] = kline_volume
+                                self.klines_data[-1]['closed'] = is_closed
+                        else:
+                            # 新的K线
+                            if is_closed or self.klines_data[-1].get('closed', True):
+                                # 上一根已闭合，追加新K线
+                                self.add_kline_with_closed(kline_timestamp, kline_open, kline_high, kline_low, kline_close, kline_volume, is_closed)
+
+                                # 每10根K线打印一次趋势
+                                if len(self.klines_data) % 10 == 0:
+                                    trend = self.get_ut_bot_hull_trend()
+                                    print(f"[KLINE] Collected {len(self.klines_data)} bars | UT+Hull trend: {trend or 'CALCULATING...'}")
+                            else:
+                                # 上一根未闭合但来了新K线，先闭合上一根再添加新K线
+                                self.klines_data[-1]['closed'] = True
+                                self.add_kline_with_closed(kline_timestamp, kline_open, kline_high, kline_low, kline_close, kline_volume, is_closed)
 
             except Exception as e:
                 print(f"[ORACLE] K-line disconnected: {e}, reconnecting in 3s...")

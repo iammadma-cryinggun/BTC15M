@@ -32,8 +32,11 @@ class V6HFTEngine:
 
         self.current_market = None
         self.current_price = None
-        self.current_yes_price = None
-        self.current_no_price = None
+        # 🔥 修复：分别存储bid和ask价格，避免spread被抹除
+        self.yes_best_bid = None  # YES买一价（卖出时用）
+        self.yes_best_ask = None  # YES卖一价（买入时用）
+        self.no_best_bid = None   # NO买一价（卖出时用）
+        self.no_best_ask = None   # NO卖一价（买入时用）
         self.token_yes_id = None
         self.token_no_id = None
         self.last_trade_time = 0
@@ -62,14 +65,23 @@ class V6HFTEngine:
         original = self.v5.get_order_book
 
         def fast_get_order_book(token_id: str, side: str = 'BUY'):
+            # 🔥 关键修复：根据side返回正确的bid/ask价格
+            # BUY时返回ask（卖一价，买入成本），SELL时返回bid（买一价，卖出收入）
             if token_id == self.token_yes_id:
-                price = self.current_yes_price
+                if side == 'BUY':
+                    price = self.yes_best_ask  # 买入YES，需要用ask价格
+                else:  # SELL
+                    price = self.yes_best_bid   # 卖出YES，需要用bid价格
             elif token_id == self.token_no_id:
-                price = self.current_no_price
+                if side == 'BUY':
+                    price = self.no_best_ask   # 买入NO，需要用ask价格
+                else:  # SELL
+                    price = self.no_best_bid    # 卖出NO，需要用bid价格
             else:
                 return original(token_id, side)
+
             if price is not None:
-                print(f"       [WS PRICE] {token_id[-8:]}: {price:.4f} (WebSocket实时)")
+                print(f"       [WS PRICE] {token_id[-8:]}: {price:.4f} ({side}, WebSocket实时)")
                 return price
             print(f"       [WS PRICE] {token_id[-8:]}: 暂无WebSocket数据，回退REST")
             return original(token_id, side)
@@ -84,8 +96,11 @@ class V6HFTEngine:
     def _reset_price_cache(self):
         """切换市场时重置价格缓存"""
         self.current_price = None
-        self.current_yes_price = None
-        self.current_no_price = None
+        # 🔥 修复：重置bid/ask价格
+        self.yes_best_bid = None
+        self.yes_best_ask = None
+        self.no_best_bid = None
+        self.no_best_ask = None
         self._last_indicator_update = 0
         print("[SWITCH] 价格缓存已重置")
 
@@ -227,9 +242,13 @@ class V6HFTEngine:
             mid_price = (best_bid + best_ask) / 2
             asset_id = data.get("asset_id")
             if asset_id == self.token_yes_id:
+                self.yes_best_bid = best_bid
+                self.yes_best_ask = best_ask
                 self.current_yes_price = mid_price
                 self.current_price = mid_price
             elif asset_id == self.token_no_id:
+                self.no_best_bid = best_bid
+                self.no_best_ask = best_ask
                 self.current_no_price = mid_price
             now = time.time()
             if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
@@ -259,10 +278,14 @@ class V6HFTEngine:
                 asset_id = item.get("asset_id")
                 if asset_id == self.token_yes_id:
                     if 0.02 <= mid_price <= 0.98:
+                        self.yes_best_bid = best_bid
+                        self.yes_best_ask = best_ask
                         self.current_yes_price = mid_price
                         self.current_price = mid_price
                 elif asset_id == self.token_no_id:
                     if 0.02 <= mid_price <= 0.98:
+                        self.no_best_bid = best_bid
+                        self.no_best_ask = best_ask
                         self.current_no_price = mid_price
 
                 # 更新指标（只用YES价格）
