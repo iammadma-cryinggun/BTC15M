@@ -3116,28 +3116,24 @@ class AutoTraderV5:
                                 exit_reason = 'TAKE_PROFIT_LOCAL'
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
-                                # 🔍 修复：重试查询实际成交价
-                                for _tp_attempt in range(5):
-                                    try:
-                                        time.sleep(1)  # 🔥 优化：从3秒缩短到1秒
-                                        close_order = self.client.get_order(close_order_id)
-                                        if close_order:
-                                            tp_status = close_order.get('status', '').upper()
-                                            matched_size = float(close_order.get('matchedSize', 0) or 0)
-                                            if tp_status in ('FILLED', 'MATCHED') or matched_size > 0:
-                                                avg_p = close_order.get('avgPrice') or close_order.get('price')
-                                                if avg_p:
-                                                    parsed = float(avg_p)
-                                                    if 0.01 <= parsed <= 0.99:
-                                                        actual_exit_price = parsed
-                                                print(f"       [LOCAL TP] ✅ 止盈实际成交价: {actual_exit_price:.4f} (尝试{_tp_attempt+1}次)")
-                                                break
-                                            else:
-                                                print(f"       [LOCAL TP] ⏳ 止盈单未成交(status={tp_status})，继续等待({_tp_attempt+1}/5)...")
-                                    except Exception as e:
-                                        print(f"       [LOCAL TP] 查询成交价失败({_tp_attempt+1}/5): {e}")
-                                else:
-                                    print(f"       [LOCAL TP] ⚠️ 止盈单15秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
+                                # 🔥 极致优化：只查询一次，不阻塞监控循环
+                                # 监控每0.1秒运行，会自然检测到成交情况
+                                try:
+                                    close_order = self.client.get_order(close_order_id)
+                                    if close_order:
+                                        tp_status = close_order.get('status', '').upper()
+                                        matched_size = float(close_order.get('matchedSize', 0) or 0)
+                                        if tp_status in ('FILLED', 'MATCHED') or matched_size > 0:
+                                            avg_p = close_order.get('avgPrice') or close_order.get('price')
+                                            if avg_p:
+                                                parsed = float(avg_p)
+                                                if 0.01 <= parsed <= 0.99:
+                                                    actual_exit_price = parsed
+                                            print(f"       [LOCAL TP] ✅ 止盈实际成交价: {actual_exit_price:.4f}")
+                                        else:
+                                            print(f"       [LOCAL TP] ⏳ 止盈单未成交(status={tp_status})，下次监控继续检查")
+                                except Exception as e:
+                                    print(f"       [LOCAL TP] 查询成交价失败: {e}")
                                 print(f"       [LOCAL TP] 本地止盈执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
                                 print(f"       [LOCAL TP] 市价平仓失败(非余额原因)，下次继续尝试")
@@ -3227,29 +3223,24 @@ class AutoTraderV5:
                                 exit_reason = 'STOP_LOSS_LOCAL'
                                 triggered_order_id = close_order_id
                                 actual_exit_price = pos_current_price  # fallback
-                                # 🔍 修复：重试查询实际成交价，避免滑点被掩盖
-                                # 极端行情下快速重试，最多等5秒（5次×1秒）
-                                for _sl_attempt in range(5):
-                                    try:
-                                        time.sleep(1)  # 🔥 优化：从3秒缩短到1秒
-                                        close_order = self.client.get_order(close_order_id)
-                                        if close_order:
-                                            sl_status = close_order.get('status', '').upper()
-                                            matched_size = float(close_order.get('matchedSize', 0) or 0)
-                                            if sl_status in ('FILLED', 'MATCHED') or matched_size > 0:
-                                                avg_p = close_order.get('avgPrice') or close_order.get('price')
-                                                if avg_p:
-                                                    parsed = float(avg_p)
-                                                    if 0.01 <= parsed <= 0.99:
-                                                        actual_exit_price = parsed
-                                                print(f"       [LOCAL SL] ✅ 止损实际成交价: {actual_exit_price:.4f} (尝试{_sl_attempt+1}次)")
-                                                break
-                                            else:
-                                                print(f"       [LOCAL SL] ⏳ 止损单未成交(status={sl_status})，继续等待({_sl_attempt+1}/5)...")
-                                    except Exception as e:
-                                        print(f"       [LOCAL SL] 查询成交价失败({_sl_attempt+1}/5): {e}")
-                                else:
-                                    print(f"       [LOCAL SL] ⚠️ 止损单15秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
+                                # 🔥 极致优化：只查询一次，不阻塞监控循环
+                                # 监控每0.1秒运行，会自然检测到成交情况
+                                try:
+                                    close_order = self.client.get_order(close_order_id)
+                                    if close_order:
+                                        sl_status = close_order.get('status', '').upper()
+                                        matched_size = float(close_order.get('matchedSize', 0) or 0)
+                                        if sl_status in ('FILLED', 'MATCHED') or matched_size > 0:
+                                            avg_p = close_order.get('avgPrice') or close_order.get('price')
+                                            if avg_p:
+                                                parsed = float(avg_p)
+                                                if 0.01 <= parsed <= 0.99:
+                                                    actual_exit_price = parsed
+                                            print(f"       [LOCAL SL] ✅ 止损实际成交价: {actual_exit_price:.4f}")
+                                        else:
+                                            print(f"       [LOCAL SL] ⏳ 止损单未成交(status={sl_status})，下次监控继续检查")
+                                except Exception as e:
+                                    print(f"       [LOCAL SL] 查询成交价失败: {e}")
                                 print(f"       [LOCAL SL] 止损执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
                                 print(f"       [LOCAL SL] 市价平仓失败(非余额原因)，下次继续尝试")
