@@ -16,6 +16,7 @@ import websockets
 import json
 import time
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 import sys
 
 import auto_trader_ankr as v5
@@ -46,6 +47,11 @@ class V6HFTEngine:
         self.signal_count = 0
         self._last_indicator_update = 0
         self._reconnect_delay = 3
+
+        # 🚀 性能优化：创建更大的线程池（默认是min(32, cpu_count + 4)）
+        # 提升并发能力，避免HTTP/数据库操作阻塞WebSocket
+        self.executor = ThreadPoolExecutor(max_workers=50, thread_name_prefix="v6_worker")
+        print(f"[PERF] 线程池已创建: max_workers=50 (提升并发能力)")
 
         print("\n[INFO] V5组件初始化完成，WebSocket连接准备中...\n")
         self._patch_v5_order_book()
@@ -338,12 +344,12 @@ class V6HFTEngine:
 
                 # 下单（线程池，避免阻塞WebSocket）
                 order_result = await loop.run_in_executor(
-                    None, self.v5.place_order, self.current_market, signal
+                    self.executor, self.v5.place_order, self.current_market, signal
                 )
 
                 # 记录交易
                 await loop.run_in_executor(
-                    None, self.v5.record_trade,
+                    self.executor, self.v5.record_trade,
                     self.current_market, signal, order_result, False
                 )
 
@@ -360,7 +366,7 @@ class V6HFTEngine:
                 print(f"[BLOCK] 风控拦截: {reason}")
                 loop = asyncio.get_running_loop()
                 await loop.run_in_executor(
-                    None, self.v5.record_prediction_learning,
+                    self.executor, self.v5.record_prediction_learning,
                     self.current_market, signal, None, True
                 )
 
@@ -369,19 +375,19 @@ class V6HFTEngine:
         if self.current_price:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(
-                None, self.v5.check_positions, self.current_price
+                self.executor, self.v5.check_positions, self.current_price
             )
 
     async def verify_predictions(self):
         """验证待验证的预测（修复：只调用一次，避免重复验证）"""
         loop = asyncio.get_running_loop()
         # 只通过v5.verify_pending_predictions调用，内部已包含learning_system调用
-        await loop.run_in_executor(None, self.v5.verify_pending_predictions)
+        await loop.run_in_executor(self.executor, self.v5.verify_pending_predictions)
 
     async def auto_adjust(self):
         """定期自动调整参数（复用V5逻辑）"""
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self.v5.auto_adjust_parameters)
+        await loop.run_in_executor(self.executor, self.v5.auto_adjust_parameters)
 
     async def websocket_loop(self):
         """WebSocket主循环"""
@@ -475,7 +481,7 @@ class V6HFTEngine:
                         # 每5分钟清理过期持仓
                         if now - last_cleanup_check >= 300:
                             loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(None, self.v5.cleanup_stale_positions)
+                            await loop.run_in_executor(self.executor, self.v5.cleanup_stale_positions)
                             last_cleanup_check = now
 
                         # 检查是否需要切换市场
@@ -518,6 +524,11 @@ class V6HFTEngine:
             print(f"  信号检测: {self.signal_count}")
             print(f"  总交易: {self.v5.stats['total_trades']}")
             print("=" * 70)
+        finally:
+            # 🚀 性能优化：关闭线程池，释放资源
+            print("[PERF] 正在关闭线程池...")
+            self.executor.shutdown(wait=True, cancel_futures=False)
+            print("[PERF] 线程池已关闭")
 
 
 async def main():
