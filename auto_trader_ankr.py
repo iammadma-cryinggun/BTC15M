@@ -79,7 +79,7 @@ CONFIG = {
         'max_same_direction_bullets': 2,  # 同市场同方向最大持仓数（允许止盈后再开1单）
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
-        'max_stop_loss_pct': 0.20,      # 最大止损20%（安全第一）
+        'max_stop_loss_pct': 0.30,      # 最大止损30%（放宽以减少假止损触发）
     },
 
     'signal': {
@@ -1752,20 +1752,20 @@ class AutoTraderV5:
             # LONG平仓卖YES，SHORT平仓卖NO
             token_id = str(token_ids[0] if side == 'LONG' else token_ids[1])
 
-            # 计算止盈止损价格（对称逻辑：都是20%或1U取更容易达到的）
-            # 止盈：取20%和+1U中较低的（更容易达到）
-            # 止损：取20%和-1U中较高的（更保守）
+            # 计算止盈止损价格（对称逻辑：都是30%或1U取更容易达到的）
+            # 止盈：取30%和+1U中较低的（更容易达到）
+            # 止损：取30%和-1U中较高的（更保守）
 
             # 止盈计算
             tp_by_fixed = (value_usdc + 1.0) / max(size, 1)  # +1U
-            tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)  # 20%
-            tp_by_pct = entry_price * (1 + tp_pct_max)  # +20%
+            tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)  # 30%
+            tp_by_pct = entry_price * (1 + tp_pct_max)  # +30%
             tp_target_price = min(tp_by_fixed, tp_by_pct)  # 取较低者（更容易达到）
 
             # 止损计算
             sl_by_fixed = (value_usdc - 1.0) / max(size, 1)  # -1U
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)  # 20%
-            sl_by_pct = entry_price * (1 - sl_pct_max)  # -20%
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)  # 30%
+            sl_by_pct = entry_price * (1 - sl_pct_max)  # -30%
             sl_target_price = max(sl_by_fixed, sl_by_pct)  # 取较高者（更保守）
 
             # 计算实际止盈止损百分比
@@ -1835,7 +1835,7 @@ class AutoTraderV5:
                                 if avg_price:
                                     try:
                                         parsed = float(avg_price)
-                                        # 合理性校验：必须在0.01~0.99之间，且与entry_price偏差不超过20%
+                                        # 合理性校验：必须在0.01~0.99之间，且与entry_price偏差不超过30%
                                         if 0.01 <= parsed <= 0.99 and abs(parsed - entry_price) / entry_price < 0.20:
                                             actual_entry_price = parsed
                                             print(f"       [STOP ORDERS] 实际成交价(avgPrice): {actual_entry_price:.4f} (调整价格: {entry_price:.4f})")
@@ -1843,13 +1843,13 @@ class AutoTraderV5:
                                             print(f"       [STOP ORDERS] avgPrice={parsed:.4f} 不合理，使用调整价格: {entry_price:.4f}")
                                     except:
                                         pass
-                                # 基于最终确认的actual_entry_price统一重算止盈止损（对称20%逻辑）
+                                # 基于最终确认的actual_entry_price统一重算止盈止损（对称30%逻辑）
                                 value_usdc = size * actual_entry_price
-                                tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                                tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                 tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                 tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                 tp_target_price = min(tp_by_fixed, tp_by_pct)
-                                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                 sl_by_pct = actual_entry_price * (1 - sl_pct_max)
                                 sl_original = (value_usdc - 1.0) / max(size, 1)
                                 sl_target_price = max(sl_original, sl_by_pct)
@@ -1895,12 +1895,12 @@ class AutoTraderV5:
                                 print(f"       [STOP ORDERS] 实际成交价: {actual_entry_price:.4f} (调整价格: {entry_price:.4f})")
                                 if abs(actual_entry_price - entry_price) > 0.001:
                                     value_usdc = size * actual_entry_price
-                                    # 对称20%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                                    # 对称30%止盈止损
+                                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                     tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = min(tp_by_fixed, tp_by_pct)
-                                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                     sl_by_pct = actual_entry_price * (1 - sl_pct_max)
                                     sl_original = (value_usdc - 1.0) / max(size, 1)
                                     sl_target_price = max(sl_original, sl_by_pct)
@@ -1938,12 +1938,12 @@ class AutoTraderV5:
                                         p = round(round(p / tick_size) * tick_size, 4)
                                         return max(tick_size, min(1 - tick_size, p))
 
-                                    # 对称20%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                                    # 对称30%止盈止损
+                                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                     tp_by_pct = entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = align_price_local(min(tp_by_fixed, tp_by_pct))
-                                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                     sl_by_pct = entry_price * (1 - sl_pct_max)
                                     sl_original = (value_usdc - 1.0) / max(size, 1)
                                     sl_target_price = align_price_local(max(sl_original, sl_by_pct))
@@ -2580,12 +2580,12 @@ class AutoTraderV5:
                     return max(tick_size, min(1 - tick_size, p))
 
                 real_value = position_size * actual_price
-                # 对称20%止盈止损
-                tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                # 对称30%止盈止损
+                tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                 tp_by_pct = actual_price * (1 + tp_pct_max)
                 tp_by_fixed = (real_value + 1.0) / max(position_size, 1)
                 tp_target_price = align_price(min(tp_by_fixed, tp_by_pct))
-                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                 sl_by_pct = actual_price * (1 - sl_pct_max)
                 sl_by_fixed = (real_value - 1.0) / max(position_size, 1)
                 sl_target_price = align_price(max(sl_by_fixed, sl_by_pct))
@@ -2602,8 +2602,8 @@ class AutoTraderV5:
                             p = round(round(p / tick_size) * tick_size, 4)
                             return max(tick_size, min(1 - tick_size, p))
 
-                        # 基于实际成交价格计算止盈止损（对称20%逻辑）
-                        tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                        # 基于实际成交价格计算止盈止损（对称30%逻辑）
+                        tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                         tp_by_pct = actual_price * (1 + tp_pct_max)
                         tp_by_fixed = (position_value + 1.0) / max(position_size, 1)
                         tp_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -2656,7 +2656,7 @@ class AutoTraderV5:
                     tp_order_id,
                     # ⚠️ 此字段存的是止损价格字符串，不是订单ID！用于本地轮询止损
                     # 🔍 修复：sl_target_price为None时用入场价兜底计算，确保止损线永远存在
-                    str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.15))), 4)),
+                    str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.30))), 4)),
                     token_id,
                     'open'
                 ))
@@ -2764,12 +2764,12 @@ class AutoTraderV5:
 
             print(f"       [MERGE] 合并后: {merged_size}股 @ {merged_entry_price:.4f} (${merged_value:.2f})")
 
-            # 计算新的止盈止损价格（对称20%逻辑）
-            tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+            # 计算新的止盈止损价格（对称30%逻辑）
+            tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
             tp_by_pct = merged_entry_price * (1 + tp_pct_max)
             tp_by_fixed = (merged_value + 1.0) / max(merged_size, 1)
             tp_target_price = min(tp_by_fixed, tp_by_pct)
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
             sl_by_pct = merged_entry_price * (1 - sl_pct_max)
             sl_by_fixed = (merged_value - 1.0) / max(merged_size, 1)
             sl_target_price = max(sl_by_fixed, sl_by_pct)
@@ -2783,8 +2783,8 @@ class AutoTraderV5:
             tp_target_price = align_price(tp_target_price)
             sl_target_price = align_price(sl_target_price)
 
-            print(f"       [MERGE] 新止盈: {tp_target_price:.4f} (20%或+1U)")
-            print(f"       [MERGE] 新止损: {sl_target_price:.4f} (20%或-1U)")
+            print(f"       [MERGE] 新止盈: {tp_target_price:.4f} (30%或+1U)")
+            print(f"       [MERGE] 新止损: {sl_target_price:.4f} (30%或-1U)")
 
             # 挂新的止盈单
             new_tp_order_id = None
@@ -2825,7 +2825,7 @@ class AutoTraderV5:
                 merged_value,
                 new_tp_order_id,
                 str(sl_target_price),  # 止损是价格字符串
-                1.0,  # 止盈目标（20%或+1U取较小者）
+                1.0,  # 止盈目标（30%或+1U取较小者）
                 merged_value * sl_pct_max,  # 止损金额
                 pos_id
             ))
@@ -3025,8 +3025,8 @@ class AutoTraderV5:
 
                 # 如果止盈单没成交，检查本地止盈止损价格（双向轮询模式）
                 if not exit_reason:
-                    # ✅ 关键修复：使用与开仓时相同的公式，确保一致性（对称20%逻辑）
-                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)
+                    # ✅ 关键修复：使用与开仓时相同的公式，确保一致性（对称30%逻辑）
+                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                     tp_by_pct = entry_token_price * (1 + tp_pct_max)
                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                     tp_target_price = min(tp_by_fixed, tp_by_pct)
