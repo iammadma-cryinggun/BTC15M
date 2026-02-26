@@ -68,8 +68,9 @@ CONFIG = {
     },
 
     'risk': {
-        'max_position_pct': 0.30,       # 🔥 30% per trade（提高单笔仓位）
-        'max_total_exposure_pct': 0.60,
+        'base_position_pct': 0.10,      # 🔥 基础仓位10%（对应6手≈3U≈总资金10%）
+        'max_position_pct': 0.30,       # 🔥 最高仓位30%（信号很强时）
+        'max_total_exposure_pct': 0.60,  # 同一窗口累计持仓上限60%
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
@@ -348,10 +349,18 @@ class PositionManager:
         """
         智能动态仓位：根据信号强度（score）自动调整
 
+        仓位规则：
+        - 信号很弱（<3.0）  → 10% （最低：Polymarket限制6手≈3U≈10%）
+        - 信号弱（3.0-3.9）  → 15%
+        - 信号中等（4.0-5.4）→ 20%
+        - 信号强（5.5-6.9）  → 25%
+        - 信号很强（≥7.0）  → 30% （最高）
+        - UT Bot中性 → 10% （风控保护）
+
         Args:
             confidence: 置信度（0-1）
             score: 信号分数（-10到+10）
-            ut_bot_neutral: UT Bot趋势是否中性（True时限制为基础仓位）
+            ut_bot_neutral: UT Bot趋势是否中性（True时限制为最低仓位）
 
         Returns:
             实际下单金额（USDC）
@@ -361,28 +370,31 @@ class PositionManager:
         if available <= CONFIG['risk']['min_position_usdc']:
             return 0.0  # Not enough to meet minimum
 
-        # 基础仓位：15%
-        base = self.balance * 0.15
+        # 🔥 基础仓位：10%（CONFIG配置，对应6手≈3U≈总资金10%）
+        base = self.balance * CONFIG['risk']['base_position_pct']
 
-        # 🛡️ UT Bot中性时强制基础仓位（不应用信号强度加成）
+        # 🛡️ UT Bot中性时强制最低仓位（风控保护）
         if ut_bot_neutral:
-            print(f"       [POSITION] ⚠️ UT Bot中性，仓位限制为基础15%（风控保护）")
+            print(f"       [POSITION] ⚠️ UT Bot中性，仓位限制为最低{CONFIG['risk']['base_position_pct']*100:.0f}%（风控保护）")
             multiplier = 1.0
         else:
-            # 🎯 根据信号分数分段调整（方案A：智能分段）
+            # 🎯 根据信号分数分段调整
             abs_score = abs(score)
 
-            if abs_score >= 6.0:
-                # 🔥 超强信号：30%
+            if abs_score >= 7.0:
+                # 🔥 信号很强：30%
+                multiplier = 3.0
+            elif abs_score >= 5.5:
+                # 💪 信号强：25%
+                multiplier = 2.5
+            elif abs_score >= 4.0:
+                # 👌 信号中等：20%
                 multiplier = 2.0
-            elif abs_score >= 4.5:
-                # 💪 强信号：25%
-                multiplier = 1.67
-            elif abs_score >= 3.5:
-                # 👌 中等信号：20%
-                multiplier = 1.33
+            elif abs_score >= 3.0:
+                # ⚠️ 信号弱：15%
+                multiplier = 1.5
             else:
-                # ⚠️ 弱信号：15%
+                # 🔻 信号很弱：10%（最低）
                 multiplier = 1.0
 
         # 结合confidence微调（±10%）
@@ -390,9 +402,9 @@ class PositionManager:
 
         adjusted = base * multiplier * confidence_adj
 
-        # 限制在15%-30%范围内
-        min_pos = self.balance * 0.15
-        max_pos = self.balance * 0.30
+        # 限制在base_position_pct-max_position_pct范围内（10%-30%）
+        min_pos = self.balance * CONFIG['risk']['base_position_pct']
+        max_pos = self.balance * CONFIG['risk']['max_position_pct']
         final = max(min_pos, min(adjusted, max_pos))
 
         # IMPORTANT: Must be at least 2 USDC
