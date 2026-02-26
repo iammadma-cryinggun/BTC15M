@@ -1990,7 +1990,7 @@ class AutoTraderV5:
 
             # --- 止损计算 ---
             # ✅ 彻底删除 1U 限制，默认 20% 触发（实盘防滑点）
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.20)  
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)  
             sl_target_price = entry_price * (1 - sl_pct_max)  
             
             # 🛡️ 极限价格保护 + 精度控制（保留2位小数，最低不低于0.01）
