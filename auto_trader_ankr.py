@@ -1608,6 +1608,45 @@ class AutoTraderV5:
         if signal['direction'] == 'SHORT' and 'LONG' in positions and positions['LONG'] > 0:
             return False, f"Conflict: 已有 {positions['LONG']:.0f} 多头仓位，无法做空"
 
+        # 🛡️ === 总持仓额度限制（防止多笔交易累计超仓）===
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            # 🔥 激活WAL模式
+            conn.execute('PRAGMA journal_mode=WAL;')
+            cursor = conn.cursor()
+
+            # 查询所有当前持仓的总价值
+            cursor.execute("""
+                SELECT SUM(value_usdc)
+                FROM positions
+                WHERE status IN ('open', 'closing')
+            """)
+            total_exposure_row = cursor.fetchone()
+            total_exposure = float(total_exposure_row[0]) if total_exposure_row and total_exposure_row[0] else 0.0
+
+            # 获取当前余额（用于计算百分比）
+            from py_clob_client.constants.types import AddressType
+            balance_info = self.client.get_balance(AddressType.ADDRESS)
+            if balance_info:
+                current_balance = float(balance_info.get('balance', '0') or '0') / 1e6
+            else:
+                current_balance = self.position_mgr.balance
+
+            max_total_exposure = current_balance * CONFIG['risk']['max_total_exposure_pct']
+
+            # 🔥 关键风控：总持仓不能超过max_total_exposure_pct（60%）
+            if total_exposure >= max_total_exposure:
+                conn.close()
+                exposure_pct = (total_exposure / current_balance) * 100
+                return False, f"🛡️ 总仓位限制: 当前持仓${total_exposure:.2f} ({exposure_pct:.1f}%)已达上限{CONFIG['risk']['max_total_exposure_pct']*100:.0f}%，拒绝开新仓"
+
+            conn.close()
+        except Exception as e:
+            print(f"       [EXPOSURE CHECK ERROR] {e}")
+            # 查询失败时为了安全，拒绝开仓
+            return False, f"总仓位查询异常，拒绝交易: {e}"
+
+
         # 🛡️ === 核心风控：同市场同向"弹匣限制"与"射击冷却" ===
         if market:
             token_ids = market.get('clobTokenIds', [])
