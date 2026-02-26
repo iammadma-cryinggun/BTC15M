@@ -1305,6 +1305,11 @@ class AutoTraderV5:
                 tp_pct=tp_pct,
                 sl_pct=sl_pct,
                 entry_token_price=entry_token_price,
+                # 🔥 传入Oracle数据
+                oracle_score=signal.get('oracle_score', None),
+                oracle_cvd_15m=signal.get('oracle_cvd_15m', None),
+                oracle_wall_imbalance=signal.get('oracle_wall_imbalance', None),
+                oracle_ut_hull_trend=signal.get('oracle_ut_hull_trend', None),
             )
         except Exception as e:
             print(f"       [LEARNING ERROR] {e}")
@@ -1599,6 +1604,9 @@ class AutoTraderV5:
                 'price': price,
                 'components': components,
                 'oracle_score': oracle_score,
+                'oracle_cvd_15m': oracle.get('cvd_15m', None) if oracle else None,
+                'oracle_wall_imbalance': oracle.get('wall_imbalance', None) if oracle else None,
+                'oracle_ut_hull_trend': ut_hull_trend,
                 'ut_bot_neutral': ut_bot_neutral,  # 🛡️ 标记UT Bot是否中性（用于仓位限制）
             }
         return None

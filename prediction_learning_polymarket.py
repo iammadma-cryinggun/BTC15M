@@ -107,13 +107,19 @@ class PolymarketPredictionLearning:
 
                 was_blocked INTEGER DEFAULT 0,
 
-                -- 止盈止损百分比记录（新增）
+                -- 止盈止损百分比记录
                 tp_pct REAL,
                 sl_pct REAL,
                 entry_token_price REAL,
                 exit_token_price REAL,
                 actual_pnl_pct REAL,
-                exit_reason TEXT
+                exit_reason TEXT,
+
+                -- 🔥 新增：币安Oracle数据记录
+                oracle_score REAL,
+                oracle_cvd_15m REAL,
+                oracle_wall_imbalance REAL,
+                oracle_ut_hull_trend TEXT
             )
         ''')
 
@@ -169,7 +175,12 @@ class PolymarketPredictionLearning:
                          was_blocked: bool = False,
                          tp_pct: float = None,
                          sl_pct: float = None,
-                         entry_token_price: float = None) -> int:
+                         entry_token_price: float = None,
+                         # 🔥 新增：Oracle数据参数
+                         oracle_score: float = None,
+                         oracle_cvd_15m: float = None,
+                         oracle_wall_imbalance: float = None,
+                         oracle_ut_hull_trend: str = None) -> int:
         """
         记录一次预测（基于Polymarket token价格）
 
@@ -179,6 +190,10 @@ class PolymarketPredictionLearning:
             tp_pct: 止盈百分比（如 0.05 = 5%）
             sl_pct: 止损百分比（如 0.03 = 3%）
             entry_token_price: 实际入场价格（下单后的成交价）
+            oracle_score: Oracle综合评分
+            oracle_cvd_15m: CVD 15分钟累积值
+            oracle_wall_imbalance: 盘口失衡度
+            oracle_ut_hull_trend: UT Bot + Hull趋势
 
         返回: 记录ID
         """
@@ -192,14 +207,16 @@ class PolymarketPredictionLearning:
                 timestamp, price, score, rsi, vwap, confidence,
                 direction, recommendation, components,
                 market_slug, order_value_usdc, order_status,
-                was_blocked, tp_pct, sl_pct, entry_token_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                was_blocked, tp_pct, sl_pct, entry_token_price,
+                oracle_score, oracle_cvd_15m, oracle_wall_imbalance, oracle_ut_hull_trend
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             timestamp, price, score, rsi, vwap, confidence,
             direction, recommendation, json.dumps(components, ensure_ascii=False),
             market_slug, order_value, order_status,
             1 if was_blocked else 0,
-            tp_pct, sl_pct, entry_token_price if entry_token_price else price
+            tp_pct, sl_pct, entry_token_price if entry_token_price else price,
+            oracle_score, oracle_cvd_15m, oracle_wall_imbalance, oracle_ut_hull_trend
         ))
 
         record_id = cursor.lastrowid
@@ -836,14 +853,158 @@ class PolymarketPredictionLearning:
 
         return verified_count
 
+    def analyze_oracle_accuracy(self) -> Dict:
+        """🔥 分析Oracle数据的准确率"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # Oracle综合评分准确率
+            cursor.execute('''
+                SELECT
+                    CASE
+                        WHEN oracle_score >= 5 THEN '强烈看涨 (≥5)'
+                        WHEN oracle_score >= 2 THEN '看涨 (2-5)'
+                        WHEN oracle_score <= -5 THEN '强烈看跌 (≤-5)'
+                        WHEN oracle_score <= -2 THEN '看跌 (-5~-2)'
+                        ELSE '中性 (-2~2)'
+                    END as oracle_range,
+                    COUNT(*) as total,
+                    SUM(correct) as correct,
+                    AVG(actual_pnl_pct) as avg_pnl
+                FROM predictions
+                WHERE verified = 1 AND oracle_score IS NOT NULL
+                GROUP BY oracle_range
+                ORDER BY MIN(oracle_score) DESC
+            ''')
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            result = []
+            for row in rows:
+                oracle_range, total, correct, avg_pnl = row
+                accuracy = (correct / total * 100) if total > 0 else 0
+                result.append({
+                    'range': oracle_range,
+                    'total': total,
+                    'accuracy': accuracy,
+                    'avg_pnl_pct': (avg_pnl * 100) if avg_pnl else 0
+                })
+
+            return {'by_oracle_score': result}
+
+        except Exception as e:
+            print(f"{Fore.RED}[ERROR] Oracle准确率分析失败: {e}{Fore.RESET}")
+            return {}
+
+    def search_optimal_threshold(self) -> Dict:
+        """🔥 系统性搜索最优开仓阈值（基于实际盈亏）"""
+
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            cursor = conn.cursor()
+
+            # 获取所有已验证且有盈亏数据的记录
+            cursor.execute('''
+                SELECT score, direction, actual_pnl_pct, correct
+                FROM predictions
+                WHERE verified = 1 AND actual_pnl_pct IS NOT NULL
+            ''')
+            rows = cursor.fetchall()
+            conn.close()
+
+            if len(rows) < 20:
+                print(f"{Fore.YELLOW}[WARN] 数据样本不足（<20条），无法进行可靠分析{Fore.RESET}")
+                return {}
+
+            # 测试不同的阈值
+            thresholds_long = [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]
+            thresholds_short = [-2.0, -2.5, -3.0, -3.5, -4.0, -4.5, -5.0, -5.5, -6.0]
+
+            results = {
+                'long': [],
+                'short': []
+            }
+
+            # 测试LONG阈值
+            for threshold in thresholds_long:
+                filtered = [r for r in rows if r[0] >= threshold and r[1] == 'LONG']
+                if len(filtered) >= 5:  # 至少5笔交易
+                    wins = sum(1 for r in filtered if r[3] == 1)
+                    total = len(filtered)
+                    win_rate = wins / total * 100
+                    avg_pnl = sum(r[2] for r in filtered) / total * 100
+
+                    results['long'].append({
+                        'threshold': threshold,
+                        'trades': total,
+                        'win_rate': win_rate,
+                        'avg_pnl_pct': avg_pnl
+                    })
+
+            # 测试SHORT阈值
+            for threshold in thresholds_short:
+                filtered = [r for r in rows if r[0] <= threshold and r[1] == 'SHORT']
+                if len(filtered) >= 5:
+                    wins = sum(1 for r in filtered if r[3] == 1)
+                    total = len(filtered)
+                    win_rate = wins / total * 100
+                    avg_pnl = sum(r[2] for r in filtered) / total * 100
+
+                    results['short'].append({
+                        'threshold': threshold,
+                        'trades': total,
+                        'win_rate': win_rate,
+                        'avg_pnl_pct': avg_pnl
+                    })
+
+            # 找出最优阈值（综合胜率和盈亏）
+            best_long = max(results['long'], key=lambda x: x['avg_pnl_pct'], default=None)
+            best_short = max(results['short'], key=lambda x: x['avg_pnl_pct'], default=None)
+
+            return {
+                'long_analysis': results['long'],
+                'short_analysis': results['short'],
+                'recommended': {
+                    'min_long_score': best_long['threshold'] if best_long else 4.0,
+                    'min_short_score': best_short['threshold'] if best_short else -4.0
+                }
+            }
+
+        except Exception as e:
+            print(f"{Fore.RED}[ERROR] 阈值搜索失败: {e}{Fore.RESET}")
+            return {}
+
     def print_optimization_report(self):
         """打印优化建议报告"""
         suggestions = self.get_optimization_suggestions()
 
         print(f"\n{Fore.CYAN}{'='*80}{Fore.RESET}")
-        print(f"{Fore.CYAN}{'🎯 优化建议':^80}{Fore.RESET}")
+        print(f"{Fore.CYAN}{'🎯 优化建议报告':^80}{Fore.RESET}")
         print(f"{Fore.CYAN}{'='*80}{Fore.RESET}\n")
 
+        # 🔥 Oracle准确率分析
+        oracle_analysis = self.analyze_oracle_accuracy()
+        if oracle_analysis.get('by_oracle_score'):
+            print(f"{Fore.WHITE}【Oracle数据准确率】{Fore.RESET}")
+            print(f"{'Oracle区间':<20} {'次数':>6} {'胜率':>8} {'平均盈亏%':>10}")
+            print('-' * 50)
+            for item in oracle_analysis['by_oracle_score']:
+                color = Fore.GREEN if item['avg_pnl_pct'] > 0 else Fore.RED
+                print(f"{item['range']:<20} {item['total']:>6} {item['accuracy']:>7.1f}% {color}{item['avg_pnl_pct']:>+9.2f}%{Fore.RESET}")
+            print()
+
+        # 🔥 最优阈值搜索
+        threshold_search = self.search_optimal_threshold()
+        if threshold_search.get('recommended'):
+            print(f"{Fore.WHITE}【最优开仓阈值搜索】{Fore.RESET}")
+            rec = threshold_search['recommended']
+            print(f"  推荐 min_long_score: {Fore.GREEN}{rec['min_long_score']:.1f}{Fore.RESET}")
+            print(f"  推荐 min_short_score: {Fore.GREEN}{rec['min_short_score']:.1f}{Fore.RESET}")
+            print()
+
+        # 原有的优化建议
         if suggestions:
             for i, suggestion in enumerate(suggestions, 1):
                 print(f"  {Fore.GREEN}{i}. {suggestion}{Fore.RESET}")
@@ -856,10 +1017,10 @@ class PolymarketPredictionLearning:
 
                 if recommended['min_confidence'] != current['min_confidence']:
                     print(f"  min_confidence: {current['min_confidence']:.2f} → {recommended['min_confidence']:.2f}")
-                if recommended['min_long_score'] != current['min_long_score']:
-                    print(f"  min_long_score: {current['min_long_score']:.1f} → {recommended['min_long_score']:.1f}")
-                if recommended['min_short_score'] != current['min_short_score']:
-                    print(f"  min_short_score: {current['min_short_score']:.1f} → {recommended['min_short_score']:.1f}")
+                if recommended.get('min_long_score') and recommended['min_long_score'] != current.get('min_long_score'):
+                    print(f"  min_long_score: {current.get('min_long_score', 4.0):.1f} → {recommended['min_long_score']:.1f}")
+                if recommended.get('min_short_score') and recommended['min_short_score'] != current.get('min_short_score'):
+                    print(f"  min_short_score: {current.get('min_short_score', -4.0):.1f} → {recommended['min_short_score']:.1f}")
 
                 print(f"\n{Fore.CYAN}调整原因：{Fore.RESET}")
                 for reason in recommended['reasons']:
