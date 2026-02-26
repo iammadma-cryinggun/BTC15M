@@ -89,7 +89,7 @@ CONFIG = {
         'min_long_confidence': 0.60,   # LONG最小置信度
         'min_short_confidence': 0.60,  # SHORT最小置信度
         'min_long_score': 4.0,      # LONG最低分数
-        'min_short_score': -3.0,    # SHORT最低分数（保持原配置）
+        'min_short_score': -4.0,    # 🔥 对称：与LONG保持一致（风控统一）
         'balance_zone_min': 0.49,  # 平衡区间下限
         'balance_zone_max': 0.51,  # 平衡区间上限
         'allow_long': True,   # 允许做多（但会动态调整）
