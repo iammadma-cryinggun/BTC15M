@@ -68,7 +68,7 @@ CONFIG = {
     },
 
     'risk': {
-        'max_position_pct': 0.15,       # 15% per trade (to ensure min 2 USDC)
+        'max_position_pct': 0.30,       # 🔥 30% per trade（提高单笔仓位）
         'max_total_exposure_pct': 0.60,
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
