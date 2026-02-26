@@ -684,13 +684,15 @@ class AutoTraderV5:
         # 启动时清理过期持仓
         self.cleanup_stale_positions()
 
+        # 🔍 启动时打印最近的交易记录（用于调试）
+        self.print_recent_trades()
+
     def cleanup_stale_positions(self):
         """启动时清理过期持仓（超过20分钟的open持仓自动平仓）
 
         优化逻辑：
-        1. 先查询链上订单状态（get_order）
-        2. 如果订单已不存在 → 直接标记为 MARKET_SETTLED（市场到期归零）
-        3. 如果订单还存在 → 尝试取消和平仓
+        1. 先清理卡在'closing'状态的持仓（修复止损/止盈失败导致的bug）
+        2. 然后处理超过20分钟的open持仓
         """
         try:
             if not self.client:
@@ -700,7 +702,90 @@ class AutoTraderV5:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
-            # 获取更完整的持仓信息
+            # 🔥 新增：清理卡在'closing'状态的持仓（修复止损/止盈失败bug）
+            cursor.execute("""
+                SELECT id, entry_time, side, entry_token_price, size
+                FROM positions
+                WHERE status = 'closing'
+            """)
+            closing_positions = cursor.fetchall()
+
+            if closing_positions:
+                print(f"[CLEANUP] 🔧 发现 {len(closing_positions)} 个卡在'closing'状态的持仓")
+
+                for pos_id, entry_time, side, entry_price, size in closing_positions:
+                    print(f"[CLEANUP] 处理持仓 #{pos_id}: {side} {size}份 @ ${entry_price:.4f}")
+
+                    # 检查是否已经手动平仓或市场结算
+                    try:
+                        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+
+                        # 获取token_id（从数据库读取）
+                        cursor.execute("SELECT token_id FROM positions WHERE id = ?", (pos_id,))
+                        token_id_row = cursor.fetchone()
+                        if not token_id_row:
+                            print(f"[CLEANUP] ⚠️ 持仓 #{pos_id} 没有token_id，跳过")
+                            continue
+
+                        token_id = str(token_id_row[0])
+
+                        # 查询链上余额
+                        params = BalanceAllowanceParams(
+                            asset_type=AssetType.CONDITIONAL,
+                            token_id=token_id,
+                            signature_type=2
+                        )
+                        result = self.client.get_balance_allowance(params)
+
+                        if result:
+                            amount = float(result.get('balance', '0') or '0')
+                            actual_size = amount / 1e6
+
+                            if actual_size < 0.5:
+                                # 余额为0，说明已手动平仓或市场结算
+                                print(f"[CLEANUP] ✅ 持仓 #{pos_id} 余额为{actual_size:.2f}，已平仓")
+
+                                # 判断是手动平仓还是市场结算
+                                cursor.execute("SELECT exit_token_price FROM positions WHERE id = ?", (pos_id,))
+                                exit_price_row = cursor.fetchone()
+                                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                                if not exit_price_row or not exit_price_row[0]:
+                                    # 没有exit记录，需要根据情况判断
+                                    # 如果市场已过期，标记为MARKET_SETTLED
+                                    # 否则标记为MANUAL_CLOSED
+                                    cursor.execute("""
+                                        UPDATE positions
+                                        SET exit_time = ?, exit_token_price = ?, exit_reason = ?, status = 'closed'
+                                        WHERE id = ?
+                                    """, (
+                                        current_time,
+                                        0.0,  # 市场结算价格为0
+                                        'MARKET_SETTLED',
+                                        pos_id
+                                    ))
+                                    else:
+                                        cursor.execute("""
+                                            UPDATE positions
+                                            SET status = 'closed', exit_reason = 'MANUAL_CLOSED'
+                                            WHERE id = ?
+                                        """, (pos_id,))
+
+                                    print(f"[CLEANUP] ✅ 持仓 #{pos_id} 已标记为closed")
+                                else:
+                                    # 余额不为0，重置为open状态，让监控系统继续处理
+                                    print(f"[CLEANUP] 🔓 持仓 #{pos_id} 余额为{actual_size:.2f}，重置为'open'")
+                                    cursor.execute("UPDATE positions SET status = 'open' WHERE id = ?", (pos_id,))
+
+                    except Exception as e:
+                        print(f"[CLEANUP] ⚠️ 处理持仓 #{pos_id} 失败: {e}，重置为'open'")
+                        # 失败时也重置为open，避免卡住
+                        cursor.execute("UPDATE positions SET status = 'open' WHERE id = ?", (pos_id,))
+
+                self.safe_commit(conn)
+                print(f"[CLEANUP] ✅ 'closing'状态持仓清理完成")
+
+            # 原有逻辑：获取超过20分钟的open持仓
             cursor.execute("""
                 SELECT id, entry_time, side, entry_token_price, size, value_usdc, token_id,
                        take_profit_order_id, stop_loss_order_id
@@ -1238,6 +1323,48 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [LEARNING REPORT ERROR] {e}")
 
+    def print_recent_trades(self, days=3):
+        """打印最近的交易记录（用于调试）"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            cursor = conn.cursor()
+
+            # 查询最近的N天交易
+            cursor.execute("""
+                SELECT id, entry_time, side, entry_token_price, size, value_usdc,
+                       exit_time, exit_token_price, exit_reason, pnl_pct, status
+                FROM positions
+                WHERE entry_time >= date('now', '-{} days')
+                ORDER BY entry_time DESC
+                LIMIT 20
+            """.format(days))
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                return
+
+            print("\n" + "=" * 100)
+            print(f"最近{days}天的交易记录 (最多20笔)")
+            print("=" * 100)
+            print(f"{'ID':<5} {'入场时间':<20} {'方向':<6} {'入场价':<8} {'数量':<8} {'出场价':<8} {'退出原因':<20} {'收益率':<8}")
+            print("-" * 100)
+
+            for row in rows:
+                id, entry_time, side, entry_price, size, value_usdc, exit_time, exit_price, exit_reason, pnl_pct, status = row
+                entry_price = float(entry_price) if entry_price else 0
+                exit_price = float(exit_price) if exit_price else 0
+                pnl_pct = float(pnl_pct) if pnl_pct else 0
+
+                exit_reason = (exit_reason or '')[:20]
+                print(f"{id:<5} {entry_time:<20} {side:<6} {entry_price:<8.4f} {size:<8.1f} {exit_price:<8.4f} {exit_reason:<20} {pnl_pct:>6.1f}%")
+
+            print("=" * 100 + "\n")
+
+        except Exception as e:
+            print(f"[DEBUG] 打印交易记录失败: {e}")
+
     def get_market_data(self) -> Optional[Dict]:
         try:
             now = int(time.time())
@@ -1631,10 +1758,11 @@ class AutoTraderV5:
             cursor = conn.cursor()
 
             # 从 positions 表获取当前持仓
+            # 🔥 修复：也包括'closing'状态的持仓（它们实际上还在持仓中）
             cursor.execute("""
                 SELECT side, size
                 FROM positions
-                WHERE status = 'open'
+                WHERE status IN ('open', 'closing')
             """)
 
             for row in cursor.fetchall():
@@ -2954,12 +3082,13 @@ class AutoTraderV5:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             cursor = conn.cursor()
 
-            # 获取所有open状态的持仓（包括订单ID）
+            # 获取所有open和closing状态的持仓（包括订单ID）
+            # 🔥 修复：也查询'closing'状态，处理止损/止盈失败后卡住的持仓
             cursor.execute("""
                 SELECT id, entry_time, side, entry_token_price,
                        size, value_usdc, take_profit_order_id, stop_loss_order_id, token_id
                 FROM positions
-                WHERE status = 'open'
+                WHERE status IN ('open', 'closing')
             """)
             positions = cursor.fetchall()
 
@@ -3286,7 +3415,14 @@ class AutoTraderV5:
                                     print(f"       [LOCAL TP] ⚠️ 止盈单1.5秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
                                 print(f"       [LOCAL TP] 本地止盈执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
-                                print(f"       [LOCAL TP] 市价平仓失败(非余额原因)，下次继续尝试")
+                                # 🔥 修复：止盈平仓失败后，将status改回'open'，让下次继续处理
+                                print(f"       [LOCAL TP] ⚠️ 市价平仓失败，将在下次迭代时重试")
+                                try:
+                                    cursor.execute("UPDATE positions SET status = 'open' WHERE id = ?", (pos_id,))
+                                    conn.commit()
+                                    print(f"       [LOCAL TP] 🔓 状态已重置为 'open'，下次迭代将重试止盈")
+                                except Exception as reset_err:
+                                    print(f"       [LOCAL TP] ❌ 状态重置失败: {reset_err}")
 
                     # 2. 检查止损（价格下跌触发）- 🔥 立即执行，不再等待最后5分钟
                     elif sl_price and pos_current_price <= sl_price:
@@ -3406,7 +3542,14 @@ class AutoTraderV5:
                                     print(f"       [LOCAL SL] ⚠️ 止损单1.5秒内未确认成交，使用发单时价格: {actual_exit_price:.4f}")
                                 print(f"       [LOCAL SL] 止损执行完毕，成交价: {actual_exit_price:.4f}")
                             else:
-                                print(f"       [LOCAL SL] 市价平仓失败(非余额原因)，下次继续尝试")
+                                # 🔥 修复：止损平仓失败后，将status改回'open'，让下次继续处理
+                                print(f"       [LOCAL SL] ⚠️ 市价平仓失败，将在下次迭代时重试")
+                                try:
+                                    cursor.execute("UPDATE positions SET status = 'open' WHERE id = ?", (pos_id,))
+                                    conn.commit()
+                                    print(f"       [LOCAL SL] 🔓 状态已重置为 'open'，下次迭代将重试止损")
+                                except Exception as reset_err:
+                                    print(f"       [LOCAL SL] ❌ 状态重置失败: {reset_err}")
 
                 # 如果订单成交但没有获取到价格，使用当前价格作为fallback
                 if exit_reason and actual_exit_price is None:
@@ -3593,12 +3736,13 @@ class AutoTraderV5:
             # 确定需要平仓的方向（与当前信号相反）
             opposite_direction = 'SHORT' if new_signal_direction == 'LONG' else 'LONG'
 
-            # 获取所有open状态的相反方向持仓（包括订单ID）
+            # 获取所有open和closing状态的相反方向持仓（包括订单ID）
+            # 🔥 修复：也包括'closing'状态的持仓（卡住的持仓也需要处理）
             cursor.execute("""
                 SELECT id, entry_time, side, entry_token_price, value_usdc, size,
                        take_profit_order_id, stop_loss_order_id
                 FROM positions
-                WHERE status = 'open' AND side = ?
+                WHERE status IN ('open', 'closing') AND side = ?
             """, (opposite_direction,))
 
             positions = cursor.fetchall()
