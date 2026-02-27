@@ -31,10 +31,10 @@ SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_s
 # CVD滚动窗口（秒）
 CVD_WINDOW_SEC = 900  # 15分钟
 
-# UT Bot + Hull 参数（敏捷小猎犬配置）- 硬编码默认值，可被 oracle_params.json 覆盖
-UT_BOT_KEY_VALUE = 1.5  # 🔥 敏捷模式：降低门槛，对反转更敏感（提前1~2根K线）
-UT_BOT_ATR_PERIOD = 10  # 保持不变
-HULL_LENGTH = 20        # 🔥 缩短到过去5小时，紧跟近期波动（原34期→20期）
+# UT Bot + Hull 参数（超敏捷配置）- 硬编码默认值，可被 oracle_params.json 覆盖
+UT_BOT_KEY_VALUE = 1.3  # 🔥 超敏捷：对反转更敏感（提前1~2根K线）
+UT_BOT_ATR_PERIOD = 9   # 🔥 微调：对最近两小时的波动更敏感
+HULL_LENGTH = 12        # 🔥 缩短到过去3小时（12根K线），捕捉完整短线波段
 
 # 动态参数文件路径（支持 DATA_DIR 环境变量）
 _DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
