@@ -16,5 +16,5 @@ websockets>=11.0.3
 pandas>=2.0.0
 numpy>=1.24.0
 
-# Polymarket CLOB Client (from PyPI - official stable version)
-py-clob-client
+# Polymarket CLOB Client (from PyPI - 指定最新稳定版本)
+py-clob-client>=0.34.0

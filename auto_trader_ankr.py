@@ -1666,7 +1666,7 @@ class AutoTraderV5:
             total_exposure = float(total_exposure_row[0]) if total_exposure_row and total_exposure_row[0] else 0.0
 
             # 获取当前余额（用于计算百分比）
-            from py_clob_client.constants.types import AddressType
+            from py_clob_client.constants import AddressType
             balance_info = self.client.get_balance(AddressType.ADDRESS)
             if balance_info:
                 current_balance = float(balance_info.get('balance', '0') or '0') / 1e6
