@@ -3329,15 +3329,11 @@ class AutoTraderV5:
 
             print(f"       [MERGE] 合并后: {merged_size}股 @ {merged_entry_price:.4f} (${merged_value:.2f})")
 
-            # 计算新的止盈止损价格（对称30%逻辑）
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
-            tp_by_pct = merged_entry_price * (1 + tp_pct_max)
-            tp_by_fixed = (merged_value + 1.0) / max(merged_size, 1)
-            tp_target_price = min(tp_by_fixed, tp_by_pct)
+            # 计算新的止盈止损价格（合并持仓只用百分比，不用固定金额）
+            # 🔥 修复：移除固定金额逻辑，统一使用30%百分比
+            # 原因：大仓位时+1U/-1U占比太小，会偏离设计意图
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)
             sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
-            sl_by_pct = merged_entry_price * (1 - sl_pct_max)
-            sl_by_fixed = (merged_value - 1.0) / max(merged_size, 1)
-            sl_target_price = max(sl_by_fixed, sl_by_pct)
 
             # 对齐价格精度
             tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
@@ -3345,11 +3341,13 @@ class AutoTraderV5:
                 p = round(round(p / tick_size) * tick_size, 4)
                 return max(tick_size, min(1 - tick_size, p))
 
-            tp_target_price = align_price(tp_target_price)
-            sl_target_price = align_price(sl_target_price)
+            # 止盈：统一用30%百分比
+            tp_target_price = align_price(merged_entry_price * (1 + tp_pct_max))
+            # 止损：统一用30%百分比
+            sl_target_price = align_price(merged_entry_price * (1 - sl_pct_max))
 
-            print(f"       [MERGE] 新止盈: {tp_target_price:.4f} (30%或+1U)")
-            print(f"       [MERGE] 新止损: {sl_target_price:.4f} (30%或-1U)")
+            print(f"       [MERGE] 新止盈: {tp_target_price:.4f} ({tp_pct_max*100:.0f}%)")
+            print(f"       [MERGE] 新止损: {sl_target_price:.4f} ({sl_pct_max*100:.0f}%)")
 
             # 挂新的止盈单
             new_tp_order_id = None
