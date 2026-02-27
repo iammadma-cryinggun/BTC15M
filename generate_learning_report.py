@@ -15,15 +15,20 @@ from datetime import datetime
 
 # 数据库路径
 DATA_DIR = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
-prediction_db = os.path.join(DATA_DIR, 'btc_15min_predictionsv2.db')
-output_path = os.path.join(DATA_DIR, 'learning_report.html')
 
-def get_oracle_accuracy():
+def get_prediction_db_path():
+    """获取学习数据库路径"""
+    return os.path.join(DATA_DIR, 'btc_15min_predictionsv2.db')
+
+def get_oracle_accuracy(db_path=None):
     """Oracle准确率分析"""
-    if not os.path.exists(prediction_db):
+    if db_path is None:
+        db_path = get_prediction_db_path()
+
+    if not os.path.exists(db_path):
         return None
 
-    conn = sqlite3.connect(prediction_db, timeout=30.0)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -60,12 +65,15 @@ def get_oracle_accuracy():
 
     return result
 
-def get_threshold_search():
+def get_threshold_search(db_path=None):
     """搜索最优阈值"""
-    if not os.path.exists(prediction_db):
+    if db_path is None:
+        db_path = get_prediction_db_path()
+
+    if not os.path.exists(db_path):
         return None
 
-    conn = sqlite3.connect(prediction_db, timeout=30.0)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -124,12 +132,15 @@ def get_threshold_search():
         }
     }
 
-def get_overall_stats():
+def get_overall_stats(db_path=None):
     """总体统计"""
-    if not os.path.exists(prediction_db):
+    if db_path is None:
+        db_path = get_prediction_db_path()
+
+    if not os.path.exists(db_path):
         return None
 
-    conn = sqlite3.connect(prediction_db, timeout=30.0)
+    conn = sqlite3.connect(db_path, timeout=30.0)
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -156,20 +167,19 @@ def get_overall_stats():
         'avg_pnl_pct': round((avg_pnl * 100) if avg_pnl else 0, 2)
     }
 
-def generate_html_report():
+def generate_html_report(overall=None, oracle=None, threshold=None, db_path=None):
     """生成HTML报告"""
-    print(f"正在生成学习报告...")
-    print(f"数据库: {prediction_db}")
-    print(f"输出: {output_path}")
 
-    if not os.path.exists(prediction_db):
-        print(f"[ERROR] 学习数据库不存在: {prediction_db}")
-        return False
+    if db_path is None:
+        db_path = get_prediction_db_path()
 
-    # 收集数据
-    overall = get_overall_stats()
-    oracle = get_oracle_accuracy()
-    threshold = get_threshold_search()
+    # 如果没有提供数据，自动获取
+    if overall is None:
+        overall = get_overall_stats(db_path)
+    if oracle is None:
+        oracle = get_oracle_accuracy(db_path)
+    if threshold is None:
+        threshold = get_threshold_search(db_path)
 
     # 生成HTML
     html = f"""
@@ -292,16 +302,42 @@ def generate_html_report():
     </html>
     """
 
+    return html
+
+def generate_html_report_to_file(output_path=None):
+    """生成HTML报告到文件（独立运行版本）"""
+
+    if output_path is None:
+        output_path = os.path.join(DATA_DIR, 'learning_report.html')
+
+    db_path = get_prediction_db_path()
+
+    print(f"正在生成学习报告...")
+    print(f"数据库: {db_path}")
+    print(f"输出: {output_path}")
+
+    if not os.path.exists(db_path):
+        print(f"[ERROR] 学习数据库不存在: {db_path}")
+        return False
+
+    # 收集数据
+    overall = get_overall_stats(db_path)
+    oracle = get_oracle_accuracy(db_path)
+    threshold = get_threshold_search(db_path)
+
+    # 生成HTML
+    html = generate_html_report(overall, oracle, threshold, db_path)
+
     # 保存到文件
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
     print(f"[OK] 报告已生成: {output_path}")
     print(f"\n访问方式:")
-    print(f"1. 在Zeabur控制台 → 文件管理 → 下载 learning_report.html")
-    print(f"2. 或配置静态文件服务直接访问")
+    print(f"1. Zeabur控制台 → 文件管理 → 下载 learning_report.html")
+    print(f"2. 或访问: http://learning.zeabur.app/learning/report")
 
     return True
 
 if __name__ == '__main__':
-    generate_html_report()
+    generate_html_report_to_file()
