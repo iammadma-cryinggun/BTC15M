@@ -1732,16 +1732,20 @@ class AutoTraderV5:
 
         # 极端Oracle信号（>8或<-8）需本地评分同向才触发
         # 🔥 修复：极端信号提高价格限制，0.95以下允许交易
+        # 🔥 修复：极端信号也需遵守UT Bot趋势过滤（避免逆势交易）
         # 理由：极端价格（0.99）代表市场共识极强，趋势最确定
         if oracle and abs(oracle_score) >= 8.0:
-            if oracle_score >= 8.0 and score > 0 and price <= 0.95:
+            if oracle_score >= 8.0 and score > 0 and price <= 0.95 and ut_hull_trend != 'SHORT':
                 direction = 'LONG'
-                print(f"       [ORACLE] 🚀 极端看涨Oracle({oracle_score:+.2f})，融合后信号({score:+.2f})同向，触发LONG！")
-            elif oracle_score <= -8.0 and score < 0 and price >= 0.05:
+                print(f"       [ORACLE] 🚀 极端看涨Oracle({oracle_score:+.2f})，融合后信号({score:+.2f})同向，UT Bot不反对，触发LONG！")
+            elif oracle_score <= -8.0 and score < 0 and price >= 0.05 and ut_hull_trend != 'LONG':
                 direction = 'SHORT'
-                print(f"       [ORACLE] 🔻 极端看跌Oracle({oracle_score:+.2f})，融合后信号({score:+.2f})同向，触发SHORT！")
+                print(f"       [ORACLE] 🔻 极端看跌Oracle({oracle_score:+.2f})，融合后信号({score:+.2f})同向，UT Bot不反对，触发SHORT！")
             else:
-                print(f"       [ORACLE] ⚠️ 极端Oracle({oracle_score:+.2f})但融合后信号({score:+.2f})反向，忽略")
+                if (oracle_score >= 8.0 and ut_hull_trend == 'SHORT') or (oracle_score <= -8.0 and ut_hull_trend == 'LONG'):
+                    print(f"       [ORACLE] ⚠️ 极端Oracle({oracle_score:+.2f})但UT Bot趋势({ut_hull_trend})相反，被拦截")
+                else:
+                    print(f"       [ORACLE] ⚠️ 极端Oracle({oracle_score:+.2f})但融合后信号({score:+.2f})反向，忽略")
         else:
             if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
                 direction = 'LONG'
