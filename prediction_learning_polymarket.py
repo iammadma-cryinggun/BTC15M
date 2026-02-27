@@ -221,7 +221,7 @@ class PolymarketPredictionLearning:
                 market_slug, order_value_usdc, order_status,
                 was_blocked, tp_pct, sl_pct, entry_token_price,
                 oracle_score, oracle_cvd_15m, oracle_wall_imbalance, oracle_ut_hull_trend
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             timestamp, price, score, rsi, vwap, confidence,
             direction, recommendation, json.dumps(components, ensure_ascii=False),
