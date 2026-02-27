@@ -1958,13 +1958,14 @@ class AutoTraderV5:
                         return False, f"窗口限制: 本15分钟窗口已开{total_window_trades}单，最多{max_per_window}单"
 
                     # 🛡️ 禁止同时反向交易（不能同时持有多空）
+                    # 🔥 修复：不限制token_id，检查所有市场的反向持仓
+                    # 原因：市场切换后token_id会变，但反向持仓仍然是冲突
                     opposite_direction = 'SHORT' if signal['direction'] == 'LONG' else 'LONG'
-                    opposite_token_id = no_token_id if signal['direction'] == 'LONG' else yes_token_id
 
                     cursor.execute("""
                         SELECT count(*) FROM positions
-                        WHERE token_id = ? AND side = ? AND status = 'open'
-                    """, (opposite_token_id, opposite_direction))
+                        WHERE side = ? AND status = 'open'
+                    """, (opposite_direction,))
 
                     opposite_row = cursor.fetchone()
                     opposite_count = opposite_row[0] if opposite_row else 0
