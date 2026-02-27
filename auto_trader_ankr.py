@@ -1682,12 +1682,8 @@ class AutoTraderV5:
             total_exposure = float(total_exposure_row[0]) if total_exposure_row and total_exposure_row[0] else 0.0
 
             # 获取当前余额（用于计算百分比）
-            from py_clob_client.constants import AddressType
-            balance_info = self.client.get_balance(AddressType.ADDRESS)
-            if balance_info:
-                current_balance = float(balance_info.get('balance', '0') or '0') / 1e6
-            else:
-                current_balance = self.position_mgr.balance
+            # 🔥 使用position_mgr中的余额（已通过Ankr API实时更新）
+            current_balance = self.position_mgr.balance
 
             max_total_exposure = current_balance * CONFIG['risk']['max_total_exposure_pct']
 
