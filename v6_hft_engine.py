@@ -627,6 +627,11 @@ class V6HFTEngine:
                     last_trade_check = time.time()
                     last_adjust_check = time.time()
                     last_cleanup_check = time.time()
+                    last_analysis_check = 0  # 🔥 启动时立即触发一次交易分析
+
+                    # 🔥 启动时立即输出交易分析
+                    print("[ANALYSIS] 启动时输出交易分析...")
+                    await self.print_trading_analysis()
                     last_analysis_check = time.time()
 
                     while True:
