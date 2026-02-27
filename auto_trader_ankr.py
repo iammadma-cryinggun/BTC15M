@@ -1350,7 +1350,8 @@ class AutoTraderV5:
                     token_id, entry_time = row
                     # 在 predictions 表里找最近一条匹配该 token 的记录
                     try:
-                        pred_conn = sqlite3.connect('btc_15min_predictionsv2.db')
+                        pred_db_path = os.path.join(os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__))), 'btc_15min_predictionsv2.db')
+                        pred_conn = sqlite3.connect(pred_db_path)
                         pred_cursor = pred_conn.cursor()
                         pred_cursor.execute("""
                             SELECT market_slug FROM predictions
@@ -2187,7 +2188,7 @@ class AutoTraderV5:
                                         pass
                                 # 基于最终确认的actual_entry_price统一重算止盈止损（对称30%逻辑）
                                 value_usdc = size * actual_entry_price
-                                tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
                                 tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                 tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                 tp_target_price = min(tp_by_fixed, tp_by_pct)
@@ -2238,7 +2239,7 @@ class AutoTraderV5:
                                 if abs(actual_entry_price - entry_price) > 0.001:
                                     value_usdc = size * actual_entry_price
                                     # 对称30%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
                                     tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = min(tp_by_fixed, tp_by_pct)
@@ -2281,7 +2282,7 @@ class AutoTraderV5:
                                         return max(tick_size, min(1 - tick_size, p))
 
                                     # 对称30%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
                                     tp_by_pct = entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = align_price_local(min(tp_by_fixed, tp_by_pct))
@@ -2935,7 +2936,7 @@ class AutoTraderV5:
 
                 real_value = position_size * actual_price
                 # 对称30%止盈止损
-                tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
                 tp_by_pct = actual_price * (1 + tp_pct_max)
                 tp_by_fixed = (real_value + 1.0) / max(position_size, 1)
                 tp_target_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -2957,7 +2958,7 @@ class AutoTraderV5:
                             return max(tick_size, min(1 - tick_size, p))
 
                         # 基于实际成交价格计算止盈止损（对称30%逻辑）
-                        tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                        tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
                         tp_by_pct = actual_price * (1 + tp_pct_max)
                         tp_by_fixed = (position_value + 1.0) / max(position_size, 1)
                         tp_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -3121,7 +3122,7 @@ class AutoTraderV5:
             print(f"       [MERGE] 合并后: {merged_size}股 @ {merged_entry_price:.4f} (${merged_value:.2f})")
 
             # 计算新的止盈止损价格（对称30%逻辑）
-            tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
             tp_by_pct = merged_entry_price * (1 + tp_pct_max)
             tp_by_fixed = (merged_value + 1.0) / max(merged_size, 1)
             tp_target_price = min(tp_by_fixed, tp_by_pct)
@@ -3149,15 +3150,12 @@ class AutoTraderV5:
                 tp_args = OrderArgs(
                     token_id=token_id,
                     price=tp_target_price,
-                    side='SELL' if signal['direction'] == 'LONG' else 'SELL',
-                    size=merged_size,
-                    order_type='LIMIT',
-                    reduce_only=False,
-                    signature_type=2
+                    side=SELL,
+                    size=merged_size
                 )
-                tp_order = self.client.create_order(tp_args)
+                tp_order = self.client.create_and_post_order(tp_args)
                 if tp_order:
-                    new_tp_order_id = tp_order.get('orderId')
+                    new_tp_order_id = tp_order.get('orderID')
                     print(f"       [MERGE] ✅ 新止盈单已挂: {new_tp_order_id[-8:]}")
             except Exception as e:
                 print(f"       [MERGE] ⚠️ 挂新止盈单失败: {e}，将使用本地监控")
@@ -3240,6 +3238,11 @@ class AutoTraderV5:
                     # 平仓都是SELL操作，用bid价格计算真实净值
                     pos_current_price = self.get_order_book(token_id, side='SELL')
 
+                # 初始化退出变量（修复：必须在引用前定义）
+                exit_reason = None
+                triggered_order_id = None
+                actual_exit_price = None  # 实际成交价格
+
                 # fallback：传入的outcomePrices
                 if pos_current_price is None:
                     if yes_price is not None and no_price is not None:
@@ -3249,9 +3252,8 @@ class AutoTraderV5:
 
                 # 🚨 修复：价格获取完全失败时触发紧急止损（避免重复平仓）
                 if pos_current_price is None:
-                    # 检查是否已经尝试过紧急平仓
-                    emergency_closed = exit_reason is not None and 'EMERGENCY' in exit_reason
-                    if not emergency_closed:
+                    # exit_reason 在此处尚未初始化，直接执行紧急平仓
+                    if not getattr(self, f'_emergency_closed_{pos_id}', False):
                         print(f"       [EMERGENCY] ⚠️ 价格获取失败（API超时/网络问题），立即市价平仓保护")
                         # 尝试紧急市价平仓
                         try:
@@ -3268,6 +3270,7 @@ class AutoTraderV5:
                                 )
                                 close_response = self.client.create_and_post_order(close_order_args)
                                 if close_response and 'orderID' in close_response:
+                                    setattr(self, f'_emergency_closed_{pos_id}', True)
                                     exit_reason = 'EMERGENCY_PRICE_FAIL'
                                     triggered_order_id = close_response['orderID']
                                     actual_exit_price = close_price
@@ -3291,11 +3294,6 @@ class AutoTraderV5:
                         print(f"       [DEBUG] 止损检查: 当前价={pos_current_price:.4f}, 止损线={sl_price:.4f}, 触发={pos_current_price <= sl_price}")
                     except:
                         pass
-
-                # 检查止盈和止损订单状态
-                exit_reason = None
-                triggered_order_id = None
-                actual_exit_price = None  # 实际成交价格
 
                 # 检查止盈单（带重试）
                 if tp_order_id:
@@ -3403,7 +3401,7 @@ class AutoTraderV5:
                 # 如果止盈单没成交，检查本地止盈止损价格（双向轮询模式）
                 if not exit_reason:
                     # ✅ 关键修复：使用与开仓时相同的公式，确保一致性（对称30%逻辑）
-                    tp_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
                     tp_by_pct = entry_token_price * (1 + tp_pct_max)
                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                     tp_target_price = min(tp_by_fixed, tp_by_pct)
