@@ -3416,6 +3416,101 @@ class AutoTraderV5:
                         close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price, sl_price=sl_price)
                         print(f"       [EMERGENCY] ✅ 止损平仓订单已发送: {close_order_id}")
 
+                        # 🚨 关键修复：处理 NO_BALANCE 的情况（防止无限循环）
+                        if close_order_id == "NO_BALANCE":
+                            print(f"       [EMERGENCY] ⚠️ 余额为0，确认持仓已清零或手动平仓")
+
+                            # 查询链上余额二次确认
+                            try:
+                                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+                                bal_params = BalanceAllowanceParams(
+                                    asset_type=AssetType.CONDITIONAL,
+                                    token_id=token_id,
+                                    signature_type=2
+                                )
+                                bal_result = self.client.get_balance_allowance(bal_params)
+                                if bal_result:
+                                    balance_raw = float(bal_result.get('balance', '0') or '0')
+                                    balance_shares = balance_raw / 1e6
+
+                                    if balance_shares < 0.5:  # 确认余额为0
+                                        print(f"       [EMERGENCY] ✅ 链上确认余额为{balance_shares:.2f}份，持仓已清空")
+
+                                        # 强制更新数据库状态为 'closed'
+                                        exit_reason = 'STOP_LOSS'
+                                        actual_exit_price = pos_current_price
+
+                                        # 计算盈亏
+                                        pnl_usdc = (actual_exit_price - entry_token_price) * size
+                                        pnl_pct = ((actual_exit_price - entry_token_price) / entry_token_price) * 100
+
+                                        # 更新持仓记录
+                                        cursor.execute("""
+                                            UPDATE positions
+                                            SET status = 'closed',
+                                                exit_time = ?,
+                                                exit_price = ?,
+                                                exit_reason = ?,
+                                                pnl_usdc = ?,
+                                                pnl_pct = ?
+                                            WHERE id = ?
+                                        """, (
+                                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                            actual_exit_price,
+                                            exit_reason,
+                                            pnl_usdc,
+                                            pnl_pct,
+                                            pos_id
+                                        ))
+                                        conn.commit()
+
+                                        print(f"       [EMERGENCY] ✅ 数据库已更新: 状态='closed', 亏损={pnl_pct:.1f}%")
+
+                                        # 更新统计
+                                        if pnl_usdc < 0:
+                                            self.stats['losses'] += 1
+                                            self.stats['consecutive_losses'] += 1
+                                            self.stats['daily_loss'] += abs(pnl_usdc)
+                                        else:
+                                            self.stats['wins'] += 1
+                                            self.stats['consecutive_losses'] = 0
+
+                                        self.stats['total_trades'] += 1
+
+                                        # 发送通知
+                                        if self.telegram.enabled:
+                                            self.telegram.send_stop_loss_notification(
+                                                side, size, entry_token_price, actual_exit_price, pnl_usdc, pnl_pct
+                                            )
+
+                                        # 记录到 trades 表
+                                        try:
+                                            cursor.execute("""
+                                                INSERT INTO trades (
+                                                    timestamp, side, price, value_usd, signal_score,
+                                                    confidence, rsi, vwap, order_id, status
+                                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            """, (
+                                                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                                side,
+                                                actual_exit_price,
+                                                size * actual_exit_price,
+                                                0,  # signal_score
+                                                0,  # confidence
+                                                0,  # rsi
+                                                0,  # vwap
+                                                '',  # order_id
+                                                'closed'
+                                            ))
+                                            conn.commit()
+                                        except Exception as trade_err:
+                                            print(f"       [EMERGENCY] ⚠️ 记录trade失败: {trade_err}")
+
+                                    else:
+                                        print(f"       [EMERGENCY] ⚠️ 链上余额不为0({balance_shares:.2f}份)，保持监控")
+                            except Exception as balance_err:
+                                print(f"       [EMERGENCY] ❌ 查询余额失败: {balance_err}")
+
                     # 跳过后续检查，继续下一个持仓
                     continue
 
