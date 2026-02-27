@@ -1664,6 +1664,20 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [POSITION LOCK CHECK ERROR] {e}")
 
+        # ==========================================
+        # ⏱️ 开仓冷却时间（防止报复性交易）
+        # ==========================================
+        # 检查最后一次交易时间，强制冷却5分钟
+        if hasattr(self, 'stats') and 'last_trade_time' in self.stats:
+            last_trade = self.stats['last_trade_time']
+            if last_trade:
+                time_passed = (datetime.now() - last_trade).total_seconds()
+                cooldown_period = 300  # 5分钟 = 300秒
+
+                if time_passed < cooldown_period:
+                    remaining = int(cooldown_period - time_passed)
+                    return False, f"⏱️ [射击冷却] 刚交易完，强制冷却中... 剩余 {remaining} 秒（{remaining//60}分{remaining%60}秒），防止报复性交易！"
+
         # 检查是否进入新的15分钟窗口（自动重置last_traded_market）
         if market and self.last_traded_market:
             current_slug = market.get('slug', '')
@@ -1847,14 +1861,17 @@ class AutoTraderV5:
                 return False, "🛡️ 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
         # 🛡️ === 第二斧：拒绝极端价格（只做合理区间） ===
+        # ⚠️ 重要：收紧价格区间，避免垃圾赔率单
+        # < 0.35: 胜率太低（<35%），波动风险极高，容易被扫损
+        # > 0.85: 胜率太高（>85%），利润空间太小
         price = signal.get('price', 0.5)
-        max_entry_price = CONFIG['signal'].get('max_entry_price', 0.80)
-        min_entry_price = CONFIG['signal'].get('min_entry_price', 0.20)
+        max_entry_price = 0.85  # 硬编码收紧上限（原0.80太宽松）
+        min_entry_price = 0.35  # 硬编码收紧下限（原0.20太危险）
 
         if price > max_entry_price:
-            return False, f"🛡️ 拒绝极端高位: {price:.4f} > {max_entry_price:.2f} (利润空间太小)"
+            return False, f"🛑 [价格风控] 当前价格 {price:.2f} > {max_entry_price:.2f} (胜率>85%，利润空间太小)，放弃开仓！"
         if price < min_entry_price:
-            return False, f"🛡️ 拒绝极端低位: {price:.4f} < {min_entry_price:.2f} (风险太大)"
+            return False, f"🛑 [价格风控] 当前价格 {price:.2f} < {min_entry_price:.2f} (胜率<35%，波动风险极高)，放弃开仓！"
 
         # --- 检查是否允许做多/做空（动态调整）---
         if signal['direction'] == 'LONG' and not CONFIG['signal']['allow_long']:
