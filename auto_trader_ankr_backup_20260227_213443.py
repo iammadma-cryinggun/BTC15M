@@ -74,7 +74,7 @@ CONFIG = {
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
-        'max_daily_loss_pct': 0.50,     # 50% daily loss (临时提高)
+        'max_daily_loss_pct': 10.0,     # 🔥 暂停：1000% daily loss (禁用限制)
         'stop_loss_consecutive': 4,      # 提高到4（2太容易触发，错过机会）
         'pause_hours': 0.5,            # 缩短到0.5小时（2小时太长）
         'max_same_direction_bullets': 2,  # 同市场同方向最大持仓数（允许止盈后再开1单）
@@ -88,8 +88,8 @@ CONFIG = {
         'min_confidence': 0.75,  # 默认置信度（保留用于兼容）
         'min_long_confidence': 0.60,   # LONG最小置信度
         'min_short_confidence': 0.60,  # SHORT最小置信度
-        'min_long_score': 4.0,      # 🔥 提高到4.0（LONG胜率22%，减少低质量信号）
-        'min_short_score': -3.0,    # SHORT保持-3.0（胜率69%）
+        'min_long_score': 4.0,      # 🔥 开仓阈值：提高信号质量
+        'min_short_score': -4.0,    # 🔥 对称：与LONG保持一致（风控统一）
         'balance_zone_min': 0.49,  # 平衡区间下限
         'balance_zone_max': 0.51,  # 平衡区间上限
         'allow_long': True,   # 允许做多（但会动态调整）
@@ -1827,6 +1827,35 @@ class AutoTraderV5:
                 direction = 'SHORT'
 
         if direction:
+            # 🧪 测试模式：根据方向检查对应的价格
+            # 做多(买YES)：要求 YES 价格 < 0.50
+            # 做空(买NO)：要求 NO 价格 < 0.50
+            try:
+                outcome_prices = market.get('outcomePrices', '[]')
+                if isinstance(outcome_prices, str):
+                    import json
+                    outcome_prices = json.loads(outcome_prices)
+
+                if direction == 'LONG':
+                    # 做多买YES，检查 YES 价格
+                    yes_price = price
+                    if yes_price >= 0.50:
+                        print(f"       [FILTER] 🧪 做多模式：YES价格 {yes_price:.4f} >= 0.50，不符合测试条件（只做 YES < 0.50）")
+                        return None
+                    else:
+                        print(f"       [FILTER] 🧪 做多检查通过：YES价格 {yes_price:.4f} < 0.50，允许做多")
+
+                elif direction == 'SHORT':
+                    # 做空买NO，检查 NO 价格
+                    no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else (1.0 - price)
+                    if no_price >= 0.50:
+                        print(f"       [FILTER] 🧪 做空模式：NO价格 {no_price:.4f} >= 0.50，不符合测试条件（只做 NO < 0.50）")
+                        return None
+                    else:
+                        print(f"       [FILTER] 🧪 做空检查通过：NO价格 {no_price:.4f} < 0.50，允许做空")
+            except Exception as e:
+                print(f"       [FILTER] 🧪 价格检查失败: {e}，继续执行")
+
             return {
                 'direction': direction,
                 'score': score,
