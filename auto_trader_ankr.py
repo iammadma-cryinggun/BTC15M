@@ -1568,22 +1568,22 @@ class AutoTraderV5:
             print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | UT+Hull: {ut_hull_trend} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
 
             # ==========================================
-            # 🛡️ UT Bot 趋势过滤逻辑 (增加巨鲸豁免权)
+            # 🛡️ UT Bot 趋势过滤逻辑 (强势信号豁免权)
             # ==========================================
             if ut_hull_trend != 'NEUTRAL':
                 # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
                 if score > 0 and ut_hull_trend == 'SHORT':
-                    # 🚀 巨鲸豁免权：如果是极速满分信号，无视 UT Bot 的滞后，强行放行！
-                    if score >= 9.0:
-                        print("🚀 [FILTER BYPASS] 巨鲸信号势如破竹，已无视 UT Bot 滞后，强制放行开多！")
+                    # 🚀 强势信号豁免权：score >= 7.0 即无视 UT Bot 滞后
+                    if score >= 7.0:
+                        print("🚀 [FILTER BYPASS] 盘口动能强劲，无视 UT Bot 看空，强制放行开多！")
                     else:
                         print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
                         return None
                 # 如果 Oracle 看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
                 elif score < 0 and ut_hull_trend == 'LONG':
-                    # ☄️ 巨鲸豁免权：无视 UT Bot 的滞后，强行放行！
-                    if score <= -9.0:
-                        print("☄️ [FILTER BYPASS] 巨鲸空头势如破竹，已无视 UT Bot 滞后，强制放行砸盘！")
+                    # ☄️ 强势信号豁免权：score <= -7.0 即无视 UT Bot 滞后
+                    if score <= -7.0:
+                        print("☄️ [FILTER BYPASS] 盘口动能强劲，无视 UT Bot 看多，强制放行砸盘！")
                     else:
                         print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看跌({score:+.2f})但UT Bot LONG，拒绝开空")
                         return None
