@@ -74,7 +74,7 @@ CONFIG = {
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
-        'max_daily_loss_pct': 0.50,     # 50% daily loss (临时提高)
+        'max_daily_loss_pct': 10.0,     # 🔥 暂停：1000% daily loss (禁用限制)
         'stop_loss_consecutive': 4,      # 提高到4（2太容易触发，错过机会）
         'pause_hours': 0.5,            # 缩短到0.5小时（2小时太长）
         'max_same_direction_bullets': 2,  # 同市场同方向最大持仓数（允许止盈后再开1单）
@@ -88,8 +88,8 @@ CONFIG = {
         'min_confidence': 0.75,  # 默认置信度（保留用于兼容）
         'min_long_confidence': 0.60,   # LONG最小置信度
         'min_short_confidence': 0.60,  # SHORT最小置信度
-        'min_long_score': 4.0,      # LONG最低分数
-        'min_short_score': -4.0,    # 🔥 对称：与LONG保持一致（风控统一）
+        'min_long_score': 3.0,      # 🔥 降低开仓阈值：积累更多数据
+        'min_short_score': -3.0,    # 🔥 对称：与LONG保持一致（风控统一）
         'balance_zone_min': 0.49,  # 平衡区间下限
         'balance_zone_max': 0.51,  # 平衡区间上限
         'allow_long': True,   # 允许做多（但会动态调整）
@@ -348,23 +348,13 @@ class PositionManager:
     def calculate_position(self, confidence: float, score: float = 0.0,
                           ut_bot_neutral: bool = False, oracle_score: float = 0.0) -> float:
         """
-        智能动态仓位：根据信号强度自动调整
+        🔥 固定10%仓位（暂时禁用动态仓位）
 
-        🔥 双重作用：
-        1. 开仓判断：Oracle增强score帮助达到门槛（在generate_signal中完成）
-        2. 仓位计算：Oracle增强信号强度决定仓位大小（本函数）
-
-        信号流程：
-        - 本地评分（RSI/VWAP等） → 融合Oracle boost → score（开仓判断）
-        - score + 原始Oracle强度对比 → 仓位大小（本函数）
-
-        仓位规则：
-        - 信号很弱（<3.0）  → 10% （最低：Polymarket限制6手≈3U≈10%）
-        - 信号弱（3.0-3.9）  → 15%
-        - 信号中等（4.0-5.4）→ 20%
-        - 信号强（5.5-6.9）  → 25%
-        - 信号很强（≥7.0）  → 30% （最高）
-        - UT Bot中性 → 10% （风控保护）
+        ⚠️ 待完成：
+        - 交易分析功能正常运行
+        - 收集足够数据（50-100笔）
+        - 分析不同信号质量的实际表现
+        - 然后再考虑恢复动态仓位
 
         Args:
             confidence: 置信度（0-1）
@@ -380,61 +370,15 @@ class PositionManager:
         if available <= CONFIG['risk']['min_position_usdc']:
             return 0.0  # Not enough to meet minimum
 
-        # 🔥 基础仓位：10%（CONFIG配置，对应6手≈3U≈总资金10%）
-        base = self.balance * CONFIG['risk']['base_position_pct']
-
-        # 🛡️ UT Bot中性时强制最低仓位（风控保护）
-        if ut_bot_neutral:
-            print(f"       [POSITION] ⚠️ UT Bot中性，仓位限制为最低{CONFIG['risk']['base_position_pct']*100:.0f}%（风控保护）")
-            multiplier = 1.0
-        else:
-            # 🔥 score是融合后的信号（本地评分 + Oracle增强）
-            # 用于计算基础仓位大小
-            abs_score = abs(score)
-
-            # 🔥 Oracle原始数据进一步增强仓位（当Oracle比融合信号更强时）
-            # 注意：这里用的是原始oracle_score，未经过boost衰减
-            if oracle_score != 0 and (score * oracle_score > 0):
-                # 同向：取融合信号和原始Oracle中的较大值
-                oracle_enhanced = max(abs_score, abs(oracle_score))
-                if oracle_enhanced > abs_score:
-                    print(f"       [POSITION] 🔥 原始Oracle增强仓位: {abs_score:.1f} → {oracle_enhanced:.1f} (原始Oracle: {oracle_score:+.1f})")
-                    abs_score = oracle_enhanced
-                else:
-                    print(f"       [POSITION] 📊 信号强度: {abs_score:.1f} (原始Oracle: {oracle_score:+.1f}, 未超过融合信号)")
-            elif oracle_score != 0:
-                # 反向：Oracle不增强，保持融合信号强度
-                print(f"       [POSITION] ⚠️ Oracle反向({oracle_score:+.1f})，使用融合信号强度: {abs_score:.1f}")
-
-            # 🎯 根据增强后的信号分数分段调整仓位
-            # 4.0是开仓门槛，刚好达到时开最小仓位
-            # Oracle越强，信号强度越大，仓位越大
-            if abs_score >= 7.0:
-                # 🔥 信号很强：30%（Oracle强烈确认）
-                multiplier = 3.0
-            elif abs_score >= 5.0:
-                # 💪 信号较强：20%（Oracle较好确认）
-                multiplier = 2.0
-            elif abs_score >= 4.0:
-                # 👌 刚好达到门槛：10%（基础仓位）
-                multiplier = 1.0
-            else:
-                # 🔻 低于门槛：不应该触发
-                multiplier = 1.0
-
-        # 结合confidence微调（±10%）
-        confidence_adj = 0.9 + (confidence * 0.2)  # 0.9 - 1.1
-
-        adjusted = base * multiplier * confidence_adj
-
-        # 限制在base_position_pct-max_position_pct范围内（10%-30%）
-        min_pos = self.balance * CONFIG['risk']['base_position_pct']
-        max_pos = self.balance * CONFIG['risk']['max_position_pct']
-        final = max(min_pos, min(adjusted, max_pos))
+        # 🔥 固定10%仓位（暂时禁用动态仓位）
+        final = self.balance * CONFIG['risk']['base_position_pct']
 
         # IMPORTANT: Must be at least 2 USDC
         min_required = CONFIG['risk']['min_position_usdc']
         final = max(final, min_required)
+
+        # 日志：显示固定仓位
+        print(f"       [POSITION] 🔒 固定仓位: {final:.2f} USDC ({CONFIG['risk']['base_position_pct']*100:.0f}%) - 动态仓位已禁用")
 
         # But never exceed available balance (minus small buffer)
         max_safe = available * 0.95
