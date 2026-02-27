@@ -664,8 +664,14 @@ class V6HFTEngine:
                         # 检查是否需要切换市场
                         if self.market_end_time:
                             time_left = (self.market_end_time - datetime.now(timezone.utc)).total_seconds()
-                            if time_left < 200:
+                            # 🔥 修复：只在剩余时间>0且<200秒时切换，避免已过期市场循环
+                            if 0 < time_left < 200:
                                 print(f"[SWITCH] 市场即将到期({time_left:.0f}秒)，切换到下一个15分钟窗口...")
+                                self._reset_price_cache()
+                                break
+                            elif time_left <= 0:
+                                # 市场已过期，强制重新获取市场
+                                print(f"[SWITCH] 市场已过期({time_left:.0f}秒)，强制重新获取...")
                                 self._reset_price_cache()
                                 break
                         else:
@@ -674,8 +680,14 @@ class V6HFTEngine:
                                 try:
                                     ts = int(self.current_slug.split('-')[-1])
                                     time_left = ts + 900 - int(datetime.now(timezone.utc).timestamp())
-                                    if time_left < 200:
-                                        print(f"[SWITCH] 市场即将到期(slug判断)，切换...")
+                                    # 🔥 修复：只在剩余时间>0且<200秒时切换
+                                    if 0 < time_left < 200:
+                                        print(f"[SWITCH] 市场即将到期(slug判断，剩余{time_left:.0f}秒)，切换...")
+                                        self._reset_price_cache()
+                                        break
+                                    elif time_left <= 0:
+                                        # 市场已过期，强制重新获取市场
+                                        print(f"[SWITCH] 市场已过期(slug判断，{time_left:.0f}秒)，强制重新获取...")
                                         self._reset_price_cache()
                                         break
                                 except:

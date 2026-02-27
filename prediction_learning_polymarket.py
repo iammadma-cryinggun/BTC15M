@@ -123,6 +123,18 @@ class PolymarketPredictionLearning:
             )
         ''')
 
+        # 🔥 数据库迁移：为已存在的表添加 oracle_score 列
+        try:
+            cursor.execute("SELECT oracle_score FROM predictions LIMIT 1")
+        except sqlite3.OperationalError:
+            # 列不存在，添加列
+            cursor.execute("ALTER TABLE predictions ADD COLUMN oracle_score REAL")
+            cursor.execute("ALTER TABLE predictions ADD COLUMN oracle_cvd_15m REAL")
+            cursor.execute("ALTER TABLE predictions ADD COLUMN oracle_wall_imbalance REAL")
+            cursor.execute("ALTER TABLE predictions ADD COLUMN oracle_ut_hull_trend TEXT")
+            conn.commit()
+            print("[LEARNING] 数据库已升级：添加 Oracle 数据列")
+
         # 参数调整历史表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS parameter_history (
