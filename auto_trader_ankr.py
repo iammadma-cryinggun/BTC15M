@@ -74,7 +74,7 @@ CONFIG = {
         'reserve_usdc': 0.0,             # 🔥 不保留余额，全仓利用
         'min_position_usdc': 2.0,        # Minimum 2 USDC per order
         'max_daily_trades': 96,          # 15min市场: 96次/天 = 每15分钟1次
-        'max_daily_loss_pct': 0.50,     # 50% daily loss (临时提高)
+        'max_daily_loss_pct': 1.0,      # 100% daily loss (禁用日亏损限制)
         'stop_loss_consecutive': 4,      # 提高到4（2太容易触发，错过机会）
         'pause_hours': 0.5,            # 缩短到0.5小时（2小时太长）
         'max_same_direction_bullets': 2,  # 同市场同方向最大持仓数（允许止盈后再开1单）
@@ -345,104 +345,54 @@ class PositionManager:
     def __init__(self, balance_usdc: float):
         self.balance = balance_usdc
 
-    def calculate_position(self, confidence: float, score: float = 0.0,
-                          ut_bot_neutral: bool = False, oracle_score: float = 0.0) -> float:
+    def calculate_position(self, confidence: float, score: float = 0.0) -> float:
         """
-        🔥 固定10%仓位（暂时禁用动态仓位）
-
-        ⚠️ 待完成：
-        - 交易分析功能正常运行
-        - 收集足够数据（50-100笔）
-        - 分析不同信号质量的实际表现
-        - 确定最优仓位策略后再恢复动态仓位
-
-        🔧 恢复动态仓位：
-        - 将下面的 USE_DYNAMIC_POSITION = False 改为 True
-        - 所有逻辑保留，只是暂时不用
+        智能动态仓位：根据信号强度（score）自动调整
 
         Args:
             confidence: 置信度（0-1）
-            score: 融合后的信号分数（本地评分 + Oracle boost，-10到+10）
-            ut_bot_neutral: UT Bot趋势是否中性（True时限制为最低仓位）
-            oracle_score: 原始Oracle评分（-10到+10，用于仓位增强）
+            score: 信号分数（-10到+10）
 
         Returns:
             实际下单金额（USDC）
         """
-        USE_DYNAMIC_POSITION = False  # 🔥 改为 True 启用动态仓位
-
         available = self.balance - CONFIG['risk']['reserve_usdc']
 
         if available <= CONFIG['risk']['min_position_usdc']:
             return 0.0  # Not enough to meet minimum
 
-        # ============================================================
-        # 动态仓位逻辑（暂时禁用，保留代码供参考）
-        # ============================================================
-        if USE_DYNAMIC_POSITION:
-            # 🔥 基础仓位：10%（CONFIG配置，对应6手≈3U≈总资金10%）
-            base = self.balance * CONFIG['risk']['base_position_pct']
+        # 基础仓位：15%
+        base = self.balance * 0.15
 
-            # 🛡️ UT Bot中性时强制最低仓位（风控保护）
-            if ut_bot_neutral:
-                print(f"       [POSITION] ⚠️ UT Bot中性，仓位限制为最低{CONFIG['risk']['base_position_pct']*100:.0f}%（风控保护）")
-                multiplier = 1.0
-            else:
-                # 🔥 score是融合后的信号（本地评分 + Oracle增强）
-                # 用于计算基础仓位大小
-                abs_score = abs(score)
+        # 🎯 根据信号分数分段调整（方案A：智能分段）
+        abs_score = abs(score)
 
-                # 🔥 Oracle原始数据进一步增强仓位（当Oracle比融合信号更强时）
-                # 注意：这里用的是原始oracle_score，未经过boost衰减
-                if oracle_score != 0 and (score * oracle_score > 0):
-                    # 同向：取融合信号和原始Oracle中的较大值
-                    oracle_enhanced = max(abs_score, abs(oracle_score))
-                    if oracle_enhanced > abs_score:
-                        print(f"       [POSITION] 🔥 原始Oracle增强仓位: {abs_score:.1f} → {oracle_enhanced:.1f} (原始Oracle: {oracle_score:+.1f})")
-                        abs_score = oracle_enhanced
-                    else:
-                        print(f"       [POSITION] 📊 信号强度: {abs_score:.1f} (原始Oracle: {oracle_score:+.1f}, 未超过融合信号)")
-                elif oracle_score != 0:
-                    # 反向：Oracle不增强，保持融合信号强度
-                    print(f"       [POSITION] ⚠️ Oracle反向({oracle_score:+.1f})，使用融合信号强度: {abs_score:.1f}")
-
-                # 🎯 根据增强后的信号分数分段调整仓位
-                # 4.0是开仓门槛，刚好达到时开最小仓位
-                # Oracle越强，信号强度越大，仓位越大
-                if abs_score >= 7.0:
-                    # 🔥 信号很强：30%（Oracle强烈确认）
-                    multiplier = 3.0
-                elif abs_score >= 5.0:
-                    # 💪 信号较强：20%（Oracle较好确认）
-                    multiplier = 2.0
-                elif abs_score >= 4.0:
-                    # 👌 刚好达到门槛：10%（基础仓位）
-                    multiplier = 1.0
-                else:
-                    # 🔻 低于门槛：不应该触发
-                    multiplier = 1.0
-
-            # 结合confidence微调（±10%）
-            confidence_adj = 0.9 + (confidence * 0.2)  # 0.9 - 1.1
-
-            adjusted = base * multiplier * confidence_adj
-
-            # 限制在base_position_pct-max_position_pct范围内（10%-30%）
-            min_pos = self.balance * CONFIG['risk']['base_position_pct']
-            max_pos = self.balance * CONFIG['risk']['max_position_pct']
-            final = max(min_pos, min(adjusted, max_pos))
+        if abs_score >= 6.0:
+            # 🔥 超强信号：30%
+            multiplier = 2.0
+        elif abs_score >= 4.5:
+            # 💪 强信号：25%
+            multiplier = 1.67
+        elif abs_score >= 3.5:
+            # 👌 中等信号：20%
+            multiplier = 1.33
         else:
-            # 🔥 固定10%仓位（暂时禁用动态仓位）
-            final = self.balance * CONFIG['risk']['base_position_pct']
+            # ⚠️ 弱信号：15%
+            multiplier = 1.0
+
+        # 结合confidence微调（±10%）
+        confidence_adj = 0.9 + (confidence * 0.2)  # 0.9 - 1.1
+
+        adjusted = base * multiplier * confidence_adj
+
+        # 限制在15%-30%范围内
+        min_pos = self.balance * 0.15
+        max_pos = self.balance * 0.30
+        final = max(min_pos, min(adjusted, max_pos))
 
         # IMPORTANT: Must be at least 2 USDC
         min_required = CONFIG['risk']['min_position_usdc']
         final = max(final, min_required)
-
-        if USE_DYNAMIC_POSITION:
-            print(f"       [POSITION] 📊 动态仓位: {final:.2f} USDC ({multiplier if USE_DYNAMIC_POSITION else 1.0}x)")
-        else:
-            print(f"       [POSITION] 🔒 固定仓位: {final:.2f} USDC ({CONFIG['risk']['base_position_pct']*100:.0f}%) - 动态仓位已禁用")
 
         # But never exceed available balance (minus small buffer)
         max_safe = available * 0.95
@@ -1757,44 +1707,35 @@ class AutoTraderV5:
         # ========== 双核融合：读取币安先知Oracle信号 ==========
         oracle = self._read_oracle_signal()
         oracle_score = 0.0
-        ut_hull_trend = 'NEUTRAL'
-        ut_bot_neutral = False
-
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
-            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
-            cvd_15m = oracle.get('cvd_15m', 0)
-            wall_imbalance = oracle.get('wall_imbalance', 0)
-
-            # 🔥 Oracle数据增强score（帮助达到开仓门槛）
             # 同向增强（权重20%），反向削弱（权重10%）
+            # 避免Oracle把弱信号推过门槛，或把强信号压下去
             if oracle_score * score > 0:
                 oracle_boost = oracle_score / 5.0   # 同向：最多±2
             else:
                 oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
-            original_score = score
             score += oracle_boost
             score = max(-10, min(10, score))
 
-            print(f"       [ORACLE] CVD: {cvd_15m:+.1f} USD | 盘口失衡: {wall_imbalance*100:+.1f}% | UT+Hull: {ut_hull_trend} | Oracle评分: {oracle_score:+.2f} | boost: {oracle_boost:+.2f} | 融合后score: {original_score:+.2f} → {score:+.2f}")
+            # 🛡️ 双重确认：UT Bot + Hull 趋势过滤
+            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
+            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | UT+Hull: {ut_hull_trend} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
 
-            # 🛡️ UT Bot中性时的仓位限制：降低为最低仓位
-            ut_bot_neutral = (ut_hull_trend == 'NEUTRAL')
-
-            # 🛡️ 双重确认：UT Bot 趋势过滤（使用融合后的score）
+            # 双重确认逻辑：UT Bot 趋势必须与 Oracle 信号方向一致
             if ut_hull_trend != 'NEUTRAL':
-                # 如果融合后看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
+                # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
                 if score > 0 and ut_hull_trend == 'SHORT':
-                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: 融合信号看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
+                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
                     return None
-                # 如果融合后看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
+                # 如果 Oracle 看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
                 elif score < 0 and ut_hull_trend == 'LONG':
-                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: 融合信号看跌({score:+.2f})但UT Bot LONG，拒绝开空")
+                    print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看跌({score:+.2f})但UT Bot LONG，拒绝开空")
                     return None
                 else:
-                    print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与融合信号({score:+.2f})一致")
+                    print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与Oracle({score:+.2f})一致")
             else:
-                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仓位限制为最低{CONFIG['risk']['base_position_pct']*100:.0f}%")
+                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仅使用Oracle信号")
 
         # ======================================================
 
@@ -1806,20 +1747,16 @@ class AutoTraderV5:
 
         # 极端Oracle信号（>8或<-8）需本地评分同向才触发
         # 🔥 修复：极端信号提高价格限制，0.95以下允许交易
-        # 🔥 修复：极端信号也需遵守UT Bot趋势过滤（避免逆势交易）
         # 理由：极端价格（0.99）代表市场共识极强，趋势最确定
         if oracle and abs(oracle_score) >= 8.0:
-            if oracle_score >= 8.0 and score > 0 and price <= 0.95 and ut_hull_trend != 'SHORT':
+            if oracle_score >= 8.0 and score > 0 and price <= 0.95:
                 direction = 'LONG'
-                print(f"       [ORACLE] 🚀 极端看涨Oracle({oracle_score:+.2f})，融合后信号({score:+.2f})同向，UT Bot不反对，触发LONG！")
-            elif oracle_score <= -8.0 and score < 0 and price >= 0.05 and ut_hull_trend != 'LONG':
+                print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，本地同向({score:.2f})，触发LONG！")
+            elif oracle_score <= -8.0 and score < 0 and price >= 0.05:
                 direction = 'SHORT'
-                print(f"       [ORACLE] 🔻 极端看跌Oracle({oracle_score:+.2f})，融合后信号({score:+.2f})同向，UT Bot不反对，触发SHORT！")
+                print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，本地同向({score:.2f})，触发SHORT！")
             else:
-                if (oracle_score >= 8.0 and ut_hull_trend == 'SHORT') or (oracle_score <= -8.0 and ut_hull_trend == 'LONG'):
-                    print(f"       [ORACLE] ⚠️ 极端Oracle({oracle_score:+.2f})但UT Bot趋势({ut_hull_trend})相反，被拦截")
-                else:
-                    print(f"       [ORACLE] ⚠️ 极端Oracle({oracle_score:+.2f})但融合后信号({score:+.2f})反向，忽略")
+                print(f"       [ORACLE] ⚠️ 极端Oracle信号({oracle_score:+.2f})但本地评分反向({score:.2f})，忽略")
         else:
             if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
                 direction = 'LONG'
@@ -1836,10 +1773,6 @@ class AutoTraderV5:
                 'price': price,
                 'components': components,
                 'oracle_score': oracle_score,
-                'oracle_cvd_15m': oracle.get('cvd_15m', None) if oracle else None,
-                'oracle_wall_imbalance': oracle.get('wall_imbalance', None) if oracle else None,
-                'oracle_ut_hull_trend': ut_hull_trend,
-                'ut_bot_neutral': ut_bot_neutral,  # 🛡️ 标记UT Bot是否中性（用于仓位限制）
             }
         return None
 
@@ -2945,15 +2878,8 @@ class AutoTraderV5:
                 print(f"       [RISK] 余额查询失败或余额为0，拒绝开仓（安全保护）")
                 return None
             self.position_mgr.balance = fresh_usdc
-            # 🎯 智能动态仓位：根据信号强度自动调整（10%-30%）
-            # 🛡️ UT Bot中性时限制为最低10%仓位
-            # 🔥 Oracle数据增强信号强度（当Oracle与本地同向时）
-            position_value = self.position_mgr.calculate_position(
-                signal['confidence'],
-                signal['score'],
-                ut_bot_neutral=signal.get('ut_bot_neutral', False),
-                oracle_score=signal.get('oracle_score', 0.0)
-            )
+            # 🎯 智能动态仓位：根据信号强度自动调整（15%-30%）
+            position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
 
             if not self.position_mgr.can_afford(position_value):
                 print(f"       [RISK] Cannot afford {position_value:.2f}")
