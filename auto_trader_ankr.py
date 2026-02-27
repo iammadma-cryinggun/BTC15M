@@ -1692,12 +1692,19 @@ class AutoTraderV5:
         #     if current_slug == self.last_traded_market:
         #         return False, f"已交易过该市场: {current_slug}"
 
-        # --- 检查持仓冲突 ---
+        # --- 检查持仓冲突（双向检查：数据库 + 链上API）---
+        # 🔥 加强版：同时检查数据库和链上持仓，防止并发订单绕过检查
         positions = self.get_positions()
-        if signal['direction'] == 'LONG' and 'SHORT' in positions and positions['SHORT'] > 0:
-            return False, f"Conflict: 已有 {positions['SHORT']:.0f} 空头仓位，无法做多"
-        if signal['direction'] == 'SHORT' and 'LONG' in positions and positions['LONG'] > 0:
-            return False, f"Conflict: 已有 {positions['LONG']:.0f} 多头仓位，无法做空"
+        real_positions = self.get_real_positions()  # 查询链上实时持仓
+
+        # 合并数据库和链上持仓
+        all_long = positions.get('LONG', 0) + real_positions.get('LONG', 0)
+        all_short = positions.get('SHORT', 0) + real_positions.get('SHORT', 0)
+
+        if signal['direction'] == 'LONG' and all_short > 0:
+            return False, f"🛡️ [反向冲突] 已有 {all_short:.0f} 空头仓位，禁止同时做多！"
+        if signal['direction'] == 'SHORT' and all_long > 0:
+            return False, f"🛡️ [反向冲突] 已有 {all_long:.0f} 多头仓位，禁止同时做空！"
 
         # 🛡️ === 总持仓额度限制（防止多笔交易累计超仓）===
         # ⚠️ 重要：只统计未过期市场的持仓（过期市场已结算，不应占用额度）
@@ -3363,13 +3370,54 @@ class AutoTraderV5:
 
                 print(f"       [POSITION] {side} token价格: {pos_current_price:.4f}")
 
-                # 调试：打印止损检查的详细信息
+                # 🚨 强制止损检查（即使 sl_order_id 为 None 也要计算止损线）
+                sl_price = None
                 if sl_order_id:
                     try:
                         sl_price = float(sl_order_id)
                         print(f"       [DEBUG] 止损检查: 当前价={pos_current_price:.4f}, 止损线={sl_price:.4f}, 触发={pos_current_price <= sl_price}")
                     except:
-                        pass
+                        # 止损价格解析失败，重新计算
+                        sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                        sl_price = entry_token_price * (1 - sl_pct_max)
+                        print(f"       [DEBUG] 止损价格解析失败，重新计算: {sl_price:.4f}")
+
+                # 🔥 如果 sl_price 仍然为 None，强制计算止损线
+                if sl_price is None:
+                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                    sl_price = round(entry_token_price * (1 - sl_pct_max), 4)
+                    print(f"       [DEBUG] 止损价格缺失，强制计算: {sl_price:.4f}")
+
+                # 🚨 立即执行止损检查（在所有其他检查之前）
+                if sl_price and pos_current_price < sl_price:
+                    print(f"       [🚨 EMERGENCY STOP LOSS] 当前价 {pos_current_price:.4f} < 止损线 {sl_price:.4f}，立即市价平仓！")
+                    print(f"       [EMERGENCY] 亏损: {((entry_token_price - pos_current_price) / entry_token_price * 100):.1f}%")
+
+                    # 🔒 状态锁：防止重复触发
+                    try:
+                        cursor.execute("UPDATE positions SET status = 'closing' WHERE id = ?", (pos_id,))
+                        conn.commit()
+                        print(f"       [EMERGENCY] 🔒 状态已锁为 'closing'")
+                    except Exception as lock_e:
+                        print(f"       [EMERGENCY] ⚠️ 状态锁失败: {lock_e}")
+
+                    # 撤销止盈单（如果有）
+                    if tp_order_id:
+                        try:
+                            self.cancel_order(tp_order_id)
+                            print(f"       [EMERGENCY] 已撤销止盈单 {tp_order_id[-8:]}")
+                            time.sleep(1)
+                        except Exception as e:
+                            print(f"       [EMERGENCY] 撤销止盈单失败: {e}")
+
+                    # 市价平仓
+                    close_market = market if market else self.get_market_data()
+                    if close_market:
+                        close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price, sl_price=sl_price)
+                        print(f"       [EMERGENCY] ✅ 止损平仓订单已发送: {close_order_id}")
+
+                    # 跳过后续检查，继续下一个持仓
+                    continue
 
                 # 检查止盈单（带重试）
                 if tp_order_id:
