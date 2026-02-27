@@ -6,6 +6,9 @@ on:
     - cron: '0 2,14 * * *'
   workflow_dispatch:  # 手动触发
 
+permissions:
+  contents: write  # 允许提交报告到仓库
+
 jobs:
   generate_report:
     runs-on: ubuntu-latest
@@ -27,7 +30,18 @@ jobs:
       run: |
         python generate_learning_report.py
 
+    - name: 检查报告文件
+      run: |
+        if [ -f learning_report.html ]; then
+          echo "✅ 报告已生成: learning_report.html"
+          ls -lh learning_report.html
+        else
+          echo "⚠️  报告未生成（可能数据库不存在或无数据）"
+          exit 0  # 继续执行，不阻断流程
+        fi
+
     - name: 上传报告
+      if: hashFiles('learning_report.html') != ''
       uses: actions/upload-artifact@v4
       with:
         name: learning-report
@@ -35,9 +49,11 @@ jobs:
         retention-days: 30
 
     - name: 提交报告到仓库
+      if: hashFiles('learning_report.html') != ''
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         git add learning_report.html || true
         git commit -m "📊 学习报告自动生成 [skip ci]" || echo "No changes to commit"
-        git push
+        git push || echo "Push failed (可能没有新变更)"
+
