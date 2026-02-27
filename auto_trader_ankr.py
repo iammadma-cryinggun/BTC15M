@@ -3370,151 +3370,15 @@ class AutoTraderV5:
 
                 print(f"       [POSITION] {side} token价格: {pos_current_price:.4f}")
 
-                # 🚨 强制止损检查（即使 sl_order_id 为 None 也要计算止损线）
+                # 获取止损价格（从字段读取）
                 sl_price = None
-                if sl_order_id:
-                    try:
+                try:
+                    if sl_order_id:
                         sl_price = float(sl_order_id)
-                        print(f"       [DEBUG] 止损检查: 当前价={pos_current_price:.4f}, 止损线={sl_price:.4f}, 触发={pos_current_price <= sl_price}")
-                    except:
-                        # 止损价格解析失败，重新计算
-                        sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
-                        sl_price = entry_token_price * (1 - sl_pct_max)
-                        print(f"       [DEBUG] 止损价格解析失败，重新计算: {sl_price:.4f}")
+                except (ValueError, TypeError):
+                    pass
 
-                # 🔥 如果 sl_price 仍然为 None，强制计算止损线
-                if sl_price is None:
-                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
-                    sl_price = round(entry_token_price * (1 - sl_pct_max), 4)
-                    print(f"       [DEBUG] 止损价格缺失，强制计算: {sl_price:.4f}")
-
-                # 🚨 立即执行止损检查（在所有其他检查之前）
-                if sl_price and pos_current_price < sl_price:
-                    print(f"       [🚨 EMERGENCY STOP LOSS] 当前价 {pos_current_price:.4f} < 止损线 {sl_price:.4f}，立即市价平仓！")
-                    print(f"       [EMERGENCY] 亏损: {((entry_token_price - pos_current_price) / entry_token_price * 100):.1f}%")
-
-                    # 🔒 状态锁：防止重复触发
-                    try:
-                        cursor.execute("UPDATE positions SET status = 'closing' WHERE id = ?", (pos_id,))
-                        conn.commit()
-                        print(f"       [EMERGENCY] 🔒 状态已锁为 'closing'")
-                    except Exception as lock_e:
-                        print(f"       [EMERGENCY] ⚠️ 状态锁失败: {lock_e}")
-
-                    # 撤销止盈单（如果有）
-                    if tp_order_id:
-                        try:
-                            self.cancel_order(tp_order_id)
-                            print(f"       [EMERGENCY] 已撤销止盈单 {tp_order_id[-8:]}")
-                            time.sleep(1)
-                        except Exception as e:
-                            print(f"       [EMERGENCY] 撤销止盈单失败: {e}")
-
-                    # 市价平仓
-                    close_market = market if market else self.get_market_data()
-                    if close_market:
-                        close_order_id = self.close_position(close_market, side, size, is_stop_loss=True, entry_price=entry_token_price, sl_price=sl_price)
-                        print(f"       [EMERGENCY] ✅ 止损平仓订单已发送: {close_order_id}")
-
-                        # 🚨 关键修复：处理 NO_BALANCE 的情况（防止无限循环）
-                        if close_order_id == "NO_BALANCE":
-                            print(f"       [EMERGENCY] ⚠️ 余额为0，确认持仓已清零或手动平仓")
-
-                            # 查询链上余额二次确认
-                            try:
-                                from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-                                bal_params = BalanceAllowanceParams(
-                                    asset_type=AssetType.CONDITIONAL,
-                                    token_id=token_id,
-                                    signature_type=2
-                                )
-                                bal_result = self.client.get_balance_allowance(bal_params)
-                                if bal_result:
-                                    balance_raw = float(bal_result.get('balance', '0') or '0')
-                                    balance_shares = balance_raw / 1e6
-
-                                    if balance_shares < 0.5:  # 确认余额为0
-                                        print(f"       [EMERGENCY] ✅ 链上确认余额为{balance_shares:.2f}份，持仓已清空")
-
-                                        # 强制更新数据库状态为 'closed'
-                                        exit_reason = 'STOP_LOSS'
-                                        actual_exit_price = pos_current_price
-
-                                        # 计算盈亏
-                                        pnl_usdc = (actual_exit_price - entry_token_price) * size
-                                        pnl_pct = ((actual_exit_price - entry_token_price) / entry_token_price) * 100
-
-                                        # 更新持仓记录
-                                        cursor.execute("""
-                                            UPDATE positions
-                                            SET status = 'closed',
-                                                exit_time = ?,
-                                                exit_price = ?,
-                                                exit_reason = ?,
-                                                pnl_usdc = ?,
-                                                pnl_pct = ?
-                                            WHERE id = ?
-                                        """, (
-                                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                            actual_exit_price,
-                                            exit_reason,
-                                            pnl_usdc,
-                                            pnl_pct,
-                                            pos_id
-                                        ))
-                                        conn.commit()
-
-                                        print(f"       [EMERGENCY] ✅ 数据库已更新: 状态='closed', 亏损={pnl_pct:.1f}%")
-
-                                        # 更新统计
-                                        if pnl_usdc < 0:
-                                            self.stats['losses'] += 1
-                                            self.stats['consecutive_losses'] += 1
-                                            self.stats['daily_loss'] += abs(pnl_usdc)
-                                        else:
-                                            self.stats['wins'] += 1
-                                            self.stats['consecutive_losses'] = 0
-
-                                        self.stats['total_trades'] += 1
-
-                                        # 发送通知
-                                        if self.telegram.enabled:
-                                            self.telegram.send_stop_loss_notification(
-                                                side, size, entry_token_price, actual_exit_price, pnl_usdc, pnl_pct
-                                            )
-
-                                        # 记录到 trades 表
-                                        try:
-                                            cursor.execute("""
-                                                INSERT INTO trades (
-                                                    timestamp, side, price, value_usd, signal_score,
-                                                    confidence, rsi, vwap, order_id, status
-                                                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                            """, (
-                                                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                                                side,
-                                                actual_exit_price,
-                                                size * actual_exit_price,
-                                                0,  # signal_score
-                                                0,  # confidence
-                                                0,  # rsi
-                                                0,  # vwap
-                                                '',  # order_id
-                                                'closed'
-                                            ))
-                                            conn.commit()
-                                        except Exception as trade_err:
-                                            print(f"       [EMERGENCY] ⚠️ 记录trade失败: {trade_err}")
-
-                                    else:
-                                        print(f"       [EMERGENCY] ⚠️ 链上余额不为0({balance_shares:.2f}份)，保持监控")
-                            except Exception as balance_err:
-                                print(f"       [EMERGENCY] ❌ 查询余额失败: {balance_err}")
-
-                    # 跳过后续检查，继续下一个持仓
-                    continue
-
-                # 检查止盈单（带重试）
+                # 获取市场剩余时间（优先用传入的market，避免重复REST请求）
                 if tp_order_id:
                     for _attempt in range(3):
                         try:
