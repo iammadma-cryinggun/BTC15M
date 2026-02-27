@@ -553,6 +553,31 @@ class V6HFTEngine:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
+    async def print_trading_analysis(self):
+        """输出交易分析（调用V5的方法）- 异步模式"""
+        # 🔒 状态锁：防止分析重复执行
+        action_key = "print_trading_analysis"
+
+        if action_key in self._processing_orders:
+            return
+
+        self._processing_orders.add(action_key)
+
+        # 🚀 Fire-and-Forget：不阻塞WebSocket
+        async def analysis_task_with_unlock():
+            try:
+                await self._async_fire_and_forget(
+                    self.v5.print_trading_analysis,
+                    task_name="交易分析"
+                )
+            finally:
+                self._processing_orders.discard(action_key)
+
+        # 🛡️ GC防护：抓住任务，防止被提前回收
+        task = asyncio.create_task(analysis_task_with_unlock())
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
     async def websocket_loop(self):
         """WebSocket主循环"""
         wss_uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
@@ -601,6 +626,7 @@ class V6HFTEngine:
                     last_trade_check = time.time()
                     last_adjust_check = time.time()
                     last_cleanup_check = time.time()
+                    last_analysis_check = time.time()
 
                     while True:
                         # 接收WebSocket消息（带超时）
@@ -645,6 +671,11 @@ class V6HFTEngine:
                         if now - last_adjust_check >= 30:
                             await self.auto_adjust()
                             last_adjust_check = now
+
+                        # 每15分钟输出交易分析（新增）
+                        if now - last_analysis_check >= 900:
+                            await self.print_trading_analysis()
+                            last_analysis_check = now
 
                         # 每5分钟清理过期持仓
                         if now - last_cleanup_check >= 300:
