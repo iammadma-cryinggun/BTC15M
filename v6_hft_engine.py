@@ -19,15 +19,18 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 import sys
 
+# 🔥 强制无缓冲输出（解决容器环境日志不显示问题）
+sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
+
 import auto_trader_ankr as v5
 
 
 class V6HFTEngine:
 
     def __init__(self):
-        print("=" * 70)
-        print("V6 高频引擎启动 (保留V5所有风控)")
-        print("=" * 70)
+        print("=" * 70, flush=True)
+        print("V6 高频引擎启动 (保留V5所有风控)", flush=True)
+        print("=" * 70, flush=True)
 
         self.v5 = v5.AutoTraderV5()
 
