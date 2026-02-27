@@ -2926,27 +2926,28 @@ class AutoTraderV5:
                     # 重新计算value
                     position_value = position_size * actual_price
 
-                # 计算止盈止损百分比（用于数据库记录和学习系统分析）
-                # 止盈：目标价格 / 入场价格 - 1
-                # 止损：入场价格 - 止损价格 / 入场价格
+                # 计算止盈止损百分比（用于数据库记录）
+                # 直接使用 place_stop_orders 已返回的 sl_target_price，避免二次计算不一致
                 tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
                 def align_price(p: float) -> float:
                     p = round(round(p / tick_size) * tick_size, 4)
                     return max(tick_size, min(1 - tick_size, p))
 
                 real_value = position_size * actual_price
-                # 对称30%止盈止损
-                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                # 止盈：与 place_stop_orders 保持相同公式
+                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)
                 tp_by_pct = actual_price * (1 + tp_pct_max)
                 tp_by_fixed = (real_value + 1.0) / max(position_size, 1)
                 tp_target_price = align_price(min(tp_by_fixed, tp_by_pct))
-                sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
-                sl_by_pct = actual_price * (1 - sl_pct_max)
-                sl_by_fixed = (real_value - 1.0) / max(position_size, 1)
-                sl_target_price = align_price(max(sl_by_fixed, sl_by_pct))
+                # 止损：直接使用 place_stop_orders 返回的价格，sl_target_price 为 None 时才兜底计算
+                if sl_target_price is None:
+                    sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+                    sl_by_pct = actual_price * (1 - sl_pct_max)
+                    sl_by_fixed = (real_value - 1.0) / max(position_size, 1)
+                    sl_target_price = align_price(max(sl_by_fixed, sl_by_pct))
 
                 tp_pct = round((tp_target_price - actual_price) / actual_price, 4) if actual_price > 0 else None
-                sl_pct = round((actual_price - sl_target_price) / actual_price, 4) if actual_price > 0 else None
+                sl_pct = round((actual_price - float(sl_target_price)) / actual_price, 4) if actual_price > 0 and sl_target_price else None
 
                 # 发送开仓Telegram通知
                 if self.telegram.enabled:
