@@ -1580,7 +1580,7 @@ class AutoTraderV5:
             # 6. 最近10笔表现
             print("\n[6] 最近表现 (Last 10 Trades)")
             cursor.execute('''
-                SELECT timestamp, side, pnl_pct, exit_reason
+                SELECT entry_time, side, pnl_pct, exit_reason
                 FROM positions
                 WHERE exit_reason IS NOT NULL
                 ORDER BY id DESC LIMIT 10
