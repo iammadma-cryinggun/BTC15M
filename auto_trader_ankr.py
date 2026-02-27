@@ -1848,17 +1848,17 @@ class AutoTraderV5:
                 self.pause_until = None
                 self.stats['consecutive_losses'] = 0
 
-        # 每日最大亏损检查
-        max_loss = self.position_mgr.get_max_daily_loss()
-        if self.stats['daily_loss'] >= max_loss:
-            # 检查是否是新的一天，如果是则重置
-            if datetime.now().date() > self.last_reset_date:
-                self.stats['daily_loss'] = 0.0
-                self.stats['daily_trades'] = 0
-                self.last_reset_date = datetime.now().date()
-                print(f"       [RESET] 新的一天，每日亏损已重置")
-            else:
-                return False, f"Daily loss limit reached (${self.stats['daily_loss']:.2f}/${max_loss:.2f})"
+        # 每日最大亏损检查 (⚠️ 已临时禁用，测试巨鲸熔断功能)
+        # max_loss = self.position_mgr.get_max_daily_loss()
+        # if self.stats['daily_loss'] >= max_loss:
+        #     # 检查是否是新的一天，如果是则重置
+        #     if datetime.now().date() > self.last_reset_date:
+        #         self.stats['daily_loss'] = 0.0
+        #         self.stats['daily_trades'] = 0
+        #         self.last_reset_date = datetime.now().date()
+        #         print(f"       [RESET] 新的一天，每日亏损已重置")
+        #     else:
+        #         return False, f"Daily loss limit reached (${self.stats['daily_loss']:.2f}/${max_loss:.2f})"
 
         if self.stats['consecutive_losses'] >= CONFIG['risk']['stop_loss_consecutive']:
             self.is_paused = True
