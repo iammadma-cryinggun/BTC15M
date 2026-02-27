@@ -1426,6 +1426,7 @@ class AutoTraderV5:
 
     def print_trading_analysis(self):
         """打印全面的交易分析（替代analyze_trades.py）"""
+        print("[DEBUG] 开始执行交易分析...")
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             conn.execute('PRAGMA journal_mode=WAL;')

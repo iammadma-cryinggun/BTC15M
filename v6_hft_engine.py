@@ -555,6 +555,7 @@ class V6HFTEngine:
 
     async def print_trading_analysis(self):
         """输出交易分析（调用V5的方法）- 异步模式"""
+        print("[V6] 开始调用交易分析...")
         # 🔒 状态锁：防止分析重复执行
         action_key = "print_trading_analysis"
 
@@ -674,6 +675,8 @@ class V6HFTEngine:
 
                         # 每15分钟输出交易分析（新增）
                         if now - last_analysis_check >= 900:
+                            elapsed = now - last_analysis_check
+                            print(f"[ANALYSIS] 触发交易分析 (距上次{elapsed:.0f}秒)")
                             await self.print_trading_analysis()
                             last_analysis_check = now
 
