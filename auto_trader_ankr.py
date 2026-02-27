@@ -1195,7 +1195,8 @@ class AutoTraderV5:
                 pnl_pct REAL,
                 exit_reason TEXT,
                 status TEXT DEFAULT 'open',
-                score REAL DEFAULT 0.0
+                score REAL DEFAULT 0.0,
+                merged_from INTEGER DEFAULT 0
             )
         """)
 
@@ -1206,6 +1207,14 @@ class AutoTraderV5:
             cursor.execute("ALTER TABLE positions ADD COLUMN score REAL DEFAULT 0.0")
             conn.commit()
             print("[MIGRATION] 数据库已升级：positions表添加score列")
+
+        # 🔥 数据库迁移：添加 merged_from 列
+        try:
+            cursor.execute("SELECT merged_from FROM positions LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE positions ADD COLUMN merged_from INTEGER DEFAULT 0")
+            conn.commit()
+            print("[MIGRATION] 数据库已升级：positions表添加merged_from列")
 
         self.safe_commit(conn)
 
@@ -1456,20 +1465,21 @@ class AutoTraderV5:
             # 1. 最近20笔交易
             print("\n[1] 最近交易记录 (Last 20 Trades)")
             cursor.execute('''
-                SELECT id, timestamp, side, entry_token_price, size, exit_token_price, exit_reason, pnl_usd, pnl_pct
+                SELECT id, entry_time, side, entry_token_price, size, exit_token_price, exit_reason, pnl_usd, pnl_pct, merged_from
                 FROM positions
                 ORDER BY id DESC LIMIT 20
             ''')
             rows = cursor.fetchall()
             if rows:
-                print(f"{'ID':<5} {'时间':<18} {'方向':<6} {'入场价':<8} {'数量':<8} {'出场价':<8} {'退出原因':<25} {'收益率':<8}")
-                print("-" * 110)
+                print(f"{'ID':<5} {'时间':<18} {'方向':<6} {'入场价':<8} {'数量':<8} {'出场价':<8} {'退出原因':<25} {'收益率':<10} {'合并':<6}")
+                print("-" * 120)
                 for row in rows:
-                    id, ts, side, entry, size, exit_p, reason, pnl_usd, pnl_pct = row
+                    id, ts, side, entry, size, exit_p, reason, pnl_usd, pnl_pct, merged_from = row
                     ts = ts[:16] if len(ts) > 16 else ts
                     reason = (reason or 'UNKNOWN')[:23]
                     pnl_str = f'{pnl_pct:+.1f}%' if pnl_pct is not None else 'N/A'
-                    print(f"{id:<5} {ts:<18} {side:<6} {entry:<8.4f} {size:<8.1f} {exit_p or 0:<8.4f} {reason:<25} {pnl_str:<8}")
+                    merge_str = '✓' if merged_from and merged_from > 0 else '-'
+                    print(f"{id:<5} {ts:<18} {side:<6} {entry:<8.4f} {size:<8.1f} {exit_p or 0:<8.4f} {reason:<25} {pnl_str:<10} {merge_str:<6}")
             else:
                 print("  无交易记录")
 
@@ -3024,7 +3034,7 @@ class AutoTraderV5:
             # 如果无法确认订单状态，返回 None
             return None
 
-    def record_trade(self, market: Dict, signal: Dict, order_result: Optional[Dict], was_blocked: bool = False):
+    def record_trade(self, market: Dict, signal: Dict, order_result: Optional[Dict], was_blocked: bool = False, merged_from: int = 0):
         try:
             # 🔥 防止数据库锁定：设置timeout和check_same_thread
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
@@ -3203,8 +3213,8 @@ class AutoTraderV5:
                         entry_time, side, entry_token_price,
                         size, value_usdc, take_profit_usd, stop_loss_usd,
                         take_profit_pct, stop_loss_pct,
-                        take_profit_order_id, stop_loss_order_id, token_id, status, score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        take_profit_order_id, stop_loss_order_id, token_id, status, score, merged_from
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3221,7 +3231,8 @@ class AutoTraderV5:
                     str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.30))), 4)),
                     token_id,
                     'open',
-                    signal['score']  # 🔥 保存信号评分，用于后续分析
+                    signal['score'],  # 🔥 保存信号评分，用于后续分析
+                    merged_from  # 🔥 标记是否是合并交易（0=独立，>0=被合并的持仓ID）
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
@@ -3240,6 +3251,10 @@ class AutoTraderV5:
             print(f"       [DB ERROR] {e}")
 
     def merge_position_existing(self, market: Dict, signal: Dict, new_order_result: Dict):
+        """合并新订单到已有持仓（解决连续开仓导致止盈止损混乱）
+
+        返回：(是否合并, 被合并持仓ID)
+        """
         """合并新订单到已有持仓（解决连续开仓导致止盈止损混乱）
 
         逻辑：
@@ -3282,7 +3297,7 @@ class AutoTraderV5:
             if shots_fired >= max_bullets:
                 conn.close()
                 print(f"       [MERGE] 🛑 弹匣耗尽: {signal['direction']}已开{shots_fired}次（最多{max_bullets}次），禁止合并")
-                return False
+                return False, 0
 
             # 查找同方向OPEN持仓（不依赖token_id，因为每小时市场会切换）
             # 只使用 side 查询，取最新的一个持仓进行合并
@@ -3298,7 +3313,7 @@ class AutoTraderV5:
             if not row:
                 conn.close()
                 print(f"       [MERGE] 没有找到{signal['direction']}持仓，无需合并")
-                return False
+                return False, 0
 
             pos_id = row[0]
             old_entry_price = float(row[1])
@@ -3324,19 +3339,33 @@ class AutoTraderV5:
                 print(f"       [MERGE]    新市场token: {token_id[-8:]}")
                 print(f"       [MERGE]    ❌ 跨市场不能合并（不同资产），将作为独立持仓管理")
                 conn.close()
-                return False  # 返回False，让record_trade正常记录新持仓
+                return False, 0  # 返回False，让record_trade正常记录新持仓
 
             print(f"       [MERGE] 旧持仓: {old_size}股 @ {old_entry_price:.4f} (${old_value:.2f})")
             print(f"       [MERGE] 新订单: {new_size}股 @ {new_entry_price:.4f} (${new_value:.2f})")
 
-            # 取消旧止盈止损单
+            # 取消旧止盈止损单（带验证，确保取消成功再挂新单）
             if old_tp_order_id:
                 try:
                     self.cancel_order(old_tp_order_id)
-                    print(f"       [MERGE] ✅ 已取消旧止盈单 {old_tp_order_id[-8:]}")
                     time.sleep(1)
+                    # 验证旧止盈单确实已取消/成交，防止双重卖出
+                    tp_still_live = False
+                    try:
+                        tp_info = self.client.get_order(old_tp_order_id)
+                        if tp_info and tp_info.get('status', '').upper() in ('LIVE', 'OPEN'):
+                            tp_still_live = True
+                            print(f"       [MERGE] ⚠️ 旧止盈单仍在挂单中，再次尝试取消...")
+                            self.cancel_order(old_tp_order_id)
+                            time.sleep(2)
+                    except Exception:
+                        pass  # 查询失败视为已取消
+                    if not tp_still_live:
+                        print(f"       [MERGE] ✅ 已取消旧止盈单 {old_tp_order_id[-8:]}")
                 except Exception as e:
-                    print(f"       [MERGE] ⚠️ 取消旧止盈单失败: {e}")
+                    print(f"       [MERGE] ⚠️ 取消旧止盈单失败: {e}，放弃合并以防双重卖出")
+                    conn.close()
+                    return False, 0
             if old_sl_order_id and old_sl_order_id.startswith('0x'):
                 try:
                     self.cancel_order(old_sl_order_id)
@@ -3417,7 +3446,7 @@ class AutoTraderV5:
             conn.close()
 
             print(f"       [MERGE] ✅ 持仓合并完成！")
-            return True
+            return True, pos_id
 
         except Exception as e:
             print(f"       [MERGE ERROR] {e}")
@@ -4356,10 +4385,9 @@ class AutoTraderV5:
 
                         # 🔥 持仓合并：检查是否需要合并到已有持仓
                         if order_result:
-                            merged = self.merge_position_existing(market, new_signal, order_result)
-                            if not merged:
-                                # 没有合并成功，正常记录新持仓
-                                self.record_trade(market, new_signal, order_result, was_blocked=False)
+                            merged, merged_from_id = self.merge_position_existing(market, new_signal, order_result)
+                            # 🔥 无论是否合并，都记录这次交易（合并交易标记merged_from_id）
+                            self.record_trade(market, new_signal, order_result, was_blocked=False, merged_from=merged_from_id)
 
                         self.stats['total_trades'] += 1
                         self.stats['daily_trades'] += 1
