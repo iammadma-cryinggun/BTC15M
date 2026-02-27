@@ -180,12 +180,18 @@ class V6HFTEngine:
         except Exception as e:
             print(f"       [后台警报] ❌ {task_name}异常: {str(e)[:150]}")
 
-    async def fetch_market_info_via_rest(self):
+    async def fetch_market_info_via_rest(self, force_next_window=False):
         # 尝试当前窗口，过期则尝试下一个
+        # 🔥 修复：force_next_window=True 时跳过当前窗口，直接使用下一个（避免死循环）
         now = int(datetime.now(timezone.utc).timestamp())
         aligned = (now // 900) * 900
 
-        for offset in [0, 900]:
+        # 如果强制使用下一个窗口，从 offset=900 开始
+        if force_next_window:
+            offsets = [900]  # 🔥 跳过当前窗口，只尝试下一个
+        else:
+            offsets = [0, 900]  # 正常：先尝试当前窗口，再尝试下一个
+        for offset in offsets:
             slug = f"btc-updown-15m-{aligned + offset}"
             print(f"[INFO] 正在获取市场信息: {slug}")
             try:
@@ -551,10 +557,14 @@ class V6HFTEngine:
         """WebSocket主循环"""
         wss_uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
+        # 🔥 标记：是否需要强制切换到下一个窗口（避免市场即将到期时的死循环）
+        force_next_window = False
+
         while True:
             # 每个新的15分钟窗口重新获取市场信息，并重置价格缓存
             self._reset_price_cache()
-            market = await self.fetch_market_info_via_rest()
+            market = await self.fetch_market_info_via_rest(force_next_window=force_next_window)
+            force_next_window = False  # 重置标记
             if not market:
                 print("[WAIT] 等待市场开放，5秒后重试...")
                 await asyncio.sleep(5)
@@ -668,11 +678,13 @@ class V6HFTEngine:
                             if 0 < time_left < 200:
                                 print(f"[SWITCH] 市场即将到期({time_left:.0f}秒)，切换到下一个15分钟窗口...")
                                 self._reset_price_cache()
+                                force_next_window = True  # 🔥 标记：强制使用下一个窗口
                                 break
                             elif time_left <= 0:
                                 # 市场已过期，强制重新获取市场
                                 print(f"[SWITCH] 市场已过期({time_left:.0f}秒)，强制重新获取...")
                                 self._reset_price_cache()
+                                force_next_window = True  # 🔥 标记：强制使用下一个窗口
                                 break
                         else:
                             # market_end_time 解析失败，用slug时间戳判断
@@ -684,11 +696,13 @@ class V6HFTEngine:
                                     if 0 < time_left < 200:
                                         print(f"[SWITCH] 市场即将到期(slug判断，剩余{time_left:.0f}秒)，切换...")
                                         self._reset_price_cache()
+                                        force_next_window = True  # 🔥 标记：强制使用下一个窗口
                                         break
                                     elif time_left <= 0:
                                         # 市场已过期，强制重新获取市场
                                         print(f"[SWITCH] 市场已过期(slug判断，{time_left:.0f}秒)，强制重新获取...")
                                         self._reset_price_cache()
+                                        force_next_window = True  # 🔥 标记：强制使用下一个窗口
                                         break
                                 except:
                                     pass
