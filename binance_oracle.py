@@ -34,7 +34,7 @@ SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_s
 CVD_WINDOW_SEC = 300
 
 # UT Bot + Hull 参数（默认值）- 硬编码默认值，可被 oracle_params.json 覆盖
-UT_BOT_KEY_VALUE = 1.5  # 敏感度：降低门槛，对反转更敏感（提前1~2根K线）
+UT_BOT_KEY_VALUE = 1.8  # 敏感度：添加1h大趋势锁后，5分钟可以更敏感（快速翻色抢跑）
 UT_BOT_ATR_PERIOD = 10  # ATR周期
 HULL_LENGTH = 20        # Hull MA周期（过去5小时）
 
