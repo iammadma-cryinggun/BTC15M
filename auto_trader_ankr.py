@@ -88,8 +88,8 @@ CONFIG = {
         'min_confidence': 0.75,  # 默认置信度（保留用于兼容）
         'min_long_confidence': 0.60,   # LONG最小置信度
         'min_short_confidence': 0.60,  # SHORT最小置信度
-        'min_long_score': 3.0,      # 🔥 降低开仓阈值：积累更多数据
-        'min_short_score': -3.0,    # 🔥 对称：与LONG保持一致（风控统一）
+        'min_long_score': 4.0,      # 🔥 开仓阈值：提高信号质量
+        'min_short_score': -4.0,    # 🔥 对称：与LONG保持一致（风控统一）
         'balance_zone_min': 0.49,  # 平衡区间下限
         'balance_zone_max': 0.51,  # 平衡区间上限
         'allow_long': True,   # 允许做多（但会动态调整）
