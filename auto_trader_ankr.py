@@ -1641,6 +1641,29 @@ class AutoTraderV5:
             self.last_traded_market = None  # 重置最后交易的市场
             print(f"       [RESET] 新的一天，每日统计已重置")
 
+        # ==========================================
+        # 🛡️ 仓位绝对锁定：禁止加仓/连续开单
+        # ==========================================
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.execute('PRAGMA journal_mode=WAL;')
+            cursor = conn.cursor()
+
+            # 检查是否有任何 open 状态的持仓（未过期市场）
+            cutoff_time = (datetime.now() - timedelta(minutes=25)).strftime('%Y-%m-%d %H:%M:%S')
+            cursor.execute("""
+                SELECT COUNT(*) FROM positions
+                WHERE status = 'open' AND entry_time >= ?
+            """, (cutoff_time,))
+
+            open_positions_count = cursor.fetchone()[0]
+            conn.close()
+
+            if open_positions_count > 0:
+                return False, f"🛑 仓位绝对锁定: 当前有 {open_positions_count} 个未平仓持仓，等待止盈止损，禁止重复开仓！"
+        except Exception as e:
+            print(f"       [POSITION LOCK CHECK ERROR] {e}")
+
         # 检查是否进入新的15分钟窗口（自动重置last_traded_market）
         if market and self.last_traded_market:
             current_slug = market.get('slug', '')
