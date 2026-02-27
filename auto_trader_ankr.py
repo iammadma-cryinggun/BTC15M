@@ -1130,9 +1130,18 @@ class AutoTraderV5:
                 pnl_usd REAL,
                 pnl_pct REAL,
                 exit_reason TEXT,
-                status TEXT DEFAULT 'open'
+                status TEXT DEFAULT 'open',
+                score REAL DEFAULT 0.0
             )
         """)
+
+        # 🔥 数据库迁移：为已存在的表添加 score 列
+        try:
+            cursor.execute("SELECT score FROM positions LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE positions ADD COLUMN score REAL DEFAULT 0.0")
+            conn.commit()
+            print("[MIGRATION] 数据库已升级：positions表添加score列")
 
         self.safe_commit(conn)
 
@@ -1514,6 +1523,37 @@ class AutoTraderV5:
                     pnl_str = f'{pnl:+.1f}%' if pnl else 'N/A'
                     reason = (reason or '')[:25]
                     print(f"{ts:<18} {side:<8} {pnl_str:<10} {reason}")
+
+            # 7. 按信号强度统计（新增）
+            print("\n[7] 按信号强度统计 (By Signal Strength)")
+            cursor.execute('''
+                SELECT
+                    CASE
+                        WHEN abs(score) >= 7.0 THEN '7.0+ (很强)'
+                        WHEN abs(score) >= 5.0 THEN '5.0-6.9 (较强)'
+                        WHEN abs(score) >= 4.0 THEN '4.0-4.9 (中等)'
+                        WHEN abs(score) >= 3.0 THEN '3.0-3.9 (较弱)'
+                        ELSE '< 3.0 (弱)'
+                    END as score_range,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(pnl_pct) as avg_pnl,
+                    SUM(pnl_usd) as total_pnl
+                FROM positions
+                WHERE exit_reason IS NOT NULL AND score IS NOT NULL
+                GROUP BY score_range
+                ORDER BY MIN(abs(score)) DESC
+            ''')
+            rows = cursor.fetchall()
+            if rows:
+                print(f"{'信号强度':<15} {'交易数':<8} {'盈利':<8} {'胜率':<10} {'平均收益':<12} {'总盈亏'}")
+                print("-" * 80)
+                for row in rows:
+                    score_range, total, wins, avg_pnl, total_pnl = row
+                    win_rate = (wins / total * 100) if total > 0 else 0
+                    print(f"{score_range:<15} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}% ({total_pnl:+.2f} USDC)")
+            else:
+                print("  无数据（需要score字段）")
 
             conn.close()
             print("=" * 100 + "\n")
@@ -3094,8 +3134,8 @@ class AutoTraderV5:
                         entry_time, side, entry_token_price,
                         size, value_usdc, take_profit_usd, stop_loss_usd,
                         take_profit_pct, stop_loss_pct,
-                        take_profit_order_id, stop_loss_order_id, token_id, status
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        take_profit_order_id, stop_loss_order_id, token_id, status, score
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3111,7 +3151,8 @@ class AutoTraderV5:
                     # 🔍 修复：sl_target_price为None时用入场价兜底计算，确保止损线永远存在
                     str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.30))), 4)),
                     token_id,
-                    'open'
+                    'open',
+                    signal['score']  # 🔥 保存信号评分，用于后续分析
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
