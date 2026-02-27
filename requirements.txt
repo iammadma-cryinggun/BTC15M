@@ -1,0 +1,20 @@
+# Polymarket CLOB Trading Bot Dependencies
+
+# HTTP requests
+requests>=2.31.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Terminal colors (for learning system)
+colorama>=0.4.6
+
+# WebSocket support (for V6 HFT engine)
+websockets>=11.0.3
+
+# Data analysis (for UT Bot + Hull indicators in Binance Oracle)
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Polymarket CLOB Client (from PyPI - 指定最新稳定版本)
+py-clob-client>=0.34.0
