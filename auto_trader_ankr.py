@@ -1738,6 +1738,12 @@ class AutoTraderV5:
         if bal_min <= price <= bal_max:
             return None
 
+        # 🧪 测试模式：只在YES价格低于0.40时允许交易（做空做多都可以）
+        # 原理：只在市场一边倒时交易（NO > 0.60），避免震荡市被套
+        if price >= 0.40:
+            print(f"       [FILTER] 🧪 YES价格 {price:.4f} >= 0.40，不符合测试条件（只交易价格 < 0.40 的市场）")
+            return None
+
         # 获取NO价格，过滤市场一边倒情况
         # 优先用传入的实时no_price（V6 WebSocket），fallback到1-price推算
         try:
@@ -1827,6 +1833,35 @@ class AutoTraderV5:
                 direction = 'SHORT'
 
         if direction:
+            # 🧪 测试模式：根据方向检查对应的价格
+            # 做多(买YES)：要求 YES 价格 < 0.40
+            # 做空(买NO)：要求 NO 价格 < 0.40
+            try:
+                outcome_prices = market.get('outcomePrices', '[]')
+                if isinstance(outcome_prices, str):
+                    import json
+                    outcome_prices = json.loads(outcome_prices)
+
+                if direction == 'LONG':
+                    # 做多买YES，检查 YES 价格
+                    yes_price = price
+                    if yes_price >= 0.40:
+                        print(f"       [FILTER] 🧪 做多模式：YES价格 {yes_price:.4f} >= 0.40，不符合测试条件（只做 YES < 0.40）")
+                        return None
+                    else:
+                        print(f"       [FILTER] 🧪 做多检查通过：YES价格 {yes_price:.4f} < 0.40，允许做多")
+
+                elif direction == 'SHORT':
+                    # 做空买NO，检查 NO 价格
+                    no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else (1.0 - price)
+                    if no_price >= 0.40:
+                        print(f"       [FILTER] 🧪 做空模式：NO价格 {no_price:.4f} >= 0.40，不符合测试条件（只做 NO < 0.40）")
+                        return None
+                    else:
+                        print(f"       [FILTER] 🧪 做空检查通过：NO价格 {no_price:.4f} < 0.40，允许做空")
+            except Exception as e:
+                print(f"       [FILTER] 🧪 价格检查失败: {e}，继续执行")
+
             return {
                 'direction': direction,
                 'score': score,
