@@ -1573,17 +1573,17 @@ class AutoTraderV5:
             if ut_hull_trend != 'NEUTRAL':
                 # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
                 if score > 0 and ut_hull_trend == 'SHORT':
-                    # 🚀 强势信号豁免权：score >= 7.0 即无视 UT Bot 滞后
-                    if score >= 7.0:
-                        print("🚀 [FILTER BYPASS] 盘口动能强劲，无视 UT Bot 看空，强制放行开多！")
+                    # 🚀 巨鲸豁免权：只有 score >= 9.0 的核弹级信号才能无视 UT Bot
+                    if score >= 9.0:
+                        print("🚀 [FILTER BYPASS] 巨鲸信号势如破竹，强制放行开多！")
                     else:
                         print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
                         return None
                 # 如果 Oracle 看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
                 elif score < 0 and ut_hull_trend == 'LONG':
-                    # ☄️ 强势信号豁免权：score <= -7.0 即无视 UT Bot 滞后
-                    if score <= -7.0:
-                        print("☄️ [FILTER BYPASS] 盘口动能强劲，无视 UT Bot 看多，强制放行砸盘！")
+                    # ☄️ 巨鲸豁免权：只有 score <= -9.0 的核弹级信号才能无视 UT Bot
+                    if score <= -9.0:
+                        print("☄️ [FILTER BYPASS] 巨鲸空头势如破竹，强制放行砸盘！")
                     else:
                         print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看跌({score:+.2f})但UT Bot LONG，拒绝开空")
                         return None
