@@ -354,7 +354,11 @@ class PositionManager:
         - 交易分析功能正常运行
         - 收集足够数据（50-100笔）
         - 分析不同信号质量的实际表现
-        - 然后再考虑恢复动态仓位
+        - 确定最优仓位策略后再恢复动态仓位
+
+        🔧 恢复动态仓位：
+        - 将下面的 USE_DYNAMIC_POSITION = False 改为 True
+        - 所有逻辑保留，只是暂时不用
 
         Args:
             confidence: 置信度（0-1）
@@ -365,20 +369,80 @@ class PositionManager:
         Returns:
             实际下单金额（USDC）
         """
+        USE_DYNAMIC_POSITION = False  # 🔥 改为 True 启用动态仓位
+
         available = self.balance - CONFIG['risk']['reserve_usdc']
 
         if available <= CONFIG['risk']['min_position_usdc']:
             return 0.0  # Not enough to meet minimum
 
-        # 🔥 固定10%仓位（暂时禁用动态仓位）
-        final = self.balance * CONFIG['risk']['base_position_pct']
+        # ============================================================
+        # 动态仓位逻辑（暂时禁用，保留代码供参考）
+        # ============================================================
+        if USE_DYNAMIC_POSITION:
+            # 🔥 基础仓位：10%（CONFIG配置，对应6手≈3U≈总资金10%）
+            base = self.balance * CONFIG['risk']['base_position_pct']
+
+            # 🛡️ UT Bot中性时强制最低仓位（风控保护）
+            if ut_bot_neutral:
+                print(f"       [POSITION] ⚠️ UT Bot中性，仓位限制为最低{CONFIG['risk']['base_position_pct']*100:.0f}%（风控保护）")
+                multiplier = 1.0
+            else:
+                # 🔥 score是融合后的信号（本地评分 + Oracle增强）
+                # 用于计算基础仓位大小
+                abs_score = abs(score)
+
+                # 🔥 Oracle原始数据进一步增强仓位（当Oracle比融合信号更强时）
+                # 注意：这里用的是原始oracle_score，未经过boost衰减
+                if oracle_score != 0 and (score * oracle_score > 0):
+                    # 同向：取融合信号和原始Oracle中的较大值
+                    oracle_enhanced = max(abs_score, abs(oracle_score))
+                    if oracle_enhanced > abs_score:
+                        print(f"       [POSITION] 🔥 原始Oracle增强仓位: {abs_score:.1f} → {oracle_enhanced:.1f} (原始Oracle: {oracle_score:+.1f})")
+                        abs_score = oracle_enhanced
+                    else:
+                        print(f"       [POSITION] 📊 信号强度: {abs_score:.1f} (原始Oracle: {oracle_score:+.1f}, 未超过融合信号)")
+                elif oracle_score != 0:
+                    # 反向：Oracle不增强，保持融合信号强度
+                    print(f"       [POSITION] ⚠️ Oracle反向({oracle_score:+.1f})，使用融合信号强度: {abs_score:.1f}")
+
+                # 🎯 根据增强后的信号分数分段调整仓位
+                # 4.0是开仓门槛，刚好达到时开最小仓位
+                # Oracle越强，信号强度越大，仓位越大
+                if abs_score >= 7.0:
+                    # 🔥 信号很强：30%（Oracle强烈确认）
+                    multiplier = 3.0
+                elif abs_score >= 5.0:
+                    # 💪 信号较强：20%（Oracle较好确认）
+                    multiplier = 2.0
+                elif abs_score >= 4.0:
+                    # 👌 刚好达到门槛：10%（基础仓位）
+                    multiplier = 1.0
+                else:
+                    # 🔻 低于门槛：不应该触发
+                    multiplier = 1.0
+
+            # 结合confidence微调（±10%）
+            confidence_adj = 0.9 + (confidence * 0.2)  # 0.9 - 1.1
+
+            adjusted = base * multiplier * confidence_adj
+
+            # 限制在base_position_pct-max_position_pct范围内（10%-30%）
+            min_pos = self.balance * CONFIG['risk']['base_position_pct']
+            max_pos = self.balance * CONFIG['risk']['max_position_pct']
+            final = max(min_pos, min(adjusted, max_pos))
+        else:
+            # 🔥 固定10%仓位（暂时禁用动态仓位）
+            final = self.balance * CONFIG['risk']['base_position_pct']
 
         # IMPORTANT: Must be at least 2 USDC
         min_required = CONFIG['risk']['min_position_usdc']
         final = max(final, min_required)
 
-        # 日志：显示固定仓位
-        print(f"       [POSITION] 🔒 固定仓位: {final:.2f} USDC ({CONFIG['risk']['base_position_pct']*100:.0f}%) - 动态仓位已禁用")
+        if USE_DYNAMIC_POSITION:
+            print(f"       [POSITION] 📊 动态仓位: {final:.2f} USDC ({multiplier if USE_DYNAMIC_POSITION else 1.0}x)")
+        else:
+            print(f"       [POSITION] 🔒 固定仓位: {final:.2f} USDC ({CONFIG['risk']['base_position_pct']*100:.0f}%) - 动态仓位已禁用")
 
         # But never exceed available balance (minus small buffer)
         max_safe = available * 0.95
