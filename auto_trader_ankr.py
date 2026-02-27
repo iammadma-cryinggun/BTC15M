@@ -1565,7 +1565,8 @@ class AutoTraderV5:
 
             # 🛡️ 双重确认：UT Bot + Hull 趋势过滤
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
-            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | UT+Hull: {ut_hull_trend} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
+            trend_1h = oracle.get('trend_1h', 'NEUTRAL')
+            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | 15m: {ut_hull_trend} | 1h: {trend_1h} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
 
             # ==========================================
             # 🛡️ UT Bot 趋势过滤逻辑 (强势信号豁免权)
@@ -1619,6 +1620,36 @@ class AutoTraderV5:
                 direction = 'SHORT'
 
         if direction:
+            # ==========================================
+            # 🔒 新增：神级双重风控锁
+            # ==========================================
+
+            # 1️⃣ RSI极端值"防呆锁"（绝对拦截，无特权放行）
+            if direction == 'LONG' and rsi > 75:
+                print(f"🛑 [防呆锁] 拒绝做多！当前 RSI 高达 {rsi:.1f}，极度超买，随时可能画门砸盘！")
+                return None
+            if direction == 'SHORT' and rsi < 25:
+                print(f"🛑 [防呆锁] 拒绝做空！当前 RSI 低至 {rsi:.1f}，极度超卖，追空风险极大！")
+                return None
+
+            # 2️⃣ 1小时大级别趋势锁（宏观重力压制）
+            trend_1h = oracle.get('trend_1h', 'NEUTRAL') if oracle else 'NEUTRAL'
+            if direction == 'LONG' and trend_1h == 'SHORT':
+                if score >= 9.0:
+                    print("🚀 [1H趋势特权放行] 虽然1小时大级别是空头，但侦测到核弹级巨鲸买入，强制抢跑做多！")
+                else:
+                    print(f"🛑 [1H趋势锁] 拒绝做多！1小时大级别是空头趋势({trend_1h})，放弃逆势抢反弹！")
+                    return None
+            elif direction == 'SHORT' and trend_1h == 'LONG':
+                if score <= -9.0:
+                    print("☄️ [1H趋势特权放行] 虽然1小时大级别是多头，但侦测到核弹级巨鲸砸盘，强制抢跑做空！")
+                else:
+                    print(f"🛑 [1H趋势锁] 拒绝做空！1小时大级别是多头趋势({trend_1h})，绝不摸顶！")
+                    return None
+
+            # ==========================================
+            # 风控锁全部通过，返回信号
+            # ==========================================
             return {
                 'direction': direction,
                 'score': score,

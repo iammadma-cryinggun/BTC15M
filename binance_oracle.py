@@ -101,6 +101,11 @@ class TechnicalIndicators:
         wma_full = TechnicalIndicators.calculate_wma(series, length)
         return TechnicalIndicators.calculate_wma(2 * wma_half - wma_full, sqrt_length)
 
+    @staticmethod
+    def calculate_ema(series: pd.Series, period: int) -> pd.Series:
+        """计算指数移动平均线"""
+        return series.ewm(span=period, adjust=False).mean()
+
 
 class BinanceOracle:
     def __init__(self):
@@ -116,7 +121,8 @@ class BinanceOracle:
         self.last_write_time = 0                # 上次写文件时间
 
         # UT Bot + Hull K线数据存储
-        self.klines_data = []                   # 存储 K 线数据
+        self.klines_data = []                   # 存储15分钟 K 线数据
+        self.klines_1h_data = []                # 存储1小时 K 线数据（大级别趋势判断）
         self.max_klines = 200                   # 最多存储200根K线
 
         # 动态参数（启动时从 oracle_params.json 加载）
@@ -136,36 +142,53 @@ class BinanceOracle:
         try:
             print("[ORACLE] Loading historical K-lines from Binance...")
             url = "https://api.binance.com/api/v3/klines"
-            params = {
+            proxies = {'http': PROXY, 'https': PROXY} if PROXY else None
+
+            # 加载15分钟K线（战术级别）
+            params_15m = {
                 'symbol': 'BTCUSDT',
                 'interval': '15m',
                 'limit': 200
             }
-
-            proxies = {'http': PROXY, 'https': PROXY} if PROXY else None
-            response = requests.get(url, params=params, timeout=10, proxies=proxies)
+            response = requests.get(url, params=params_15m, timeout=10, proxies=proxies)
             response.raise_for_status()
-            data = response.json()
+            data_15m = response.json()
 
-            for kline in data:
+            for kline in data_15m:
                 self.add_kline(
-                    kline[0],      # timestamp
-                    float(kline[1]),  # open
-                    float(kline[2]),  # high
-                    float(kline[3]),  # low
-                    float(kline[4]),  # close
-                    float(kline[5])   # volume
+                    kline[0], float(kline[1]), float(kline[2]),
+                    float(kline[3]), float(kline[4]), float(kline[5])
                 )
 
-            print(f"[ORACLE] Loaded {len(self.klines_data)} historical K-lines")
+            print(f"[ORACLE] Loaded {len(self.klines_data)} historical 15m K-lines")
+
+            # 加载1小时K线（战略级别）
+            params_1h = {
+                'symbol': 'BTCUSDT',
+                'interval': '1h',
+                'limit': 200
+            }
+            response_1h = requests.get(url, params=params_1h, timeout=10, proxies=proxies)
+            response_1h.raise_for_status()
+            data_1h = response_1h.json()
+
+            for kline in data_1h:
+                self.add_kline(
+                    kline[0], float(kline[1]), float(kline[2]),
+                    float(kline[3]), float(kline[4]), float(kline[5]),
+                    is_1h=True  # 标记为1小时K线
+                )
+
+            print(f"[ORACLE] Loaded {len(self.klines_1h_data)} historical 1h K-lines")
 
             # 立即计算一次趋势
-            trend = self.get_ut_bot_hull_trend()
-            print(f"[ORACLE] Current UT Bot + Hull trend: {trend or 'CALCULATING...'}")
+            trend_15m = self.get_ut_bot_hull_trend()
+            trend_1h = self.get_1h_trend()
+            print(f"[ORACLE] 15m trend: {trend_15m or 'CALCULATING...'} | 1h trend: {trend_1h or 'CALCULATING...'}")
 
         except Exception as e:
             print(f"[ORACLE] Failed to load historical K-lines: {e}")
-            print(f"         Will wait for WebSocket to collect enough K-line data (~16 hours)")
+            print(f"         Will wait for WebSocket to collect enough K-line data")
 
     def _trim_cvd_window(self):
         """裁剪超出窗口的旧数据"""
@@ -215,7 +238,7 @@ class BinanceOracle:
 
         return round(max(-10.0, min(10.0, score)), 3)
 
-    def add_kline(self, timestamp, open_price, high, low, close, volume):
+    def add_kline(self, timestamp, open_price, high, low, close, volume, is_1h=False):
         """添加新的 K 线数据（旧方法，保持兼容）"""
         kline = {
             'timestamp': timestamp,
@@ -226,9 +249,14 @@ class BinanceOracle:
             'volume': volume,
             'closed': True  # 默认为已闭合
         }
-        self.klines_data.append(kline)
-        if len(self.klines_data) > self.max_klines:
-            self.klines_data.pop(0)
+        if is_1h:
+            self.klines_1h_data.append(kline)
+            if len(self.klines_1h_data) > self.max_klines:
+                self.klines_1h_data.pop(0)
+        else:
+            self.klines_data.append(kline)
+            if len(self.klines_data) > self.max_klines:
+                self.klines_data.pop(0)
 
     def add_kline_with_closed(self, timestamp, open_price, high, low, close, volume, is_closed):
         """添加新的 K 线数据（带闭合状态）"""
@@ -303,6 +331,25 @@ class BinanceOracle:
         else:
             return "NEUTRAL"  # 信号不一致，中性
 
+    def get_1h_trend(self):
+        """获取1小时级别大趋势（用于宏观重力压制判断）"""
+        if len(self.klines_1h_data) < 50:
+            return None  # 数据不足
+
+        # 转换为 DataFrame
+        df = pd.DataFrame(self.klines_1h_data)
+
+        # 使用EMA20判断大趋势
+        ema = TechnicalIndicators.calculate_ema(df['close'], 20)
+        current_close = df['close'].iloc[-1]
+        current_ema = ema.iloc[-1]
+
+        # 简单趋势判断
+        if current_close > current_ema:
+            return "LONG"
+        else:
+            return "SHORT"
+
     def _write_signal(self):
         """每秒写一次信号文件供 V6 引擎读取"""
         now = time.time()
@@ -317,8 +364,11 @@ class BinanceOracle:
         total_wall = self.buy_wall + self.sell_wall
         imbalance = (self.buy_wall - self.sell_wall) / total_wall if total_wall > 0 else 0.0
 
-        # 计算 UT Bot + Hull 趋势
+        # 计算 UT Bot + Hull 趋势（15分钟战术级别）
         ut_hull_trend = self.get_ut_bot_hull_trend()
+
+        # 计算1小时大趋势（战略级别）
+        trend_1h = self.get_1h_trend()
 
         signal = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
@@ -331,8 +381,9 @@ class BinanceOracle:
             'wall_imbalance': round(imbalance, 4),
             'last_price': self.last_price,
             'trade_count': self.trade_count,
-            # UT Bot + Hull 趋势字段
+            # 趋势字段
             'ut_hull_trend': ut_hull_trend if ut_hull_trend else 'NEUTRAL',
+            'trend_1h': trend_1h if trend_1h else 'NEUTRAL',  # 1小时大趋势
         }
 
         try:
