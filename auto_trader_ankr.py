@@ -1424,6 +1424,158 @@ class AutoTraderV5:
         except Exception as e:
             print(f"[DEBUG] 打印交易记录失败: {e}")
 
+    def print_trading_analysis(self):
+        """打印全面的交易分析（替代analyze_trades.py）"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.execute('PRAGMA journal_mode=WAL;')
+            cursor = conn.cursor()
+
+            print("\n" + "=" * 100)
+            print("[交易分析] Trading Performance Analysis")
+            print("=" * 100)
+
+            # 1. 最近20笔交易
+            print("\n[1] 最近交易记录 (Last 20 Trades)")
+            cursor.execute('''
+                SELECT id, timestamp, side, entry_token_price, size, exit_token_price, exit_reason, pnl_usd, pnl_pct
+                FROM positions
+                ORDER BY id DESC LIMIT 20
+            ''')
+            rows = cursor.fetchall()
+            if rows:
+                print(f"{'ID':<5} {'时间':<18} {'方向':<6} {'入场价':<8} {'数量':<8} {'出场价':<8} {'退出原因':<25} {'收益率':<8}")
+                print("-" * 110)
+                for row in rows:
+                    id, ts, side, entry, size, exit_p, reason, pnl_usd, pnl_pct = row
+                    ts = ts[:16] if len(ts) > 16 else ts
+                    reason = (reason or 'UNKNOWN')[:23]
+                    pnl_str = f'{pnl_pct:+.1f}%' if pnl_pct is not None else 'N/A'
+                    print(f"{id:<5} {ts:<18} {side:<6} {entry:<8.4f} {size:<8.1f} {exit_p or 0:<8.4f} {reason:<25} {pnl_str:<8}")
+            else:
+                print("  无交易记录")
+
+            # 2. 总体统计
+            print("\n[2] 总体统计 (Overall Statistics)")
+            cursor.execute('''
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(pnl_pct) as avg_pnl,
+                    SUM(pnl_usd) as total_pnl
+                FROM positions
+                WHERE exit_reason IS NOT NULL
+            ''')
+            row = cursor.fetchone()
+            if row and row[0] > 0:
+                total, wins, avg_pnl, total_pnl = row
+                win_rate = (wins / total * 100) if total > 0 else 0
+                print(f"  总交易: {total}笔")
+                print(f"  胜率: {win_rate:.1f}% ({wins}/{total})")
+                print(f"  平均收益: {avg_pnl:+.2f}%")
+                print(f"  总盈亏: {total_pnl:+.2f} USDC")
+            else:
+                print("  无已完成交易")
+
+            # 3. 按方向统计
+            print("\n[3] 按方向统计 (By Direction)")
+            cursor.execute('''
+                SELECT
+                    side,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
+                    AVG(pnl_pct) as avg_pnl,
+                    SUM(pnl_usd) as total_pnl
+                FROM positions
+                WHERE exit_reason IS NOT NULL
+                GROUP BY side
+            ''')
+            rows = cursor.fetchall()
+            if rows:
+                print(f"{'方向':<8} {'交易':<8} {'盈利':<8} {'胜率':<10} {'平均收益':<12} {'总盈亏'}")
+                print("-" * 70)
+                for row in rows:
+                    side, total, wins, avg_pnl, total_pnl = row
+                    win_rate = (wins / total * 100) if total > 0 else 0
+                    print(f"{side:<8} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}% ({total_pnl:+.2f} USDC)")
+
+            # 4. 按退出原因统计
+            print("\n[4] 按退出原因统计 (By Exit Reason)")
+            cursor.execute('''
+                SELECT
+                    exit_reason,
+                    COUNT(*) as total,
+                    AVG(pnl_pct) as avg_pnl,
+                    SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins
+                FROM positions
+                WHERE exit_reason IS NOT NULL
+                GROUP BY exit_reason
+                ORDER BY total DESC
+            ''')
+            rows = cursor.fetchall()
+            if rows:
+                print(f"{'退出原因':<30} {'次数':<8} {'盈利':<8} {'胜率':<10} {'平均收益'}")
+                print("-" * 80)
+                for row in rows:
+                    reason, total, wins, avg_pnl = row
+                    reason = (reason or 'UNKNOWN')[:28]
+                    win_rate = (wins / total * 100) if total > 0 else 0
+                    print(f"{reason:<30} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}%")
+
+            # 5. 盈亏分布
+            print("\n[5] 盈亏分布 (PnL Distribution)")
+            cursor.execute('''
+                SELECT
+                    CASE
+                        WHEN pnl_pct >= 20 THEN '>= +20%'
+                        WHEN pnl_pct >= 10 THEN '+10% to +20%'
+                        WHEN pnl_pct >= 0 THEN '0% to +10%'
+                        WHEN pnl_pct >= -10 THEN '0% to -10%'
+                        WHEN pnl_pct >= -20 THEN '-10% to -20%'
+                        ELSE '< -20%'
+                    END as pnl_range,
+                    COUNT(*) as count,
+                    AVG(pnl_pct) as avg_pnl
+                FROM positions
+                WHERE exit_reason IS NOT NULL
+                GROUP BY pnl_range
+                ORDER BY MIN(pnl_pct) DESC
+            ''')
+            rows = cursor.fetchall()
+            if rows:
+                print(f"{'盈亏区间':<15} {'次数':<8} {'平均收益'}")
+                print("-" * 35)
+                for row in rows:
+                    pnl_range, count, avg_pnl = row
+                    print(f"{pnl_range:<15} {count:<8} {avg_pnl:+.2f}%")
+
+            # 6. 最近10笔表现
+            print("\n[6] 最近表现 (Last 10 Trades)")
+            cursor.execute('''
+                SELECT timestamp, side, pnl_pct, exit_reason
+                FROM positions
+                WHERE exit_reason IS NOT NULL
+                ORDER BY id DESC LIMIT 10
+            ''')
+            rows = cursor.fetchall()
+            if rows:
+                wins = sum(1 for _, _, pnl, _ in rows if pnl and pnl > 0)
+                print(f"  最近10笔胜率: {wins}/10 ({wins*10}%)")
+                print()
+                print(f"{'时间':<18} {'方向':<8} {'收益率':<10} {'退出原因'}")
+                print("-" * 60)
+                for ts, side, pnl, reason in rows:
+                    ts = ts[:16] if len(ts) > 16 else ts
+                    pnl_str = f'{pnl:+.1f}%' if pnl else 'N/A'
+                    reason = (reason or '')[:25]
+                    print(f"{ts:<18} {side:<8} {pnl_str:<10} {reason}")
+
+            conn.close()
+            print("=" * 100 + "\n")
+
+        except Exception as e:
+            print(f"[ANALYSIS ERROR] {e}")
+
     def get_market_data(self) -> Optional[Dict]:
         try:
             now = int(time.time())
@@ -4162,6 +4314,11 @@ class AutoTraderV5:
                     if self.stats['signal_count'] > 0 and self.stats['signal_count'] % 20 == 0:
                         self.auto_adjust_parameters()
 
+                # 每60次迭代输出交易分析（约15分钟）
+                if i % 60 == 0 and i > 0:
+                    print()
+                    self.print_trading_analysis()
+
                 time.sleep(interval)
                 i += 1
 
@@ -4172,6 +4329,7 @@ class AutoTraderV5:
             print("=" * 70)
             if self.learning_system:
                 self.print_learning_reports()
+            self.print_trading_analysis()
 
     def _params_file(self) -> str:
         return os.path.join(os.path.dirname(self.db_path), 'dynamic_params.json')
