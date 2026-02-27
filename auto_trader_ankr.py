@@ -3244,22 +3244,45 @@ class AutoTraderV5:
 
         逻辑：
         1. 查找同方向OPEN持仓
-        2. 取消旧止盈止损单
-        3. 合并持仓（加权平均计算新价格）
-        4. 挂新止盈止损单
-        5. 更新数据库记录
+        2. 🔥 检查弹匣限制（防止无限合并）
+        3. 取消旧止盈止损单
+        4. 合并持仓（加权平均计算新价格）
+        5. 挂新止盈止损单
+        6. 更新数据库记录
         """
         try:
             import time
-            token_ids = market.get('clobTokenIds', [])
+            token_ids = market.get('clobTokens', [])
             if isinstance(token_ids, str):
                 token_ids = json.loads(token_ids)
             token_id = str(token_ids[0] if signal['direction'] == 'LONG' else token_ids[1])
+
+            # 获取当前15分钟窗口
+            from datetime import timezone as tz
+            now_utc = datetime.now(tz.utc)
+            window_start_ts = (int(now_utc.timestamp()) // 900) * 900
+            window_start_str = datetime.fromtimestamp(window_start_ts).strftime('%Y-%m-%d %H:%M:%S')
 
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
             # 🔥 激活WAL模式：多线程并发读写（防止database is locked）
             conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
+
+            # 🔥 检查弹匣限制：查询当前窗口内已开单次数（包括已合并的）
+            cursor.execute("""
+                SELECT count(*)
+                FROM positions
+                WHERE side = ? AND entry_time >= ?
+            """, (signal['direction'], window_start_str))
+
+            open_count = cursor.fetchone()
+            shots_fired = open_count[0] if open_count else 0
+
+            max_bullets = CONFIG['risk']['max_same_direction_bullets']
+            if shots_fired >= max_bullets:
+                conn.close()
+                print(f"       [MERGE] 🛑 弹匣耗尽: {signal['direction']}已开{shots_fired}次（最多{max_bullets}次），禁止合并")
+                return False
 
             # 查找同方向OPEN持仓（不依赖token_id，因为每小时市场会切换）
             # 只使用 side 查询，取最新的一个持仓进行合并
