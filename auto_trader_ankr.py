@@ -1534,14 +1534,34 @@ class AutoTraderV5:
         oracle_score = 0.0
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
-            # 同向增强（权重20%），反向削弱（权重10%）
-            # 避免Oracle把弱信号推过门槛，或把强信号压下去
-            if oracle_score * score > 0:
-                oracle_boost = oracle_score / 5.0   # 同向：最多±2
+
+            # ==========================================
+            # 🧠 全新主客观融合逻辑 (匹配 V6 极速 Oracle)
+            # ==========================================
+
+            # 💥 1. 巨鲸熔断特权 (Whale Override)
+            if oracle_score >= 9.0:
+                score = 10.0   # 盘口极度看涨，无视本地技术面，直接满分强制做多！
+                oracle_boost = oracle_score  # 用于日志显示
+                print("🚀 [FUSION] 触发巨鲸做多熔断，强制满分入场！")
+            elif oracle_score <= -9.0:
+                score = -10.0  # 盘口极度看跌，无视本地技术面，直接满分强制砸盘！
+                oracle_boost = oracle_score  # 用于日志显示
+                print("☄️ [FUSION] 触发巨鲸做空熔断，强制满分砸盘！")
+
+            # ⚖️ 2. 常规盘口融合 (扩大 Oracle 话语权)
             else:
-                oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
-            score += oracle_boost
-            score = max(-10, min(10, score))
+                if oracle_score * score > 0:
+                    # 同向共振：以前除以 5，现在除以 2.5 (Oracle最多能加 ±3.6分)
+                    oracle_boost = oracle_score / 2.5
+                else:
+                    # 反向分歧：以前除以 10，现在除以 5 (Oracle最多能扣 ±1.8分，能有效拉停错误方向)
+                    oracle_boost = oracle_score / 5.0
+
+                score += oracle_boost
+
+            # 最终安全收敛
+            score = round(max(-10.0, min(10.0, score)), 3)
 
             # 🛡️ 双重确认：UT Bot + Hull 趋势过滤
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
@@ -4168,6 +4188,36 @@ class AutoTraderV5:
                 json.dump(data, f, indent=2)
         except Exception as e:
             print(f"[WARN] 动态参数保存失败: {e}")
+
+    # ── 轻量版存根：供 V6 调用，避免 AttributeError ──────────────────────────
+
+    def auto_adjust_parameters(self):
+        """轻量版无学习系统，跳过参数自动调整"""
+        pass
+
+    def verify_pending_predictions(self):
+        """轻量版无学习系统，跳过预测验证"""
+        return 0
+
+    def record_prediction_learning(self, market, signal, order_result, was_blocked=False):
+        """轻量版无学习系统，跳过预测记录"""
+        pass
+
+    def print_learning_reports(self):
+        """轻量版无学习系统，跳过学习报告"""
+        pass
+
+    def _get_last_market_slug(self, pos_id=None):
+        """轻量版无学习系统"""
+        return self.last_traded_market or ''
+
+    def _oracle_params_file(self):
+        data_dir = os.getenv('DATA_DIR', os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(data_dir, 'oracle_params.json')
+
+    def _adjust_ut_bot_params(self):
+        """轻量版无学习系统，跳过UT Bot参数调整"""
+        pass
 
 def main():
     # 启动主交易程序
