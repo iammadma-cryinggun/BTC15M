@@ -1664,19 +1664,18 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [POSITION LOCK CHECK ERROR] {e}")
 
+        # ⏱️ 【已禁用】5分钟全局冷却，使用弹匣微冷却（60秒）即可
+        # 原因：仓位绝对锁定已经足够防止连续加仓，60秒微冷却防止同一市场疯狂交易
         # ==========================================
-        # ⏱️ 开仓冷却时间（防止报复性交易）
-        # ==========================================
-        # 检查最后一次交易时间，强制冷却5分钟
-        if hasattr(self, 'stats') and 'last_trade_time' in self.stats:
-            last_trade = self.stats['last_trade_time']
-            if last_trade:
-                time_passed = (datetime.now() - last_trade).total_seconds()
-                cooldown_period = 300  # 5分钟 = 300秒
-
-                if time_passed < cooldown_period:
-                    remaining = int(cooldown_period - time_passed)
-                    return False, f"⏱️ [射击冷却] 刚交易完，强制冷却中... 剩余 {remaining} 秒（{remaining//60}分{remaining%60}秒），防止报复性交易！"
+        # # 检查最后一次交易时间，强制冷却5分钟
+        # if hasattr(self, 'stats') and 'last_trade_time' in self.stats:
+        #     last_trade = self.stats['last_trade_time']
+        #     if last_trade:
+        #         time_passed = (datetime.now() - last_trade).total_seconds()
+        #         cooldown_period = 300  # 5分钟 = 300秒
+        #         if time_passed < cooldown_period:
+        #             remaining = int(cooldown_period - time_passed)
+        #             return False, f"⏱️ [射击冷却] 刚交易完，强制冷却中... 剩余 {remaining} 秒"
 
         # 检查是否进入新的15分钟窗口（自动重置last_traded_market）
         if market and self.last_traded_market:
