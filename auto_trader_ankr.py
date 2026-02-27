@@ -353,23 +353,23 @@ class PositionManager:
         if available <= CONFIG['risk']['min_position_usdc']:
             return 0.0  # Not enough to meet minimum
 
-        # 基础仓位：15%
-        base = self.balance * 0.15
+        # 基础仓位：30%（提升以适应12U小资金，确保能买6份）
+        base = self.balance * 0.30
 
         # 🎯 根据信号分数分段调整（方案A：智能分段）
         abs_score = abs(score)
 
         if abs_score >= 6.0:
-            # 🔥 超强信号：30%
-            multiplier = 2.0
-        elif abs_score >= 4.5:
-            # 💪 强信号：25%
-            multiplier = 1.67
-        elif abs_score >= 3.5:
-            # 👌 中等信号：20%
+            # 🔥 超强信号：40%
             multiplier = 1.33
+        elif abs_score >= 4.5:
+            # 💪 强信号：35%
+            multiplier = 1.16
+        elif abs_score >= 3.5:
+            # 👌 中等信号：32%
+            multiplier = 1.06
         else:
-            # ⚠️ 弱信号：15%
+            # ⚠️ 弱信号：30%
             multiplier = 1.0
 
         # 结合confidence微调（±10%）
@@ -377,9 +377,9 @@ class PositionManager:
 
         adjusted = base * multiplier * confidence_adj
 
-        # 限制在15%-30%范围内
-        min_pos = self.balance * 0.15
-        max_pos = self.balance * 0.30
+        # 限制在30%-40%范围内
+        min_pos = self.balance * 0.30
+        max_pos = self.balance * 0.40
         final = max(min_pos, min(adjusted, max_pos))
 
         # IMPORTANT: Must be at least 2 USDC
