@@ -1625,27 +1625,40 @@ class AutoTraderV5:
             # ==========================================
 
             # 1️⃣ RSI极端值"防呆锁"（绝对拦截，无特权放行）
-            if direction == 'LONG' and rsi > 75:
-                print(f"🛑 [防呆锁] 拒绝做多！当前 RSI 高达 {rsi:.1f}，极度超买，随时可能画门砸盘！")
+            # 调整为70/30阈值（更实用，触发频率约10-13%）
+            if direction == 'LONG' and rsi > 70:
+                print(f"🛑 [🚨RSI防呆锁] 拒绝做多！当前 RSI={rsi:.1f}，超买区域({rsi-70:.1f}%超标)，追高风险极大！")
                 return None
-            if direction == 'SHORT' and rsi < 25:
-                print(f"🛑 [防呆锁] 拒绝做空！当前 RSI 低至 {rsi:.1f}，极度超卖，追空风险极大！")
+            if direction == 'SHORT' and rsi < 30:
+                print(f"🛑 [🚨RSI防呆锁] 拒绝做空！当前 RSI={rsi:.1f}，超卖区域({30-rsi:.1f}%偏低)，暴力反弹风险！")
                 return None
+            else:
+                # RSI安全，显示当前值（让用户知道锁在检查）
+                if direction == 'LONG':
+                    print(f"✅ [RSI检查通过] RSI={rsi:.1f}（做多安全，距70阈值还有{70-rsi:.1f}%）")
+                elif direction == 'SHORT':
+                    print(f"✅ [RSI检查通过] RSI={rsi:.1f}（做空安全，距30阈值还有{rsi-30:.1f}%）")
 
             # 2️⃣ 1小时大级别趋势锁（宏观重力压制）
             trend_1h = oracle.get('trend_1h', 'NEUTRAL') if oracle else 'NEUTRAL'
             if direction == 'LONG' and trend_1h == 'SHORT':
                 if score >= 9.0:
-                    print("🚀 [1H趋势特权放行] 虽然1小时大级别是空头，但侦测到核弹级巨鲸买入，强制抢跑做多！")
+                    print("🚀 [🌏1H趋势特权] 虽大级别SHORT，但核弹级信号(score≥9.0)强制做多！")
                 else:
-                    print(f"🛑 [1H趋势锁] 拒绝做多！1小时大级别是空头趋势({trend_1h})，放弃逆势抢反弹！")
+                    print(f"🛑 [🌏1H趋势锁] 拒绝做多！1h大趋势=SHORT，放弃逆势！(当前score={score:.1f}<9.0)")
                     return None
             elif direction == 'SHORT' and trend_1h == 'LONG':
                 if score <= -9.0:
-                    print("☄️ [1H趋势特权放行] 虽然1小时大级别是多头，但侦测到核弹级巨鲸砸盘，强制抢跑做空！")
+                    print("☄️ [🌏1H趋势特权] 虽大级别LONG，但核弹级信号(score≤-9.0)强制做空！")
                 else:
-                    print(f"🛑 [1H趋势锁] 拒绝做空！1小时大级别是多头趋势({trend_1h})，绝不摸顶！")
+                    print(f"🛑 [🌏1H趋势锁] 拒绝做空！1h大趋势=LONG，绝不摸顶！(当前score={score:.1f}>-9.0)")
                     return None
+            else:
+                # 1h趋势安全，显示当前趋势
+                if trend_1h != 'NEUTRAL':
+                    print(f"✅ [1H趋势确认] 大趋势={trend_1h}，与方向({direction})一致！")
+                else:
+                    print(f"⏸ [1H趋势中性] trend_1h=NEUTRAL，依靠15m UT Bot判断")
 
             # ==========================================
             # 风控锁全部通过，返回信号
