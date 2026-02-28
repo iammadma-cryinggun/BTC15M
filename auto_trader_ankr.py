@@ -1738,28 +1738,38 @@ class AutoTraderV5:
                     print(f"✅ [RSI检查] RSI={rsi:.1f}，做空安全（距30阈值还有{rsi-30:.1f}%）")
 
             # 2️⃣ 1小时大趋势锁
-            if direction == 'LONG' and trend_1h == 'SHORT':
-                print(f"🛑 [🌏1H趋势锁] 拒绝做多！大趋势=SHORT，放弃逆势！（常规模式顺大势）")
-                return None
-            elif direction == 'SHORT' and trend_1h == 'LONG':
-                print(f"🛑 [🌏1H趋势锁] 拒绝做空！大趋势=LONG，绝不摸顶！（常规模式顺大势）")
-                return None
+            # 🚨 Oracle核弹豁免权：实时巨鲸资金流 > 历史慢速趋势
+            is_whale_attack = abs(oracle_score) >= 6.0  # 核弹级阈值
+            if is_whale_attack:
+                print(f"🚀 [核弹豁免] Oracle={oracle_score:+.2f}≥6.0，无视1h趋势({trend_1h})，跟随巨鲸！")
             else:
-                if trend_1h != 'NEUTRAL':
-                    print(f"✅ [1H趋势确认] 大趋势={trend_1h}，与方向({direction})一致！")
+                # 常规情况下，遵循1h趋势
+                if direction == 'LONG' and trend_1h == 'SHORT':
+                    print(f"🛑 [🌏1H趋势锁] 拒绝做多！大趋势=SHORT，放弃逆势！（常规模式顺大势）")
+                    return None
+                elif direction == 'SHORT' and trend_1h == 'LONG':
+                    print(f"🛑 [🌏1H趋势锁] 拒绝做空！大趋势=LONG，绝不摸顶！（常规模式顺大势）")
+                    return None
                 else:
-                    print(f"⏸ [1H趋势中性] trend_1h=NEUTRAL，继续常规判断")
+                    if trend_1h != 'NEUTRAL':
+                        print(f"✅ [1H趋势确认] 大趋势={trend_1h}，与方向({direction})一致！")
+                    else:
+                        print(f"⏸ [1H趋势中性] trend_1h=NEUTRAL，继续常规判断")
 
             # 3️⃣ 15分钟UT Bot趋势锁
-            if ut_hull_trend != 'NEUTRAL':
-                if direction == 'LONG' and ut_hull_trend == 'SHORT':
-                    print(f"🛑 [15m UT Bot锁] 拒绝做多！15m趋势=SHORT与方向不符")
-                    return None
-                elif direction == 'SHORT' and ut_hull_trend == 'LONG':
-                    print(f"🛑 [15m UT Bot锁] 拒绝做空！15m趋势=LONG与方向不符")
-                    return None
-                else:
-                    print(f"✅ [15m UT Bot确认] 趋势={ut_hull_trend}，与方向({direction})一致")
+            # 🚨 Oracle核弹豁免权：实时巨鲸资金流 > 15分钟趋势
+            if not is_whale_attack:  # 复用上面的核弹判断
+                if ut_hull_trend != 'NEUTRAL':
+                    if direction == 'LONG' and ut_hull_trend == 'SHORT':
+                        print(f"🛑 [15m UT Bot锁] 拒绝做多！15m趋势=SHORT与方向不符")
+                        return None
+                    elif direction == 'SHORT' and ut_hull_trend == 'LONG':
+                        print(f"🛑 [15m UT Bot锁] 拒绝做空！15m趋势=LONG与方向不符")
+                        return None
+                    else:
+                        print(f"✅ [15m UT Bot确认] 趋势={ut_hull_trend}，与方向({direction})一致")
+            else:
+                print(f"🚀 [核弹豁免] 15m趋势({ut_hull_trend})被Oracle={oracle_score:+.2f}覆盖，跟随巨鲸！")
 
             # 所有风控通过，返回常规信号
             print(f"✅ [🛡️常规模式] {direction} 信号确认（趋势共振，严格防守）")
