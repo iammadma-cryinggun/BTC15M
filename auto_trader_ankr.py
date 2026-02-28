@@ -72,9 +72,9 @@ CONFIG = {
         'max_same_direction_bullets': 999,  # 10秒抢跑版：放开弹匣限制（快速进出）
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
-        'max_stop_loss_pct': 0.30,      # 最大止损30%（放宽以减少假止损触发）
-        'take_profit_pct': 0.30,        # 止盈30%（与止损对称，解除1U封印）
-        'enable_stop_loss': False,      # 🔥 禁用止损（测试：数据证明止损胜率0%）
+        'max_stop_loss_pct': 0.50,      # 最大止损50%（宽幅止损，防止正常波动被误杀）
+        'take_profit_pct': 0.30,        # 止盈30%
+        'enable_stop_loss': True,       # ✅ 启用宽幅止损（50%，给市场足够呼吸空间）
     },
 
     'signal': {
