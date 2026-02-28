@@ -4344,7 +4344,98 @@ class AutoTraderV5:
         """轻量版无学习系统，跳过UT Bot参数调整"""
         pass
 
+def start_api_server(port=8888):
+    """在后台线程启动HTTP API服务器"""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import sqlite3
+    import threading
+
+    class TradeAPIHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/health':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'status': 'ok', 'timestamp': datetime.now().isoformat()}).encode())
+                return
+
+            if self.path == '/trades':
+                data_dir = os.getenv('DATA_DIR', '/app/data')
+                db_path = os.path.join(data_dir, 'btc_15min_auto_trades.db')
+
+                try:
+                    conn = sqlite3.connect(db_path, timeout=30.0)
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+
+                    cursor.execute("""
+                        SELECT
+                            id,
+                            entry_time,
+                            side,
+                            entry_token_price,
+                            exit_token_price,
+                            pnl_usd,
+                            pnl_pct,
+                            exit_reason,
+                            value_usdc,
+                            size
+                        FROM positions
+                        WHERE status = 'closed'
+                        ORDER BY entry_time DESC
+                        LIMIT 5
+                    """)
+
+                    trades = []
+                    for row in cursor.fetchall():
+                        trades.append({
+                            'id': row['id'],
+                            'entry_time': row['entry_time'],
+                            'side': row['side'],
+                            'entry_price': row['entry_token_price'],
+                            'exit_price': row['exit_token_price'],
+                            'pnl_usd': row['pnl_usd'],
+                            'pnl_pct': row['pnl_pct'],
+                            'exit_reason': row['exit_reason'],
+                            'value_usdc': row['value_usdc'],
+                            'size': row['size']
+                        })
+
+                    conn.close()
+
+                    self.send_response(200)
+                    self.send_header('Content-type', 'application/json; charset=utf-8')
+                    self.end_headers()
+                    self.wfile.write(json.dumps(trades, ensure_ascii=False, indent=2).encode())
+                except Exception as e:
+                    self.send_response(500)
+                    self.send_header('Content-type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'error': str(e)}).encode())
+                return
+
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'Not Found')
+
+        def log_message(self, format, *args):
+            pass
+
+    def run_server():
+        server = HTTPServer(('0.0.0.0', port), TradeAPIHandler)
+        server.serve_forever()
+
+    thread = threading.Thread(target=run_server, daemon=True)
+    thread.start()
+    print(f"[API] HTTP API服务器已启动: http://0.0.0.0:{port}")
+    print(f"[API] 端点: GET /health, GET /trades")
+
 def main():
+    # 启动API服务器（默认启用，用于查询交易数据）
+    # 可通过环境变量 DISABLE_API=true 禁用
+    if os.getenv('DISABLE_API', 'false').lower() != 'true':
+        start_api_server(port=int(os.getenv('API_PORT', '8888')))
+
     # 启动主交易程序
     trader = AutoTraderV5()
     trader.run()
