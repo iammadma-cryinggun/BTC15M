@@ -1114,7 +1114,8 @@ class AutoTraderV5:
                 exit_reason TEXT,
                 status TEXT DEFAULT 'open',
                 score REAL DEFAULT 0.0,
-                merged_from INTEGER DEFAULT 0
+                merged_from INTEGER DEFAULT 0,
+                strategy TEXT DEFAULT 'TREND_FOLLOWING'  # 🎯 策略类型：TREND_FOLLOWING 或 WHALE_SNIPER
             )
         """)
 
@@ -1133,6 +1134,14 @@ class AutoTraderV5:
             cursor.execute("ALTER TABLE positions ADD COLUMN merged_from INTEGER DEFAULT 0")
             conn.commit()
             print("[MIGRATION] 数据库已升级：positions表添加merged_from列")
+
+        # 🔥 数据库迁移：添加 strategy 列（双轨制策略标记）
+        try:
+            cursor.execute("SELECT strategy FROM positions LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE positions ADD COLUMN strategy TEXT DEFAULT 'TREND_FOLLOWING'")
+            conn.commit()
+            print("[MIGRATION] 数据库已升级：positions表添加strategy列")
 
         self.safe_commit(conn)
 
@@ -1532,139 +1541,136 @@ class AutoTraderV5:
         # ========== 双核融合：读取币安先知Oracle信号 ==========
         oracle = self._read_oracle_signal()
         oracle_score = 0.0
+        trend_1h = 'NEUTRAL'
+        ut_hull_trend = 'NEUTRAL'
+
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
+            trend_1h = oracle.get('trend_1h', 'NEUTRAL')
+            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
 
-            # ==========================================
-            # 🧠 全新主客观融合逻辑 (匹配 V6 极速 Oracle)
-            # ==========================================
+        print(f"       [ORACLE] 先知分:{oracle_score:+.2f} | 15m:{ut_hull_trend} | 1h:{trend_1h} | 本地分:{score:.2f}")
 
-            # 💥 1. 巨鲸熔断特权 (Whale Override)
-            if oracle_score >= 9.0:
-                score = 10.0   # 盘口极度看涨，无视本地技术面，直接满分强制做多！
-                oracle_boost = oracle_score  # 用于日志显示
-                print("🚀 [FUSION] 触发巨鲸做多熔断，强制满分入场！")
-            elif oracle_score <= -9.0:
-                score = -10.0  # 盘口极度看跌，无视本地技术面，直接满分强制砸盘！
-                oracle_boost = oracle_score  # 用于日志显示
-                print("☄️ [FUSION] 触发巨鲸做空熔断，强制满分砸盘！")
+        # ==========================================
+        # 🚨 轨道一：【核弹级巨鲸狙击模块】（完全独立VIP通道）
+        # ==========================================
+        # 配置：只赌极端异常，十年等一回的V型反转
+        WHALE_NUCLEAR_SCORE = 12.0      # 核弹阈值：必须是12.0分以上！
+        WHALE_MAX_PRICE_LONG = 0.20    # 做多只买20¢以下的彩票
+        WHALE_MIN_PRICE_SHORT = 0.80   # 做空只买80¢以上的彩票
+        WHALE_MAX_RSI_LONG = 70        # 做多时RSI不能>70
+        WHALE_MIN_RSI_SHORT = 30       # 做空时RSI不能<30
 
-            # ⚖️ 2. 常规盘口融合 (扩大 Oracle 话语权)
+        # 做多核弹：大盘暴跌，突发利好（ETF通过/降息等）
+        if oracle_score >= WHALE_NUCLEAR_SCORE:
+            if rsi < WHALE_MAX_RSI_LONG and price < WHALE_MAX_PRICE_LONG:
+                print(f"🚨 [💥核弹巨鲸狙击] oracle={oracle_score:.1f}≥{WHALE_NUCLEAR_SCORE} | price={price:.2f}<{WHALE_MAX_PRICE_LONG} | RSI={rsi:.1f}<{WHALE_MAX_RSI_LONG}")
+                print(f"    ⚠️  无视1h趋势({trend_1h})，无视15m趋势({ut_hull_trend})，强制赌V型反转！")
+                return {
+                    'direction': 'LONG',
+                    'strategy': 'WHALE_SNIPER',
+                    'score': oracle_score,
+                    'confidence': 0.99,
+                    'rsi': rsi,
+                    'vwap': vwap,
+                    'price': price,
+                    'components': components,
+                    'oracle_score': oracle_score,
+                }
             else:
-                if oracle_score * score > 0:
-                    # 同向共振：以前除以 5，现在除以 2.5 (Oracle最多能加 ±3.6分)
-                    oracle_boost = oracle_score / 2.5
-                else:
-                    # 反向分歧：以前除以 10，现在除以 5 (Oracle最多能扣 ±1.8分，能有效拉停错误方向)
-                    oracle_boost = oracle_score / 5.0
+                print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
 
-                score += oracle_boost
+        # 做空核弹：大盘暴涨，突发利空（监管打压/黑客事件等）
+        elif oracle_score <= -WHALE_NUCLEAR_SCORE:
+            if rsi > WHALE_MIN_RSI_SHORT and price > WHALE_MIN_PRICE_SHORT:
+                print(f"🚨 [💥核弹巨鲸狙击] oracle={oracle_score:.1f}≤-{WHALE_NUCLEAR_SCORE} | price={price:.2f}>{WHALE_MIN_PRICE_SHORT} | RSI={rsi:.1f}>{WHALE_MIN_RSI_SHORT}")
+                print(f"    ⚠️  无视1h趋势({trend_1h})，无视15m趋势({ut_hull_trend})，强制赌瀑布暴跌！")
+                return {
+                    'direction': 'SHORT',
+                    'strategy': 'WHALE_SNIPER',
+                    'score': oracle_score,
+                    'confidence': 0.99,
+                    'rsi': rsi,
+                    'vwap': vwap,
+                    'price': price,
+                    'components': components,
+                    'oracle_score': oracle_score,
+                }
+            else:
+                print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
 
-            # 最终安全收敛
+        # ==========================================
+        # 🛡️ 轨道二：【常规趋势跟踪模块】（严格风控，顺势而为）
+        # ==========================================
+        # Oracle融合：常规信号平滑处理（不再有熔断强制）
+        if oracle and abs(oracle_score) > 0:
+            # 同向增强，反向削弱
+            if oracle_score * score > 0:
+                oracle_boost = oracle_score / 3.0  # 同向：除以3
+            else:
+                oracle_boost = oracle_score / 6.0  # 反向：除以6
+            score += oracle_boost
             score = round(max(-10.0, min(10.0, score)), 3)
 
-            # 🛡️ 双重确认：UT Bot + Hull 趋势过滤
-            ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
-            trend_1h = oracle.get('trend_1h', 'NEUTRAL')
-            print(f"       [ORACLE] 先知分: {oracle_score:+.2f} | CVD: {oracle.get('cvd_15m', 0):+.1f} | 盘口: {oracle.get('wall_imbalance', 0)*100:+.1f}% | 15m: {ut_hull_trend} | 1h: {trend_1h} | boost: {oracle_boost:+.2f} | 融合: {score:.2f}")
-
-            # ==========================================
-            # 🛡️ UT Bot 趋势过滤逻辑 (强势信号豁免权)
-            # ==========================================
-            if ut_hull_trend != 'NEUTRAL':
-                # 如果 Oracle 看涨（score > 0），但 UT Bot 趋势是 SHORT → 拒绝
-                if score > 0 and ut_hull_trend == 'SHORT':
-                    # 🚀 巨鲸豁免权：只有 score >= 9.0 的核弹级信号才能无视 UT Bot
-                    if score >= 9.0:
-                        print("🚀 [FILTER BYPASS] 巨鲸信号势如破竹，强制放行开多！")
-                    else:
-                        print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看涨({score:+.2f})但UT Bot SHORT，拒绝开多")
-                        return None
-                # 如果 Oracle 看跌（score < 0），但 UT Bot 趋势是 LONG → 拒绝
-                elif score < 0 and ut_hull_trend == 'LONG':
-                    # ☄️ 巨鲸豁免权：只有 score <= -9.0 的核弹级信号才能无视 UT Bot
-                    if score <= -9.0:
-                        print("☄️ [FILTER BYPASS] 巨鲸空头势如破竹，强制放行砸盘！")
-                    else:
-                        print(f"       [FILTER] 🛡️ UT Bot 趋势过滤: Oracle看跌({score:+.2f})但UT Bot LONG，拒绝开空")
-                        return None
-                else:
-                    print(f"       [FILTER] ✅ UT Bot 趋势确认: {ut_hull_trend}与Oracle({score:+.2f})一致")
-            else:
-                print(f"       [FILTER] ⏸ UT Bot 趋势中性({ut_hull_trend})，仅使用Oracle信号")
-
-        # ======================================================
-
         confidence = min(abs(score) / 5.0, 0.99)
-
         direction = None
-        min_long_conf = CONFIG['signal'].get('min_long_confidence', CONFIG['signal']['min_confidence'])
-        min_short_conf = CONFIG['signal'].get('min_short_confidence', CONFIG['signal']['min_confidence'])
+        min_long_score = CONFIG['signal']['min_long_score']
+        min_short_score = CONFIG['signal']['min_short_score']
 
-        # 极端Oracle信号（>8或<-8）需本地评分同向才触发
-        # 🔥 修复：极端信号提高价格限制，0.95以下允许交易
-        # 理由：极端价格（0.99）代表市场共识极强，趋势最确定
-        if oracle and abs(oracle_score) >= 8.0:
-            if oracle_score >= 8.0 and score > 0 and price <= 0.95:
-                direction = 'LONG'
-                print(f"       [ORACLE] 🚀 极端看涨信号({oracle_score:+.2f})，本地同向({score:.2f})，触发LONG！")
-            elif oracle_score <= -8.0 and score < 0 and price >= 0.05:
-                direction = 'SHORT'
-                print(f"       [ORACLE] 🔻 极端看跌信号({oracle_score:+.2f})，本地同向({score:.2f})，触发SHORT！")
-            else:
-                print(f"       [ORACLE] ⚠️ 极端Oracle信号({oracle_score:+.2f})但本地评分反向({score:.2f})，忽略")
-        else:
-            if score >= CONFIG['signal']['min_long_score'] and confidence >= min_long_conf:
-                direction = 'LONG'
-            elif score <= CONFIG['signal']['min_short_score'] and confidence >= min_short_conf:
-                direction = 'SHORT'
+        # 常规做多信号
+        if score >= min_long_score:
+            direction = 'LONG'
+        # 常规做空信号
+        elif score <= min_short_score:
+            direction = 'SHORT'
 
         if direction:
             # ==========================================
-            # 🔒 新增：神级双重风控锁
+            # 🔒 常规模式风控锁（严格防守）
             # ==========================================
 
-            # 1️⃣ RSI极端值"防呆锁"（绝对拦截，无特权放行）
-            # 调整为70/30阈值（更实用，触发频率约10-13%）
+            # 1️⃣ RSI防呆锁
             if direction == 'LONG' and rsi > 70:
-                print(f"🛑 [🚨RSI防呆锁] 拒绝做多！当前 RSI={rsi:.1f}，超买区域({rsi-70:.1f}%超标)，追高风险极大！")
+                print(f"🛑 [🚨RSI锁] 拒绝做多！RSI={rsi:.1f}>70（超买），追高风险！")
                 return None
             if direction == 'SHORT' and rsi < 30:
-                print(f"🛑 [🚨RSI防呆锁] 拒绝做空！当前 RSI={rsi:.1f}，超卖区域({30-rsi:.1f}%偏低)，暴力反弹风险！")
+                print(f"🛑 [🚨RSI锁] 拒绝做空！RSI={rsi:.1f}<30（超卖），反弹风险！")
                 return None
             else:
-                # RSI安全，显示当前值（让用户知道锁在检查）
                 if direction == 'LONG':
-                    print(f"✅ [RSI检查通过] RSI={rsi:.1f}（做多安全，距70阈值还有{70-rsi:.1f}%）")
-                elif direction == 'SHORT':
-                    print(f"✅ [RSI检查通过] RSI={rsi:.1f}（做空安全，距30阈值还有{rsi-30:.1f}%）")
+                    print(f"✅ [RSI检查] RSI={rsi:.1f}，做多安全（距70阈值还有{70-rsi:.1f}%）")
+                else:
+                    print(f"✅ [RSI检查] RSI={rsi:.1f}，做空安全（距30阈值还有{rsi-30:.1f}%）")
 
-            # 2️⃣ 1小时大级别趋势锁（宏观重力压制）
-            trend_1h = oracle.get('trend_1h', 'NEUTRAL') if oracle else 'NEUTRAL'
+            # 2️⃣ 1小时大趋势锁
             if direction == 'LONG' and trend_1h == 'SHORT':
-                if score >= 9.0:
-                    print("🚀 [🌏1H趋势特权] 虽大级别SHORT，但核弹级信号(score≥9.0)强制做多！")
-                else:
-                    print(f"🛑 [🌏1H趋势锁] 拒绝做多！1h大趋势=SHORT，放弃逆势！(当前score={score:.1f}<9.0)")
-                    return None
+                print(f"🛑 [🌏1H趋势锁] 拒绝做多！大趋势=SHORT，放弃逆势！（常规模式顺大势）")
+                return None
             elif direction == 'SHORT' and trend_1h == 'LONG':
-                if score <= -9.0:
-                    print("☄️ [🌏1H趋势特权] 虽大级别LONG，但核弹级信号(score≤-9.0)强制做空！")
-                else:
-                    print(f"🛑 [🌏1H趋势锁] 拒绝做空！1h大趋势=LONG，绝不摸顶！(当前score={score:.1f}>-9.0)")
-                    return None
+                print(f"🛑 [🌏1H趋势锁] 拒绝做空！大趋势=LONG，绝不摸顶！（常规模式顺大势）")
+                return None
             else:
-                # 1h趋势安全，显示当前趋势
                 if trend_1h != 'NEUTRAL':
                     print(f"✅ [1H趋势确认] 大趋势={trend_1h}，与方向({direction})一致！")
                 else:
-                    print(f"⏸ [1H趋势中性] trend_1h=NEUTRAL，依靠15m UT Bot判断")
+                    print(f"⏸ [1H趋势中性] trend_1h=NEUTRAL，继续常规判断")
 
-            # ==========================================
-            # 风控锁全部通过，返回信号
-            # ==========================================
+            # 3️⃣ 15分钟UT Bot趋势锁
+            if ut_hull_trend != 'NEUTRAL':
+                if direction == 'LONG' and ut_hull_trend == 'SHORT':
+                    print(f"🛑 [15m UT Bot锁] 拒绝做多！15m趋势=SHORT与方向不符")
+                    return None
+                elif direction == 'SHORT' and ut_hull_trend == 'LONG':
+                    print(f"🛑 [15m UT Bot锁] 拒绝做空！15m趋势=LONG与方向不符")
+                    return None
+                else:
+                    print(f"✅ [15m UT Bot确认] 趋势={ut_hull_trend}，与方向({direction})一致")
+
+            # 所有风控通过，返回常规信号
+            print(f"✅ [🛡️常规模式] {direction} 信号确认（趋势共振，严格防守）")
             return {
                 'direction': direction,
+                'strategy': 'TREND_FOLLOWING',
                 'score': score,
                 'confidence': confidence,
                 'rsi': rsi,
@@ -1673,6 +1679,7 @@ class AutoTraderV5:
                 'components': components,
                 'oracle_score': oracle_score,
             }
+
         return None
 
     def can_trade(self, signal: Dict, market: Dict = None) -> Tuple[bool, str]:
@@ -3084,8 +3091,8 @@ class AutoTraderV5:
                         entry_time, side, entry_token_price,
                         size, value_usdc, take_profit_usd, stop_loss_usd,
                         take_profit_pct, stop_loss_pct,
-                        take_profit_order_id, stop_loss_order_id, token_id, status, score, merged_from
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        take_profit_order_id, stop_loss_order_id, token_id, status, score, merged_from, strategy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3103,7 +3110,8 @@ class AutoTraderV5:
                     token_id,
                     'open',
                     signal['score'],  # 🔥 保存信号评分，用于后续分析
-                    merged_from  # 🔥 标记是否是合并交易（0=独立，>0=被合并的持仓ID）
+                    merged_from,  # 🔥 标记是否是合并交易（0=独立，>0=被合并的持仓ID）
+                    signal.get('strategy', 'TREND_FOLLOWING')  # 🎯 标记策略类型
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
