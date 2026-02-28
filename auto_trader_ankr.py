@@ -1690,15 +1690,22 @@ class AutoTraderV5:
         # ==========================================
         # 🛡️ 轨道二：【常规趋势跟踪模块】（严格风控，顺势而为）
         # ==========================================
-        # Oracle融合：常规信号平滑处理（不再有熔断强制）
+        # 🚨 修复一：数学0分陷阱 - 本地中立时给Oracle放行
         if oracle and abs(oracle_score) > 0:
-            # 同向增强，反向削弱
-            if oracle_score * score > 0:
+            if score == 0:
+                # 本地指标没有明确方向时，给资金流放行（除以2而不是6）
+                oracle_boost = oracle_score / 2.0
+                print(f"       [FUSION] 本地中立(0)，Oracle放行÷2: {oracle_score:+.2f} → {oracle_boost:+.2f}")
+            elif oracle_score * score > 0:
                 oracle_boost = oracle_score / 3.0  # 同向：除以3
             else:
                 oracle_boost = oracle_score / 6.0  # 反向：除以6
             score += oracle_boost
             score = round(max(-10.0, min(10.0, score)), 3)
+
+            # 🚨 修复二：透视眼日志 - 只要Oracle有信号就打印
+            if abs(oracle_score) >= 2.0:
+                print(f"🔍 [透视眼] 本地分:{score - oracle_boost:+.2f} | Oracle:{oracle_score:+.2f} | 融合boost:{oracle_boost:+.2f} | 总分:{score:+.2f} | 门槛:±4.0")
 
         confidence = min(abs(score) / 5.0, 0.99)
         direction = None
