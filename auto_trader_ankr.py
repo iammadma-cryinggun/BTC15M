@@ -1724,22 +1724,31 @@ class AutoTraderV5:
             # 🔒 常规模式风控锁（严格防守）
             # ==========================================
 
-            # 1️⃣ RSI防呆锁
-            if direction == 'LONG' and rsi > 70:
-                print(f"🛑 [🚨RSI锁] 拒绝做多！RSI={rsi:.1f}>70（超买），追高风险！")
-                return None
-            if direction == 'SHORT' and rsi < 30:
-                print(f"🛑 [🚨RSI锁] 拒绝做空！RSI={rsi:.1f}<30（超卖），反弹风险！")
-                return None
-            else:
-                if direction == 'LONG':
-                    print(f"✅ [RSI检查] RSI={rsi:.1f}，做多安全（距70阈值还有{70-rsi:.1f}%）")
-                else:
-                    print(f"✅ [RSI检查] RSI={rsi:.1f}，做空安全（距30阈值还有{rsi-30:.1f}%）")
-
-            # 2️⃣ 1小时大趋势锁
             # 🚨 Oracle核弹豁免权：实时巨鲸资金流 > 历史慢速趋势
             is_whale_attack = abs(oracle_score) >= 6.0  # 核弹级阈值
+
+            # 1️⃣ RSI防呆锁（核弹信号豁免）
+            if not is_whale_attack:  # 常规模式下才检查RSI
+                if direction == 'LONG' and rsi > 70:
+                    print(f"🛑 [🚨RSI锁] 拒绝做多！RSI={rsi:.1f}>70（超买），追高风险！")
+                    return None
+                elif direction == 'SHORT' and rsi < 30:
+                    print(f"🛑 [🚨RSI锁] 拒绝做空！RSI={rsi:.1f}<30（超卖），反弹风险！")
+                    return None
+                else:
+                    # 常规模式下RSI安全，打印确认信息
+                    if direction == 'LONG':
+                        print(f"✅ [RSI检查] RSI={rsi:.1f}，做多安全（距70阈值还有{70-rsi:.1f}%）")
+                    else:
+                        print(f"✅ [RSI检查] RSI={rsi:.1f}，做空安全（距30阈值还有{rsi-30:.1f}%）")
+            else:
+                # 🚀 核弹模式下豁免RSI锁，跟随巨鲸
+                if direction == 'LONG' and rsi > 70:
+                    print(f"🚀 [核弹豁免] RSI={rsi:.1f}>70但Oracle={oracle_score:+.2f}≥6.0，无视RSI锁，跟随巨鲸做多！")
+                elif direction == 'SHORT' and rsi < 30:
+                    print(f"🚀 [核弹豁免] RSI={rsi:.1f}<30但Oracle={oracle_score:+.2f}≥6.0，无视RSI锁，跟随巨鲸做空！")
+
+            # 2️⃣ 1小时大趋势锁
             if is_whale_attack:
                 print(f"🚀 [核弹豁免] Oracle={oracle_score:+.2f}≥6.0，无视1h趋势({trend_1h})，跟随巨鲸！")
             else:
