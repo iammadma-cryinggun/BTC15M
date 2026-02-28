@@ -306,9 +306,9 @@ class V6HFTEngine:
                         if 0.02 <= token_price <= 0.98:
                             self.current_no_price = token_price
 
-                # 每秒最多更新一次指标（只用YES价格驱动）
+                # 🚨 修复二：指标更新间隔从1秒改为30秒，避免时间轴坍缩
                 now = time.time()
-                if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
+                if now - self._last_indicator_update >= 30.0 and self.current_yes_price:
                     self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
                     self._last_indicator_update = now
                 return
@@ -337,8 +337,9 @@ class V6HFTEngine:
                 self.no_best_bid = best_bid
                 self.no_best_ask = best_ask
                 self.current_no_price = mid_price
+            # 🚨 修复二：指标更新间隔从1秒改为30秒
             now = time.time()
-            if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
+            if now - self._last_indicator_update >= 30.0 and self.current_yes_price:
                 self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
                 self._last_indicator_update = now
         except Exception as e:
@@ -350,37 +351,57 @@ class V6HFTEngine:
                 print(f"[DEBUG] Traceback: {traceback.format_exc()}")
 
     def _process_orderbook_item(self, item: dict):
-        """处理订单簿格式的单个item（来自list格式消息）"""
+        """处理订单簿格式或价格更新的单个item"""
         try:
-            # 检查是否有价格字段（直接订单簿数据）
+            asset_id = item.get("asset_id")
+            if not asset_id:
+                return
+
+            mid_price = None
+            best_bid = None
+            best_ask = None
+
+            # 情况A：如果Polymarket真的发来了详细盘口 (bids/asks)
             if "bids" in item and "asks" in item:
                 bids = item.get("bids", [])
                 asks = item.get("asks", [])
-                if not bids or not asks:
-                    return
-                # 🔥 关键修复：必须用min/max，不能假设列表已排序
-                best_bid = max(float(bid['price']) for bid in bids)   # 买一 = 最高买价
-                best_ask = min(float(ask['price']) for ask in asks)   # 卖一 = 最低卖价
-                mid_price = (best_bid + best_ask) / 2
+                if bids and asks:
+                    best_bid = max(float(bid['price']) for bid in bids)
+                    best_ask = min(float(ask['price']) for ask in asks)
+                    mid_price = (best_bid + best_ask) / 2
 
-                asset_id = item.get("asset_id")
-                if asset_id == self.token_yes_id:
-                    if 0.02 <= mid_price <= 0.98:
-                        self.yes_best_bid = best_bid
-                        self.yes_best_ask = best_ask
-                        self.current_yes_price = mid_price
-                        self.current_price = mid_price
-                elif asset_id == self.token_no_id:
-                    if 0.02 <= mid_price <= 0.98:
-                        self.no_best_bid = best_bid
-                        self.no_best_ask = best_ask
-                        self.current_no_price = mid_price
+            # 🚨 致命修复一：处理简单price字段（WebSocket type="market"的主要格式）
+            elif "price" in item:
+                price_val = float(item["price"])
+                mid_price = price_val
+                # 既然没有真实深度，临时用最新价充当买卖一价，防止后续下单算滑点时报错！
+                best_bid = price_val
+                best_ask = price_val
 
-                # 更新指标（只用YES价格）
-                now = time.time()
-                if now - self._last_indicator_update >= 1.0 and self.current_yes_price:
-                    self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
-                    self._last_indicator_update = now
+            # 如果什么都没解析出来，直接丢弃
+            if mid_price is None:
+                return
+
+            # 更新引擎内存中的价格
+            if asset_id == self.token_yes_id:
+                if 0.02 <= mid_price <= 0.98:
+                    if best_bid: self.yes_best_bid = best_bid
+                    if best_ask: self.yes_best_ask = best_ask
+                    self.current_yes_price = mid_price
+                    self.current_price = mid_price
+            elif asset_id == self.token_no_id:
+                if 0.02 <= mid_price <= 0.98:
+                    if best_bid: self.no_best_bid = best_bid
+                    if best_ask: self.no_best_ask = best_ask
+                    self.current_no_price = mid_price
+
+            # 🚨 致命修复二：指标时间轴坍缩问题！
+            # 从 1.0 秒改为 30.0 秒。让历史K线真正积累动能，激活 Oracle 融合放大器！
+            now = time.time()
+            if now - self._last_indicator_update >= 30.0 and self.current_yes_price:
+                self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
+                self._last_indicator_update = now
+
         except Exception as e:
             if self.ws_message_count < 100:
                 print(f"[DEBUG] Process item error: {e}")
