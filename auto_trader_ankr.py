@@ -1822,17 +1822,28 @@ class AutoTraderV5:
                     window_start_ts = (int(now_utc.timestamp()) // 900) * 900
                     window_start_str = datetime.fromtimestamp(window_start_ts).strftime('%Y-%m-%d %H:%M:%S')
 
-                    # 检查当前窗口同方向开单数
+                    # 🔥 修复：60秒冷却查询最近1小时内的交易（不限当前窗口）
+                    # 原bug：只查当前窗口导致跨窗口交易时冷却失效
                     cursor.execute("""
                         SELECT count(*), max(entry_time)
                         FROM positions
                         WHERE token_id = ? AND side = ?
-                          AND entry_time >= ?
-                    """, (token_id, signal['direction'], window_start_str))
+                          AND entry_time >= datetime('now', '-1 hour')
+                    """, (token_id, signal['direction']))
 
                     row = cursor.fetchone()
-                    open_count = row[0] if row else 0
+                    recent_count = row[0] if row else 0
                     last_entry_time_str = row[1] if row and row[1] else None
+
+                    # 弹匣计数：当前窗口内的交易数（用于弹匣限制）
+                    cursor.execute("""
+                        SELECT count(*)
+                        FROM positions
+                        WHERE token_id = ? AND side = ?
+                          AND entry_time >= ?
+                    """, (token_id, signal['direction'], window_start_str))
+                    window_count_row = cursor.fetchone()
+                    open_count = window_count_row[0] if window_count_row else 0
 
                     # 检查当前窗口所有方向总开单数（防止多空横跳）
                     max_per_window = CONFIG['risk'].get('max_trades_per_window', 1)
