@@ -640,6 +640,24 @@ class AutoTraderV5:
         self.last_signal_direction = None  # 追踪上一次信号方向（用于信号改变检测）
         # 🔥 防止止盈止损重复触发的集合（存储正在处理的持仓ID）
         self.processing_positions = set()
+
+        # 🛡️ 反追空装甲系统：单向连亏熔断器
+        self.directional_circuit_breaker = {
+            'LONG': {
+                'consecutive_losses': 0,
+                'timeout_until': 0,
+                'last_entry_price': None,
+                'last_loss_time': None
+            },
+            'SHORT': {
+                'consecutive_losses': 0,
+                'timeout_until': 0,
+                'last_entry_price': None,
+                'last_loss_time': None
+            }
+        }
+        print("[🛡️ 反追空装甲] 单向连亏熔断器已启动")
+        print("    配置: 连续3次同向亏损 → 锁定该方向30分钟")
         self.init_database()
 
         # 从数据库恢复当天的亏损和交易统计（防止重启后风控失效）
@@ -1129,6 +1147,7 @@ class AutoTraderV5:
             ("oracle_score", "ALTER TABLE positions ADD COLUMN oracle_score REAL DEFAULT 0.0"),
             ("oracle_1h_trend", "ALTER TABLE positions ADD COLUMN oracle_1h_trend TEXT DEFAULT 'NEUTRAL'"),
             ("oracle_15m_trend", "ALTER TABLE positions ADD COLUMN oracle_15m_trend TEXT DEFAULT 'NEUTRAL'"),
+            ("highest_price", "ALTER TABLE positions ADD COLUMN highest_price REAL DEFAULT 0.0"),  # 🚀 吸星大法：追踪止盈
         ]
 
         for column_name, alter_sql in migrations:
@@ -1247,6 +1266,59 @@ class AutoTraderV5:
             print(f"[DEBUG] 打印交易记录失败: {e}")
 
     def print_trading_analysis(self):
+        """打印交易分析报告（每60次迭代调用一次，约15分钟）"""
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # 🔥 每次都打印最近的交易记录（自动导出到日志）
+            cursor.execute("""
+                SELECT
+                    entry_time, side, entry_token_price, exit_token_price,
+                    pnl_usd, pnl_pct, exit_reason, status,
+                    score, oracle_score, oracle_1h_trend, oracle_15m_trend
+                FROM positions
+                WHERE status = 'closed'
+                ORDER BY entry_time DESC
+                LIMIT 10
+            """)
+            trades = cursor.fetchall()
+
+            if trades:
+                print("\n" + "="*140)
+                print(f"【自动导出】最近{len(trades)}笔交易记录")
+                print("="*140)
+
+                total_pnl = 0
+                win_count = 0
+                loss_count = 0
+
+                for i, t in enumerate(trades, 1):
+                    pnl_icon = "✅盈利" if t['pnl_usd'] and t['pnl_usd'] > 0 else "❌亏损"
+                    exit_price = f"{t['exit_token_price']:.4f}" if t['exit_token_price'] else "N/A"
+
+                    print(f"\n  {i}. [{t['entry_time']}] {t['side']:6s} {t['entry_token_price']:.4f}->{exit_price} {pnl_icon:8s} ${t['pnl_usd']:+.2f}")
+
+                    if t.get('oracle_score'):
+                        oracle_icon = "🔥" if abs(t['oracle_score']) >= 10 else "⚡" if abs(t['oracle_score']) >= 7 else ""
+                        print(f"     Oracle:{oracle_icon} {t['oracle_score']:+.2f} | 1H:{t['oracle_1h_trend']} 15m:{t['oracle_15m_trend']}")
+                    else:
+                        print(f"     Oracle: 未保存")
+
+                    if t['pnl_usd']:
+                        if t['pnl_usd'] > 0:
+                            win_count += 1
+                        else:
+                            loss_count += 1
+                        total_pnl += t['pnl_usd']
+
+                print(f"\n  统计: 盈利{win_count}笔 亏损{loss_count}笔 净${total_pnl:+.2f}")
+                print("="*140 + "\n")
+
+            conn.close()
+        except Exception as e:
+            print(f"[ANALYSIS ERROR] {e}")
         """打印全面的交易分析（替代analyze_trades.py）"""
         print("[DEBUG] 开始执行交易分析...")
         try:
@@ -1912,6 +1984,26 @@ class AutoTraderV5:
                             conn.close()
                             return False, f"⏳ 射击冷却中: 距离上一单仅{seconds_since_last:.0f}秒 (需>{cooldown_sec}s)"
 
+                    # 🛡️ === 反追空装甲三：同向点位防刷锁 ===
+                    # 防止在亏损后，在同一价格区间反复开仓（报复性交易）
+                    direction = signal['direction']
+                    breaker = self.directional_circuit_breaker[direction]
+
+                    # 获取当前价格和上次入场价格
+                    current_price = signal.get('price', 0.5)
+                    last_entry_price = breaker.get('last_entry_price')
+                    last_loss_time = breaker.get('last_loss_time')
+
+                    # 如果该方向最近有大亏损（10分钟内），检查价格防刷
+                    if last_loss_time and last_entry_price:
+                        time_since_loss = (datetime.now().timestamp() - last_loss_time)
+                        if time_since_loss < 600:  # 10分钟内
+                            price_diff_pct = abs(current_price - last_entry_price) / last_entry_price * 100
+                            # 如果价格差距小于5%，说明在同一价位区间，禁止重复开仓
+                            if price_diff_pct < 5:
+                                conn.close()
+                                return False, f"🛡️ [点位防刷] 距离上次{direction}亏损仅{time_since_loss/60:.1f}分钟，价格区间{price_diff_pct:.1f}%<5%，禁止报复性开仓！"
+
                     # 所有风控检查通过，关闭连接
                     conn.close()
 
@@ -1964,6 +2056,23 @@ class AutoTraderV5:
             return False, "LONG disabled (low accuracy)"
         if signal['direction'] == 'SHORT' and not CONFIG['signal']['allow_short']:
             return False, "SHORT disabled (low accuracy)"
+
+        # 🛡️ === 反追空装甲一：单向连亏熔断器 ===
+        direction = signal['direction']
+        breaker = self.directional_circuit_breaker[direction]
+
+        # 检查该方向是否在熔断冷却期
+        current_time = datetime.now().timestamp()
+        if current_time < breaker['timeout_until']:
+            remaining_minutes = int((breaker['timeout_until'] - current_time) / 60)
+            return False, f"🚨 [熔断器] {direction}方向冷却中（{remaining_minutes}分钟剩余），禁止追势！"
+
+        # 检查是否触发熔断条件（连续3次同向大亏损）
+        if breaker['consecutive_losses'] >= 3:
+            breaker['timeout_until'] = current_time + 1800  # 锁定30分钟
+            remaining_minutes = int((breaker['timeout_until'] - current_time) / 60)
+            print(f"🚨 [系统级熔断] {direction}方向连续亏损{breaker['consecutive_losses']}次！触发30分钟冷静期！")
+            return False, f"🚨 [熔断触发] {direction}方向已触发熔断，冷静{remaining_minutes}分钟"
 
         if self.is_paused:
             if self.pause_until and datetime.now() < self.pause_until:
@@ -2839,11 +2948,28 @@ class AutoTraderV5:
                 p = round(round(p / tick_size_float) * tick_size_float, 4)
                 return max(tick_size_float, min(1 - tick_size_float, p))
 
-            # --- 加滑点确保瞬间吃单成交，对齐 tick_size ---
-            slippage_ticks = 2  # 加2个tick滑点
+            # 🛡️ === 防弹衣：智能滑点保护（击破250ms做市商撤单）===
+            # Polymarket有250ms延迟，做市商可在期间撤单。我们需要设定价格上限防止高位接盘
+            MAX_SLIPPAGE_ABSOLUTE = 0.03  # 绝对滑点上限：3美分
+            MAX_SAFE_ENTRY_PRICE = 0.70   # 安全入场价上限：超过70¢盈亏比太差
+
+            # 基础滑点：2个tick（确保成交）
+            slippage_ticks = 2
             adjusted_price = align_price(base_price + tick_size_float * slippage_ticks)
 
-            # 🔥 关键修复：调整后价格仍需遵守价格限制
+            # 🔥 关键：计算实际滑点并限制在3美分以内
+            actual_slippage = adjusted_price - base_price
+            if actual_slippage > MAX_SLIPPAGE_ABSOLUTE:
+                # 滑点超过3美分，强制限制
+                adjusted_price = align_price(base_price + MAX_SLIPPAGE_ABSOLUTE)
+                print(f"       [🛡️ 防弹衣] 原滑点{actual_slippage:.3f}超过3¢，强制限制到3¢")
+
+            # 🚨 极限保护：即使加上滑点，价格也不能超过70¢
+            if adjusted_price > MAX_SAFE_ENTRY_PRICE:
+                print(f"       [🛡️ 流动性保护] 算上滑点后成本达{adjusted_price:.2f}，盈亏比极差，拒绝抢跑！")
+                return None
+
+            # 二次检查：遵守配置文件的价格限制
             max_entry_price = CONFIG['signal'].get('max_entry_price', 0.80)
             min_entry_price = CONFIG['signal'].get('min_entry_price', 0.20)
             if adjusted_price > max_entry_price:
@@ -2852,6 +2978,8 @@ class AutoTraderV5:
             if adjusted_price < min_entry_price:
                 print(f"       [RISK] ⚠️ 调整后价格过低: {adjusted_price:.4f} < {min_entry_price:.2f}，拒绝开仓")
                 return None
+
+            print(f"       [🛡️ 防弹衣] 盘口{base_price:.4f} → 设定吃单极限价{adjusted_price:.4f} (最高容忍{actual_slippage:.3f}滑点)")
 
             # Calculate based on REAL balance（每次开仓前刷新链上余额）
             fresh_usdc, _ = self.balance_detector.fetch()
@@ -2975,6 +3103,12 @@ class AutoTraderV5:
                 if market_slug:
                     self.last_traded_market = market_slug
                     print(f"       [MARKET] Traded: {market_slug}")
+
+                    # 🛡️ 反追空装甲：记录开仓价格（用于点位防刷锁）
+                    direction = signal['direction']
+                    entry_price = float(signal['price'])
+                    self.directional_circuit_breaker[direction]['last_entry_price'] = entry_price
+                    print(f"       [🛡️ 熔断器] 记录{direction}开仓价格: {entry_price:.4f}")
 
                 # 记录持仓到positions表（使用实际下单价格，同时挂止盈止损单）
                 actual_price = order_result.get('price', signal['price'])
@@ -3122,8 +3256,8 @@ class AutoTraderV5:
                         take_profit_pct, stop_loss_pct,
                         take_profit_order_id, stop_loss_order_id, token_id, status,
                         score, oracle_score, oracle_1h_trend, oracle_15m_trend,
-                        merged_from, strategy
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        merged_from, strategy, highest_price
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3145,7 +3279,8 @@ class AutoTraderV5:
                     signal.get('oracle_1h_trend', 'NEUTRAL'),  # 🔥 保存1H趋势
                     signal.get('oracle_15m_trend', 'NEUTRAL'),  # 🔥 保存15m趋势
                     merged_from,  # 🔥 标记是否是合并交易（0=独立，>0=被合并的持仓ID）
-                    signal.get('strategy', 'TREND_FOLLOWING')  # 🎯 标记策略类型
+                    signal.get('strategy', 'TREND_FOLLOWING'),  # 🎯 标记策略类型
+                    actual_price  # 🚀 吸星大法：初始化历史最高价为入场价
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
@@ -3456,6 +3591,107 @@ class AutoTraderV5:
                     continue
 
                 print(f"       [POSITION] {side} token价格: {pos_current_price:.4f}")
+
+                # 🚀 === 吸星大法：动态追踪止盈 (Trailing Take-Profit) ===
+                # 配置参数
+                TRAILING_ACTIVATION = 0.75  # 启动门槛：涨到75¢才激活追踪
+                TRAILING_DRAWDOWN = 0.05    # 容忍回撤：从最高点回撤5¢直接砸盘走人
+
+                # 读取数据库中的历史最高价
+                try:
+                    cursor.execute("SELECT highest_price FROM positions WHERE id = ?", (pos_id,))
+                    hp_row = cursor.fetchone()
+                    db_highest_price = float(hp_row[0]) if hp_row and hp_row[0] else float(entry_token_price)
+                except:
+                    db_highest_price = float(entry_token_price)
+
+                # 更新历史最高价
+                if pos_current_price > db_highest_price:
+                    db_highest_price = pos_current_price
+                    cursor.execute("UPDATE positions SET highest_price = ? WHERE id = ?", (db_highest_price, pos_id))
+                    conn.commit()
+                    # print(f"       [📈 追踪拔高] 历史最高价刷新: {db_highest_price:.4f}")
+
+                # 检查追踪止盈触发条件
+                trailing_triggered = False
+                if db_highest_price >= TRAILING_ACTIVATION:
+                    # 条件A：最高价已越过激活线（开始锁定利润）
+                    if pos_current_price <= (db_highest_price - TRAILING_DRAWDOWN):
+                        # 条件B：现价比最高价跌了超过5¢（动能衰竭，做市商开始反扑）
+                        print(f"       [🚀 吸星大法] 追踪止盈触发！最高{db_highest_price:.2f}→现价{pos_current_price:.2f}，回撤达5¢，锁定暴利平仓！")
+                        trailing_triggered = True
+                        exit_reason = 'TRAILING_TAKE_PROFIT'
+                        actual_exit_price = pos_current_price
+
+                        # 立即市价平仓
+                        try:
+                            from py_clob_client.clob_types import OrderArgs
+                            close_order_args = OrderArgs(
+                                token_id=token_id,
+                                price=max(0.01, min(0.99, pos_current_price)),
+                                size=float(size),
+                                side=SELL
+                            )
+                            close_response = self.client.create_and_post_order(close_order_args)
+                            if close_response and 'orderID' in close_response:
+                                triggered_order_id = close_response['orderID']
+                                print(f"       [🚀 吸星大法] ✅ 追踪止盈平仓单已发送: {triggered_order_id[-8:]}")
+                            else:
+                                print(f"       [🚀 吸星大法] ⚠️ 平仓单发送失败，继续监控")
+                                trailing_triggered = False
+                        except Exception as e:
+                            print(f"       [🚀 吸星大法] ❌ 平仓异常: {e}")
+                            trailing_triggered = False
+
+                # 超高位强制结算保护（防止最后1秒画门）
+                if not trailing_triggered and pos_current_price >= 0.92:
+                    print(f"       [🎯 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
+                    trailing_triggered = True
+                    exit_reason = 'ABSOLUTE_TAKE_PROFIT'
+                    actual_exit_price = pos_current_price
+
+                    # 立即市价平仓
+                    try:
+                        from py_clob_client.clob_types import OrderArgs
+                        close_order_args = OrderArgs(
+                            token_id=token_id,
+                            price=max(0.01, min(0.99, pos_current_price)),
+                            size=float(size),
+                            side=SELL
+                        )
+                        close_response = self.client.create_and_post_order(close_order_args)
+                        if close_response and 'orderID' in close_response:
+                            triggered_order_id = close_response['orderID']
+                            print(f"       [🎯 绝对止盈] ✅ 平仓单已发送: {triggered_order_id[-8:]}")
+                    except Exception as e:
+                        print(f"       [🎯 绝对止盈] ❌ 平仓异常: {e}")
+                        trailing_triggered = False
+
+                # 如果追踪止盈已触发，跳过后续的止盈单检查
+                if trailing_triggered:
+                    # 计算盈亏并更新数据库
+                    pnl_usd = float(size) * (float(actual_exit_price) - float(entry_token_price))
+                    pnl_pct = (pnl_usd / float(value_usdc)) * 100 if value_usdc and float(value_usdc) > 0 else 0
+
+                    cursor.execute("""
+                        UPDATE positions
+                        SET exit_time = ?, exit_token_price = ?, pnl_usd = ?,
+                            pnl_pct = ?, exit_reason = ?, status = 'closed'
+                        WHERE id = ? AND status IN ('open', 'closing')
+                    """, (
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        actual_exit_price,
+                        pnl_usd,
+                        pnl_pct,
+                        exit_reason,
+                        pos_id
+                    ))
+
+                    # 取消原有的止盈止损单
+                    self.cancel_pair_orders(tp_order_id, sl_order_id, exit_reason)
+
+                    print(f"       [🚀 吸星大法] {exit_reason}: {side} 盈利 ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)")
+                    continue  # 跳过后续处理，进入下一个持仓
 
                 # 获取止损价格（从字段读取）
                 sl_price = None
@@ -4063,6 +4299,29 @@ class AutoTraderV5:
                         self.stats['daily_loss'] += abs(pnl_usd)
                         print(f"       [STATS] 累计每日亏损: ${self.stats['daily_loss']:.2f} / ${self.position_mgr.get_max_daily_loss():.2f}")
 
+                        # 🛡️ === 反追空装甲：更新单向连亏计数器 ===
+                        # 定义大亏损：亏损比例超过50%（含归零）
+                        if pnl_pct < -50:
+                            breaker = self.directional_circuit_breaker[side]
+                            breaker['consecutive_losses'] += 1
+                            breaker['last_loss_time'] = datetime.now().timestamp()
+                            breaker['last_entry_price'] = float(entry_token_price)
+
+                            # 赢的方向重置
+                            opposite = 'SHORT' if side == 'LONG' else 'LONG'
+                            self.directional_circuit_breaker[opposite]['consecutive_losses'] = 0
+
+                            print(f"       [🛡️ 熔断器] {side}方向连亏计数: {breaker['consecutive_losses']}/3")
+                            if breaker['consecutive_losses'] >= 3:
+                                print(f"       [🚨 熔断警告] {side}方向已连续亏损{breaker['consecutive_losses']}次！下次该方向信号将被锁定30分钟")
+
+                    elif pnl_usd > 0:
+                        # 🛡️ 反追空装甲：盈利时重置该方向的连亏计数
+                        breaker = self.directional_circuit_breaker[side]
+                        if breaker['consecutive_losses'] > 0:
+                            print(f"       [🛡️ 熔断器] {side}方向盈利 ✅，连亏计数重置: {breaker['consecutive_losses']} → 0")
+                            breaker['consecutive_losses'] = 0
+
             self.safe_commit(conn)
             conn.close()
 
@@ -4287,6 +4546,11 @@ class AutoTraderV5:
 
                 # 每60次迭代输出交易分析（约15分钟）
                 if i % 60 == 0 and i > 0:
+                    print()
+                    self.print_trading_analysis()
+
+                # 🔥 每30次迭代导出一次（约7.5分钟），确保能看到最新数据
+                if i % 30 == 0 and i > 0:
                     print()
                     self.print_trading_analysis()
 
