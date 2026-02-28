@@ -74,6 +74,7 @@ CONFIG = {
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
         'max_stop_loss_pct': 0.30,      # 最大止损30%（放宽以减少假止损触发）
         'take_profit_pct': 0.30,        # 止盈30%（与止损对称，解除1U封印）
+        'enable_stop_loss': False,      # 🔥 禁用止损（测试：数据证明止损胜率0%）
     },
 
     'signal': {
@@ -3117,7 +3118,8 @@ class AutoTraderV5:
 
                 # 根据止盈止损单状态显示不同信息
                 if tp_order_id:
-                    print(f"       [POSITION] ✅ 止盈单已挂 @ {tp_target_price:.4f}，止损线 @ {sl_target_price:.4f} 本地监控")
+                    sl_status = "已禁用" if not CONFIG['risk'].get('enable_stop_loss', False) else "本地监控"
+                    print(f"       [POSITION] ✅ 止盈单已挂 @ {tp_target_price:.4f}，止损线 @ {sl_target_price:.4f} ({sl_status})")
                 else:
                     print(f"       [POSITION] ⚠️  止盈单挂单失败，将使用本地监控双向平仓")
 
@@ -3571,7 +3573,10 @@ class AutoTraderV5:
                     if sl_price:
                         sl_gap = pos_current_price - sl_price
                         time_info = f" | 剩余: {int(seconds_left)}s" if seconds_left else ""
-                        print(f"       [MONITOR] 当前价: {pos_current_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f}) | SL止损: {sl_price:.4f} (距{sl_gap:.4f}){time_info}")
+                        if CONFIG['risk'].get('enable_stop_loss', False):
+                            print(f"       [MONITOR] 当前价: {pos_current_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f}) | SL止损: {sl_price:.4f} (距{sl_gap:.4f}){time_info}")
+                        else:
+                            print(f"       [MONITOR] 当前价: {pos_current_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f}) | SL止损: {sl_price:.4f} (已禁用){time_info}")
                     else:
                         print(f"       [MONITOR] 当前价: {pos_current_price:.4f} | TP目标: {tp_target_price:.4f} (差{tp_gap:.4f})")
 
@@ -3725,7 +3730,8 @@ class AutoTraderV5:
                                     print(f"       [LOCAL TP] ❌ 状态重置失败: {reset_err}")
 
                     # 2. 检查止损（价格下跌触发）- 🔥 立即执行，不再等待最后5分钟
-                    elif sl_price and pos_current_price < sl_price:
+                    # 🚫 止损已禁用（数据证明止损胜率0%，纯亏损来源）
+                    elif sl_price and pos_current_price < sl_price and CONFIG['risk'].get('enable_stop_loss', False):
                         print(f"       [LOCAL SL] 触发本地止损！当前价 {pos_current_price:.4f} < 止损线 {sl_price:.4f}")
                         time_remaining = f"{int(seconds_left)}s" if seconds_left else "未知"
                         print(f"       [LOCAL SL] ⏰ 市场剩余 {time_remaining}，立即执行止损保护")
