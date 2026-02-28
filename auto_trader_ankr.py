@@ -1115,18 +1115,29 @@ class AutoTraderV5:
                 exit_reason TEXT,
                 status TEXT DEFAULT 'open',
                 score REAL DEFAULT 0.0,
+                oracle_score REAL DEFAULT 0.0,
+                oracle_1h_trend TEXT DEFAULT 'NEUTRAL',
+                oracle_15m_trend TEXT DEFAULT 'NEUTRAL',
                 merged_from INTEGER DEFAULT 0,
                 strategy TEXT DEFAULT 'TREND_FOLLOWING'
             )
         """)
 
-        # 🔥 数据库迁移：为已存在的表添加 score 列
-        try:
-            cursor.execute("SELECT score FROM positions LIMIT 1")
-        except sqlite3.OperationalError:
-            cursor.execute("ALTER TABLE positions ADD COLUMN score REAL DEFAULT 0.0")
-            conn.commit()
-            print("[MIGRATION] 数据库已升级：positions表添加score列")
+        # 🔥 数据库迁移：添加新列
+        migrations = [
+            ("score", "ALTER TABLE positions ADD COLUMN score REAL DEFAULT 0.0"),
+            ("oracle_score", "ALTER TABLE positions ADD COLUMN oracle_score REAL DEFAULT 0.0"),
+            ("oracle_1h_trend", "ALTER TABLE positions ADD COLUMN oracle_1h_trend TEXT DEFAULT 'NEUTRAL'"),
+            ("oracle_15m_trend", "ALTER TABLE positions ADD COLUMN oracle_15m_trend TEXT DEFAULT 'NEUTRAL'"),
+        ]
+
+        for column_name, alter_sql in migrations:
+            try:
+                cursor.execute(f"SELECT {column_name} FROM positions LIMIT 1")
+            except sqlite3.OperationalError:
+                cursor.execute(alter_sql)
+                conn.commit()
+                print(f"[MIGRATION] 数据库已升级：positions表添加{column_name}列")
 
         # 🔥 数据库迁移：添加 merged_from 列
         try:
@@ -1577,6 +1588,8 @@ class AutoTraderV5:
                     'price': price,
                     'components': components,
                     'oracle_score': oracle_score,
+                    'oracle_1h_trend': trend_1h,
+                    'oracle_15m_trend': ut_hull_trend,
                 }
             else:
                 print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
@@ -1596,6 +1609,8 @@ class AutoTraderV5:
                     'price': price,
                     'components': components,
                     'oracle_score': oracle_score,
+                    'oracle_1h_trend': trend_1h,
+                    'oracle_15m_trend': ut_hull_trend,
                 }
             else:
                 print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
@@ -1679,6 +1694,8 @@ class AutoTraderV5:
                 'price': price,
                 'components': components,
                 'oracle_score': oracle_score,
+                'oracle_1h_trend': trend_1h,
+                'oracle_15m_trend': ut_hull_trend,
             }
 
         return None
@@ -3103,8 +3120,10 @@ class AutoTraderV5:
                         entry_time, side, entry_token_price,
                         size, value_usdc, take_profit_usd, stop_loss_usd,
                         take_profit_pct, stop_loss_pct,
-                        take_profit_order_id, stop_loss_order_id, token_id, status, score, merged_from, strategy
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        take_profit_order_id, stop_loss_order_id, token_id, status,
+                        score, oracle_score, oracle_1h_trend, oracle_15m_trend,
+                        merged_from, strategy
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3121,7 +3140,10 @@ class AutoTraderV5:
                     str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.30))), 4)),
                     token_id,
                     'open',
-                    signal['score'],  # 🔥 保存信号评分，用于后续分析
+                    signal['score'],  # 🔥 保存信号评分（本地融合分数）
+                    signal.get('oracle_score', 0.0),  # 🔥 保存Oracle先知分
+                    signal.get('oracle_1h_trend', 'NEUTRAL'),  # 🔥 保存1H趋势
+                    signal.get('oracle_15m_trend', 'NEUTRAL'),  # 🔥 保存15m趋势
                     merged_from,  # 🔥 标记是否是合并交易（0=独立，>0=被合并的持仓ID）
                     signal.get('strategy', 'TREND_FOLLOWING')  # 🎯 标记策略类型
                 ))
