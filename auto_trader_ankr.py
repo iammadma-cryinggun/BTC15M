@@ -1115,7 +1115,7 @@ class AutoTraderV5:
                 status TEXT DEFAULT 'open',
                 score REAL DEFAULT 0.0,
                 merged_from INTEGER DEFAULT 0,
-                strategy TEXT DEFAULT 'TREND_FOLLOWING'  # 🎯 策略类型：TREND_FOLLOWING 或 WHALE_SNIPER
+                strategy TEXT DEFAULT 'TREND_FOLLOWING'
             )
         """)
 
