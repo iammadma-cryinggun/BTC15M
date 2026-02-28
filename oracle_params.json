@@ -1,7 +1,7 @@
 {
-  "ut_bot_key_value": 1.8,
+  "ut_bot_key_value": 1.5,
   "ut_bot_atr_period": 10,
   "hull_length": 20,
-  "updated_at": "2026-02-28T12:00:00",
-  "reason": "添加1h大趋势锁后，5分钟UT Bot可以更敏感，快速捕捉转折点抢跑"
+  "updated_at": "2026-02-28T14:00:00",
+  "reason": "恢复2月21日最佳配置（15分钟CVD窗口 + 保守UT Bot）"
 }

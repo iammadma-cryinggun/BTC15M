@@ -29,12 +29,12 @@ PROXY = os.getenv('HTTP_PROXY', os.getenv('HTTPS_PROXY', ''))
 SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_signal.json')
 
 # CVD滚动窗口（秒）
-# 🎯 黄金分割版：5分钟（300秒）- 既能看清趋势，又不至于太迟钝
-# 理由：过滤短线假动作和微观噪音，在15分钟期权周期取得最佳胜率
-CVD_WINDOW_SEC = 300
+# 🎯 最佳版本配置：15分钟（900秒）- 匹配Polymarket周期，过滤短期噪音
+# 理由：2月21日数据证明此配置胜率58.3%，盈利+$15.14
+CVD_WINDOW_SEC = 900
 
 # UT Bot + Hull 参数（默认值）- 硬编码默认值，可被 oracle_params.json 覆盖
-UT_BOT_KEY_VALUE = 1.8  # 敏感度：添加1h大趋势锁后，5分钟可以更敏感（快速翻色抢跑）
+UT_BOT_KEY_VALUE = 1.5  # 🎯 保守稳健：需要明确趋势才触发（避免假信号）
 UT_BOT_ATR_PERIOD = 10  # ATR周期
 HULL_LENGTH = 20        # Hull MA周期（过去5小时）
 
