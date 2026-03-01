@@ -1,0 +1,8 @@
+# Zeabur 部署配置
+services:
+  - name: btc-15min-trader
+    type: worker
+    buildCommand: pip install -r requirements.txt
+    startCommand: python start.py
+    env:
+      - PYTHON_VERSION=3.10
