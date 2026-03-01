@@ -607,14 +607,26 @@ class AutoTraderV5:
 
         # 🧠 Layer 1: Session Memory System
         self.session_memory = None
-        if MEMORY_AVAILABLE:
-            try:
-                self.session_memory = SessionMemory()
-                print("[🧠 MEMORY] Session Memory System (Layer 1) 已启用")
-                print("    功能: 基于历史会话计算先验偏差")
-            except Exception as e:
-                print(f"[WARN] Session Memory初始化失败: {e}")
-                self.session_memory = None
+        try:
+            from session_memory import SessionMemory
+            self.session_memory = SessionMemory()
+            print("[🧠 MEMORY] Session Memory System (Layer 1) 已启用")
+            print("    功能: 基于历史会话计算先验偏差")
+        except Exception as e:
+            print(f"[WARN] Session Memory初始化失败: {e}")
+            self.session_memory = None
+
+        # 🗳️ 投票系统（实验性，替换原评分系统）
+        try:
+            from voting_system import create_voting_system
+            self.voting_system = create_voting_system(self.session_memory)
+            self.use_voting_system = True  # 开关：True使用投票，False使用原系统
+            print("[🗳️ VOTING] 投票系统已启用（9个规则 + 超短动量）")
+            print("    规则: Momentum 3pt/5pt/10pt, Price, RSI, VWAP, Trend, Oracle CVD, UT Bot, Memory")
+        except Exception as e:
+            print(f"[WARN] 投票系统初始化失败: {e}")
+            self.voting_system = None
+            self.use_voting_system = False
 
 
         # 🚀 HTTP Session池（复用TCP连接，提速3-5倍）
@@ -1804,40 +1816,77 @@ class AutoTraderV5:
         # ========== 双核融合：读取币安先知Oracle信号 ==========
         oracle = self._read_oracle_signal()
         oracle_score = 0.0
-        ut_hull_trend = 'NEUTRAL'
+        ut_hull_trend = 'NEUTUTRAL'
 
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
 
-        print(f"       [ORACLE] 先知分:{oracle_score:+.2f} | 15m UT Bot:{ut_hull_trend} | 本地分:{score:.2f}")
+        print(f"       [ORACLE] 先知分:{oracle_score:+.2f} | 15m UT Bot:{ut_hull_trend}")
 
         # ==========================================
-        # 🛡️ Oracle融合：同向增强，反向削弱
-        # ==========================================
-        # 🔄 恢复旧版Oracle融合：同向增强（权重20%），反向削弱（权重10%）
-        # 避免Oracle把弱信号推过门槛，或把强信号压下去
-        if oracle and abs(oracle_score) > 0:
-            if oracle_score * score > 0:
-                oracle_boost = oracle_score / 5.0   # 同向：最多±2
-                print(f"       [FUSION共振] 本地({score:+.2f})与Oracle同向，÷5: {oracle_score:+.2f} → {oracle_boost:+.2f}")
-            else:
-                oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
-                print(f"       [FUSION背离] 本地({score:+.2f})与Oracle反向，÷10: {oracle_score:+.2f} → {oracle_boost:+.2f}")
-            score += oracle_boost
-            score = round(max(-10, min(10, score)), 2)
+        🗳️ 投票系统（实验性替换原融合逻辑）
+        ==========================================
+        if self.use_voting_system and self.voting_system:
+            print(f"       [VOTING SYSTEM] 使用投票系统生成信号（9个规则 + 超短动量）")
 
-        confidence = min(abs(score) / 5.0, 0.99)
-        direction = None
-        min_long_score = CONFIG['signal']['min_long_score']
-        min_short_score = CONFIG['signal']['min_short_score']
+            # 收集投票
+            vote_result = self.voting_system.decide(
+                min_confidence=0.60,
+                min_votes=3,
+                price=price,
+                rsi=rsi,
+                vwap=vwap,
+                oracle_score=oracle_score,
+                price_history=price_hist,
+                oracle=oracle
+            )
 
-        # 常规做多信号
-        if score >= min_long_score:
-            direction = 'LONG'
-        # 常规做空信号
-        elif score <= min_short_score:
-            direction = 'SHORT'
+            if not vote_result or not vote_result.get('passed_gate', False):
+                print(f"       [VOTING] 投票系统未产生明确信号")
+                return None
+
+            # 提取投票结果
+            direction = vote_result['direction']
+            confidence = vote_result['confidence']
+            vote_details = vote_result
+            score = 5.0 if direction == 'LONG' else -5.0  # 基准分（用于日志显示）
+
+            print(f"\n       [VOTING RESULT] 最终方向: {direction} | 置信度: {confidence:.0%}")
+            print(f"       [VOTING] 继续执行风控检查（RSI防呆、UT Bot趋势锁、防御层）...")
+
+        else:
+            # ==========================================
+            # 🛡️ 原版Oracle融合逻辑（保留作为备份）
+            # ==========================================
+            print(f"       [ORACLE] 本地分:{score:.2f}")
+
+            # 🔄 恢复旧版Oracle融合：同向增强（权重20%），反向削弱（权重10%）
+            if oracle and abs(oracle_score) > 0:
+                if oracle_score * score > 0:
+                    oracle_boost = oracle_score / 5.0   # 同向：最多±2
+                    print(f"       [FUSION共振] 本地({score:+.2f})与Oracle同向，÷5: {oracle_score:+.2f} → {oracle_boost:+.2f}")
+                else:
+                    oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
+                    print(f"       [FUSION背离] 本地({score:+.2f})与Oracle反向，÷10: {oracle_score:+.2f} → {oracle_boost:+.2f}")
+                score += oracle_boost
+                score = round(max(-10, min(10, score)), 2)
+
+            confidence = min(abs(score) / 5.0, 0.99)
+            vote_details = None  # 原系统没有投票详情
+
+        # 投票系统已经设置了 direction，原系统需要根据 score 计算
+        if direction is None:
+            direction = None
+            min_long_score = CONFIG['signal']['min_long_score']
+            min_short_score = CONFIG['signal']['min_short_score']
+
+            # 常规做多信号
+            if score >= min_long_score:
+                direction = 'LONG'
+            # 常规做空信号
+            elif score <= min_short_score:
+                direction = 'SHORT'
 
         if direction:
             # ==========================================
@@ -1878,10 +1927,12 @@ class AutoTraderV5:
                 return None
 
             # 所有风控通过，返回常规信号（带上防御层乘数）
-            print(f"✅ [🛡️常规模式] {direction} 信号确认（15m趋势+防御层通过）")
+            strategy_name = 'VOTING_SYSTEM' if vote_details else 'TREND_FOLLOWING'
+            print(f"✅ [🛡️{strategy_name}] {direction} 信号确认（15m趋势+防御层通过）")
+
             return {
                 'direction': direction,
-                'strategy': 'TREND_FOLLOWING',
+                'strategy': strategy_name,
                 'score': score,
                 'confidence': confidence,
                 'rsi': rsi,
@@ -1891,6 +1942,7 @@ class AutoTraderV5:
                 'oracle_score': oracle_score,
                 'oracle_15m_trend': ut_hull_trend,
                 'defense_multiplier': defense_multiplier,
+                'vote_details': vote_details,  # 添加投票详情（原系统为None）
             }
 
         return None
