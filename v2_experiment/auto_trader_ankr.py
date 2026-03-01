@@ -1731,9 +1731,6 @@ class AutoTraderV5:
         multiplier = 1.0
         defense_reasons = []
 
-        # [ROCKET] 定义核弹级别（用于防御层穿透）
-        is_nuke = abs(oracle_score) >= 6.0
-
         # ========== 因子A: 黄金时间窗口精细管理 (Time left to expiry) ==========
         # 🔴 已移除 6 分钟限制，允许全时段入场
         minutes_to_expiry = 15 - (now.minute % 15)
@@ -1754,28 +1751,11 @@ class AutoTraderV5:
             defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
             print(f" [防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
 
-        # ========== 因子B: 混沌过滤器 + CVD否决权 ==========
-        # 参考 @jtrevorchapman: "CVD是预测力最强的单一指标，在混沌市场甚至有投票否决权"
-        # 反复穿越5次以上说明市场极度混乱，此时只有CVD强烈信号才能开仓
+        # ========== 因子B: 混沌过滤器（纯数学逻辑）==========
+        # [逻辑] 价格反复穿越基准线 → 市场无明确方向 → 惩罚仓位
         if self.session_cross_count >= 5:
-            if is_nuke:
-                # 核弹级巨鲸掀桌子，无视混沌锁！
-                print(f"[防御穿透-B] 核弹级信号(Oracle={oracle_score:+.2f})！无视{self.session_cross_count}次穿越混乱，强行突破！")
-            else:
-                # [CVD否决权] 混沌市场：检查CVD强度
-                cvd_5m = oracle.get('cvd_5m', 0.0) if oracle else 0.0
-
-                if abs(cvd_5m) >= 150000:  # CVD强烈信号（±15万）
-                    if abs(oracle_score) >= 8.0:  # Oracle综合评分也支持
-                        print(f"[CVD否决权-A] 市场混乱(session_cross_count={self.session_cross_count})但CVD极强({cvd_5m:+.0f})，强行开仓！")
-                        # CVD否决权通过，继续评估其他因子
-                    else:
-                        print(f"[CVD否决权-B] 混乱市场且CVD强({cvd_5m:+.0f})但Oracle不够强({oracle_score:+.2f})，谨慎")
-                        multiplier *= 0.3  # 大幅压缩仓位到30%
-                        defense_reasons.append(f"混乱CVD强({cvd_5m:+.0f})")
-                else:
-                    print(f"[CVD否决权-C] 混乱市场(session_cross_count={self.session_cross_count})且CVD弱({cvd_5m:+.0f})，拒绝")
-                    return 0.0
+            print(f"[防御层-B] 混沌市场: 价格穿越{self.session_cross_count}次，拒绝开仓")
+            return 0.0
         elif self.session_cross_count >= 3:
             multiplier *= 0.5
             defense_reasons.append(f"混沌x{self.session_cross_count}")
