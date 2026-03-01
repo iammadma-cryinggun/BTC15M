@@ -84,7 +84,7 @@ CONFIG = {
         # [策略调整] 恢复止盈止损功能
         # 理由：允许全时段入场后，需要止盈止损保护
         'max_stop_loss_pct': 0.50,      # 🔴 50%止损（确认）
-        'take_profit_pct': 0.30,        # 30%止盈
+        'take_profit_pct': 0.20,        # 20%止盈（从30%降低）
         'enable_stop_loss': True,       # ✅ 启用止盈止损
         
         # [止盈开关] 可以单独控制每种止盈机制
@@ -2566,7 +2566,7 @@ class AutoTraderV5:
 
             # --- 止盈计算 ---
             #  彻底解除 1U 封印，独立计算 30% 止盈
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  
             tp_target_price = entry_price * (1 + tp_pct_max)          
             
             #  极限价格保护 + 精度控制（保留2位小数，最高不超过0.99）
@@ -2658,7 +2658,7 @@ class AutoTraderV5:
                                         pass
                                 # 基于最终确认的actual_entry_price统一重算止盈止损（对称30%逻辑）
                                 value_usdc = size * actual_entry_price
-                                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                                 tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                 tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                 tp_target_price = min(tp_by_fixed, tp_by_pct)
@@ -2709,7 +2709,7 @@ class AutoTraderV5:
                                 if abs(actual_entry_price - entry_price) > 0.001:
                                     value_usdc = size * actual_entry_price
                                     # 对称30%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                                     tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = min(tp_by_fixed, tp_by_pct)
@@ -2752,7 +2752,7 @@ class AutoTraderV5:
                                         return max(tick_size, min(1 - tick_size, p))
 
                                     # 对称30%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                                     tp_by_pct = entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = align_price_local(min(tp_by_fixed, tp_by_pct))
@@ -3484,7 +3484,7 @@ class AutoTraderV5:
 
                 real_value = position_size * actual_price
                 # 止盈：与 place_stop_orders 保持相同公式
-                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)
+                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)
                 tp_by_pct = actual_price * (1 + tp_pct_max)
                 tp_by_fixed = (real_value + 1.0) / max(position_size, 1)
                 tp_target_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -3508,7 +3508,7 @@ class AutoTraderV5:
                             return max(tick_size, min(1 - tick_size, p))
 
                         # 基于实际成交价格计算止盈止损（对称30%逻辑）
-                        tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                        tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                         tp_by_pct = actual_price * (1 + tp_pct_max)
                         tp_by_fixed = (position_value + 1.0) / max(position_size, 1)
                         tp_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -3723,7 +3723,7 @@ class AutoTraderV5:
             # 计算新的止盈止损价格（合并持仓只用百分比，不用固定金额）
             #  修复：移除固定金额逻辑，统一使用30%百分比
             # 原因：大仓位时+1U/-1U占比太小，会偏离设计意图
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)
             sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
 
             # 对齐价格精度
@@ -4106,7 +4106,7 @@ class AutoTraderV5:
                 # 如果止盈单没成交，检查本地止盈止损价格（双向轮询模式）
                 if not exit_reason:
                     #  关键修复：使用与开仓时相同的公式，确保一致性（对称30%逻辑）
-                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                     tp_by_pct = entry_token_price * (1 + tp_pct_max)
                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                     tp_target_price = min(tp_by_fixed, tp_by_pct)
