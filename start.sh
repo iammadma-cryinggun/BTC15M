@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Zeabur v2_experiment 启动脚本
-同时启动 binance_oracle.py 和 v2_experiment/auto_trader_ankr.py
+Zeabur v2_experiment 双核架构启动脚本
+先启动 binance_oracle.py（后台），再启动 v2_experiment/auto_trader_ankr.py（前台）
 """
 import os
 import sys
@@ -27,7 +27,7 @@ if not os.path.exists('v2_experiment/auto_trader_ankr.py'):
 if os.path.exists('oracle.log'):
     os.remove('oracle.log')
 
-print("[1/2] 启动币安先知Oracle（极速版：2分钟窗口+核弹熔断）...")
+print("[1/2] 启动币安先知Oracle（后台运行）...")
 # 启动Oracle，后台运行
 oracle_log = open('oracle.log', 'w')
 oracle_process = subprocess.Popen(
@@ -60,7 +60,7 @@ if os.path.exists('oracle_signal.json'):
     import json
     with open('oracle_signal.json', 'r') as f:
         signal = json.load(f)
-    print(f"[OK] 信号文件已生成: score={signal.get('signal_score', 0):.2f}, UT+Hull={signal.get('ut_hull_trend', 'NEUTRAL')}")
+    print(f"[OK] 信号文件已生成: score={signal.get('signal_score', 0):.2f}")
 else:
     print("[WARN] oracle_signal.json 尚未生成（可能正在初始化）")
 
