@@ -4858,6 +4858,242 @@ class AutoTraderV5:
         """轻量版无学习系统，跳过UT Bot参数调整"""
         pass
 
+    # ==========================================
+    # Polymarket API 方法实现
+    # ==========================================
+
+    def get_order_book(self, token_id: str, side: str = 'BUY') -> Optional[float]:
+        """获取订单簿价格（买一/卖一价）
+        
+        Args:
+            token_id: Token ID
+            side: 'BUY' 获取卖一价（ask），'SELL' 获取买一价（bid）
+            
+        Returns:
+            价格，失败返回 None
+        """
+        try:
+            # Polymarket CLOB API: /price 端点
+            url = f"{CONFIG['clob_host']}/price"
+            params = {
+                'token_id': token_id,
+                'side': side
+            }
+            
+            response = self.http_session.get(
+                url,
+                params=params,
+                proxies=CONFIG.get('proxy'),
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                price = float(data.get('price', 0))
+                if 0.01 <= price <= 0.99:
+                    return price
+            
+            return None
+            
+        except Exception as e:
+            print(f"       [ORDER BOOK ERROR] {e}")
+            return None
+
+    def get_positions(self) -> Dict[str, float]:
+        """获取数据库中的持仓统计
+        
+        Returns:
+            {'LONG': 总多头仓位, 'SHORT': 总空头仓位}
+        """
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.execute('PRAGMA journal_mode=WAL;')
+            cursor = conn.cursor()
+            
+            # 查询未过期市场的持仓（最近25分钟内）
+            cutoff_time = (datetime.now() - timedelta(minutes=25)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute("""
+                SELECT side, SUM(size) as total_size
+                FROM positions
+                WHERE status IN ('open', 'closing')
+                  AND entry_time >= ?
+                GROUP BY side
+            """, (cutoff_time,))
+            
+            positions = {'LONG': 0.0, 'SHORT': 0.0}
+            for row in cursor.fetchall():
+                side, total_size = row
+                positions[side] = float(total_size) if total_size else 0.0
+            
+            conn.close()
+            return positions
+            
+        except Exception as e:
+            print(f"       [GET POSITIONS ERROR] {e}")
+            return {'LONG': 0.0, 'SHORT': 0.0}
+
+    def get_real_positions(self) -> Dict[str, float]:
+        """获取链上实时持仓（通过查询所有 token 余额）
+        
+        Returns:
+            {'LONG': 总多头仓位, 'SHORT': 总空头仓位}
+        """
+        try:
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            
+            positions = {'LONG': 0.0, 'SHORT': 0.0}
+            
+            # 获取当前市场的 token IDs
+            market = self.get_market_data()
+            if not market:
+                return positions
+            
+            token_ids = market.get('clobTokenIds', [])
+            if isinstance(token_ids, str):
+                token_ids = json.loads(token_ids)
+            
+            if not token_ids or len(token_ids) < 2:
+                return positions
+            
+            # YES token (LONG)
+            yes_token_id = str(token_ids[0])
+            params_yes = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=yes_token_id,
+                signature_type=2
+            )
+            result_yes = self.client.get_balance_allowance(params_yes)
+            if result_yes:
+                amount = float(result_yes.get('balance', '0') or '0')
+                positions['LONG'] = amount / 1e6
+            
+            # NO token (SHORT)
+            no_token_id = str(token_ids[1])
+            params_no = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=no_token_id,
+                signature_type=2
+            )
+            result_no = self.client.get_balance_allowance(params_no)
+            if result_no:
+                amount = float(result_no.get('balance', '0') or '0')
+                positions['SHORT'] = amount / 1e6
+            
+            return positions
+            
+        except Exception as e:
+            print(f"       [GET REAL POSITIONS ERROR] {e}")
+            return {'LONG': 0.0, 'SHORT': 0.0}
+
+    def cancel_order(self, order_id: str) -> bool:
+        """取消订单
+        
+        Args:
+            order_id: 订单 ID
+            
+        Returns:
+            是否成功
+        """
+        try:
+            if not order_id or not self.client:
+                return False
+            
+            # 使用 CLOB client 的 cancel 方法
+            result = self.client.cancel(order_id)
+            
+            if result:
+                print(f"       [CANCEL] 订单已取消: {order_id[-8:]}")
+                return True
+            else:
+                print(f"       [CANCEL] 取消失败: {order_id[-8:]}")
+                return False
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            # 订单不存在或已成交不算错误
+            if 'not found' in error_msg or 'does not exist' in error_msg:
+                print(f"       [CANCEL] 订单不存在（可能已成交）: {order_id[-8:]}")
+                return True
+            else:
+                print(f"       [CANCEL ERROR] {e}")
+                return False
+
+    def cancel_pair_orders(self, tp_order_id: str, sl_order_id: str, reason: str = '') -> None:
+        """取消止盈止损订单对
+        
+        Args:
+            tp_order_id: 止盈订单 ID
+            sl_order_id: 止损订单 ID（可能是价格字符串）
+            reason: 取消原因（用于日志）
+        """
+        try:
+            # 取消止盈单
+            if tp_order_id:
+                try:
+                    self.cancel_order(tp_order_id)
+                except Exception as e:
+                    print(f"       [CANCEL PAIR] 取消止盈单失败: {e}")
+            
+            # 取消止损单（如果是订单ID）
+            if sl_order_id and sl_order_id.startswith('0x'):
+                try:
+                    self.cancel_order(sl_order_id)
+                except Exception as e:
+                    print(f"       [CANCEL PAIR] 取消止损单失败: {e}")
+            
+            if reason:
+                print(f"       [CANCEL PAIR] 原因: {reason}")
+                
+        except Exception as e:
+            print(f"       [CANCEL PAIR ERROR] {e}")
+
+    def update_allowance_fixed(self, asset_type, token_id: str = None) -> bool:
+        """更新授权（修复版，支持 COLLATERAL 和 CONDITIONAL）
+        
+        Args:
+            asset_type: AssetType.COLLATERAL 或 AssetType.CONDITIONAL
+            token_id: Token ID（CONDITIONAL 类型需要）
+            
+        Returns:
+            是否成功
+        """
+        try:
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            
+            if asset_type == AssetType.COLLATERAL:
+                # USDC 授权
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=2
+                )
+            else:
+                # Token 授权
+                if not token_id:
+                    print(f"       [ALLOWANCE] Token ID 缺失")
+                    return False
+                
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                    signature_type=2
+                )
+            
+            # 发送授权请求
+            result = self.client.update_balance_allowance(params)
+            
+            if result:
+                asset_name = "USDC" if asset_type == AssetType.COLLATERAL else f"Token {token_id[-8:]}"
+                print(f"       [ALLOWANCE] {asset_name} 授权成功")
+                return True
+            else:
+                print(f"       [ALLOWANCE] 授权失败")
+                return False
+                
+        except Exception as e:
+            print(f"       [ALLOWANCE ERROR] {e}")
+            return False
+
 def start_api_server(port=8888):
     """在后台线程启动HTTP API服务器"""
     from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -4956,3 +5192,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
