@@ -80,9 +80,12 @@ CONFIG = {
         'max_same_direction_bullets': 999,  # 10秒抢跑版：放开弹匣限制（快速进出）
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
-        'max_stop_loss_pct': 0.50,      # 最大止损50%（宽幅止损，防止正常波动被误杀）
-        'take_profit_pct': 0.30,        # 止盈30%
-        'enable_stop_loss': True,       #  启用宽幅止损（50%，给市场足够呼吸空间）
+
+        # [策略调整] 禁用止盈止损，持有到期（参考 @jtrevorchapman）
+        # 理由：我们在3-6分钟开仓，就是赌15分钟到期结算，不应该中间退出
+        'max_stop_loss_pct': 0.80,      # 80%止损（仅极端情况保护，基本不触发）
+        'take_profit_pct': 0.90,        # 90%止盈（基本不触发，持有到期）
+        'enable_stop_loss': False,      #  禁用止盈止损：持有到期，赌结算结果
     },
 
     'signal': {
