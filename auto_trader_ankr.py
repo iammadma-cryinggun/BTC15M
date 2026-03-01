@@ -1651,21 +1651,35 @@ class AutoTraderV5:
             multiplier *= 0.5
             defense_reasons.append(f"混沌x{self.session_cross_count}")
 
-        # ========== 因子C: 利润空间与巨鲸背离防御 ==========
-        # 高价位入场风险大，需要更强的信号
-        if current_price >= 0.90:
-            if abs(oracle_score) < 8.0:
-                print(f"🛡️ [防御层-C] 拦截: 入场价{current_price:.2f}太高，且无核弹级信号(<8.0)")
+        # ========== 因子C: 利润空间防御（基于175笔实盘数据优化）==========
+        # 🚨 数据证明：入场价格≥0.50的胜率<5%，几乎全部MARKET_SETTLED
+        # 🎯 黄金区间：0.28-0.43，胜率100%（在小样本中）
+
+        if current_price >= 0.50:
+            # 🛑 死亡区间：0.50+几乎全部被套牢
+            if abs(oracle_score) < 10.0:
+                print(f"🛡️ [防御层-C] 拦截: 入场价{current_price:.2f}处于死亡区间(≥0.50)，需Oracle≥10.0才可开单")
                 return 0.0
             else:
-                multiplier *= 0.3  # 极度危险区，只给30%仓位
-                defense_reasons.append(f"高价区{current_price:.2f}")
-        elif current_price >= 0.80:
-            multiplier *= 0.5  # 盈亏比一般，给50%仓位
-            defense_reasons.append(f"中高价区{current_price:.2f}")
-        elif current_price >= 0.70:
-            multiplier *= 0.7  # 稍微压缩
-            defense_reasons.append(f"偏高价区{current_price:.2f}")
+                # 即使有极端核弹信号，也只给最小仓位
+                multiplier *= 0.15  # 只给15%仓位
+                defense_reasons.append(f"⚠️死亡区间{current_price:.2f}(仅核弹)")
+
+        elif current_price >= 0.45:
+            # 🟠 高风险区间：胜率大幅下降
+            multiplier *= 0.3  # 压缩到30%
+            defense_reasons.append(f"高风险区{current_price:.2f}")
+
+        elif current_price >= 0.43:
+            # 🟡 中等风险区间：边界地带
+            multiplier *= 0.7  # 轻微压缩
+            defense_reasons.append(f"中风险区{current_price:.2f}")
+
+        elif current_price < 0.28:
+            # 🔵 过低区间：虽然便宜但说明市场一边倒
+            if abs(oracle_score) < 5.0:
+                print(f"🛡️ [防御层-C] 拦截: 入场价{current_price:.2f}过低，市场一边倒，需Oracle≥5.0")
+                return 0.0
 
         # ========== 因子D: CVD一致性检查 ==========
         # 如果Oracle（代表CVD方向）与本地信号背离，降半仓
