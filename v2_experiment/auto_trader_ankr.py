@@ -1830,7 +1830,7 @@ class AutoTraderV5:
         # ==========================================
         # [VOTING] 投票系统（统一信号生成）
         # ==========================================
-        print(f"       [VOTING SYSTEM] 所有指标统一投票（21个规则）")
+        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：18个已激活 + 7个占位）")
 
         # 收集投票（所有指标平等输入）
         vote_result = self.voting_system.decide(
