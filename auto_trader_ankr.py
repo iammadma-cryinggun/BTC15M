@@ -1816,33 +1816,19 @@ class AutoTraderV5:
                 print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
 
         # ==========================================
-        # 🛡️ 轨道二：【常规趋势跟踪模块】（严格风控，顺势而为）
+        # 🛡️ 轨道二：【常规趋势跟踪模块】（旧版融合逻辑）
         # ==========================================
-        # 🚨 终极修复：数学陷阱 - 微弱噪音（如-0.54、-1.0）不应触发严厉的"除以6"
+        # 🔄 恢复旧版Oracle融合：同向增强（权重20%），反向削弱（权重10%）
+        # 避免Oracle把弱信号推过门槛，或把强信号压下去
         if oracle and abs(oracle_score) > 0:
-            original_score = score  # 保存原始分用于日志
-            if abs(score) <= 1.0:
-                # 【噪音/中立区】本地分在 -1.0 到 1.0 之间（含边界），说明本地没有明确方向
-                # 此时不要因为极其微小的反向（如 -0.54、-1.0）去触发除以 6 的极刑！
-                oracle_boost = oracle_score / 2.5
-                if abs(oracle_score) >= 2.0:
-                    print(f"       [FUSION噪音] 本地中立({score:+.2f})，Oracle平滑÷2.5: {oracle_score:+.2f} → {oracle_boost:+.2f}")
-            elif oracle_score * score > 0:
-                # 【完美共振区】同向，提供强大的动能加持
-                oracle_boost = oracle_score / 3.0
-                if abs(oracle_score) >= 2.0:
-                    print(f"       [FUSION共振] 本地({score:+.2f})与Oracle同向，÷3: {oracle_score:+.2f} → {oracle_boost:+.2f}")
+            if oracle_score * score > 0:
+                oracle_boost = oracle_score / 5.0   # 同向：最多±2
+                print(f"       [FUSION共振] 本地({score:+.2f})与Oracle同向，÷5: {oracle_score:+.2f} → {oracle_boost:+.2f}")
             else:
-                # 【严重背离区】本地强力看跌，远端却看涨，此时必须极端保守
-                oracle_boost = oracle_score / 6.0
-                if abs(oracle_score) >= 2.0:
-                    print(f"       [FUSION背离] 本地({score:+.2f})与Oracle反向，÷6: {oracle_score:+.2f} → {oracle_boost:+.2f}")
+                oracle_boost = oracle_score / 10.0  # 反向：最多±1，不轻易翻转本地判断
+                print(f"       [FUSION背离] 本地({score:+.2f})与Oracle反向，÷10: {oracle_score:+.2f} → {oracle_boost:+.2f}")
             score += oracle_boost
-            score = round(max(-10.0, min(10.0, score)), 3)
-
-            # 🚨 透视眼日志 - 只要Oracle有信号就打印（黑匣子！）
-            if abs(oracle_score) >= 2.0:
-                print(f"🔍 [透视眼] 本地分:{original_score:+.2f} | Oracle:{oracle_score:+.2f} | 融合boost:{oracle_boost:+.2f} | 总分:{score:+.2f} | 门槛:±4.0")
+            score = round(max(-10, min(10, score)), 2)
 
         confidence = min(abs(score) / 5.0, 0.99)
         direction = None
