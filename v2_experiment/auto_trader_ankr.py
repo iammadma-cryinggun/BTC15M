@@ -692,6 +692,23 @@ class AutoTraderV5:
         }
         print("[ 反追空装甲] 单向连亏熔断器已启动")
         print("    配置: 连续3次同向亏损 → 锁定该方向30分钟")
+
+        # ==========================================
+        # [时间同步] 检查系统时间与市场时间偏差
+        # ==========================================
+        print("\n[时间同步] 检查系统时间与Polymarket市场时间...")
+        time_diff = self._check_time_sync()
+        if time_diff is None:
+            print("[WARN] 无法连接到Polymarket服务器，跳过时间检查")
+        elif time_diff > 30:
+            print(f"[WARN] ⚠️  时间偏差过大: {time_diff:.1f}秒！")
+            print("       建议: 同步系统时间（Windows: w32tm /resync）")
+            print("       影响: 黄金窗口判断可能不准确！")
+        elif time_diff > 10:
+            print(f"[INFO] 时间偏差: {time_diff:.1f}秒（可接受范围）")
+        else:
+            print(f"[OK] 时间同步良好: 偏差{time_diff:.1f}秒")
+
         self.init_database()
 
         # 从数据库恢复当天的亏损和交易统计（防止重启后风控失效）
@@ -1262,6 +1279,47 @@ class AutoTraderV5:
             print(f"[RESTORE] 当天统计已恢复: 亏损=${self.stats['daily_loss']:.2f}, 交易={self.stats['daily_trades']}次")
         except Exception as e:
             print(f"[RESTORE] 恢复统计失败（不影响运行）: {e}")
+
+    def _check_time_sync(self) -> Optional[float]:
+        """
+        检查系统时间与Polymarket服务器时间的偏差
+
+        返回:
+            时间偏差（秒），None表示无法获取服务器时间
+        """
+        try:
+            # 从Polymarket CLOB API获取服务器时间
+            response = self.http_session.head('https://clob.polymarket.com', timeout=5)
+
+            if response.status_code != 200:
+                return None
+
+            # 获取服务器时间戳（从Date头）
+            server_date_str = response.headers.get('Date')
+            if not server_date_str:
+                return None
+
+            # 解析服务器时间（格式：Fri, 28 Feb 2025 12:34:56 GMT）
+            from email.utils import parsedate_to_datetime
+            server_dt = parsedate_to_datetime(server_date_str)
+
+            if server_dt is None:
+                return None
+
+            # 转换为UTC时间戳
+            server_timestamp = server_dt.timestamp()
+
+            # 获取本地系统时间戳
+            local_timestamp = time.time()
+
+            # 计算偏差
+            time_diff = abs(local_timestamp - server_timestamp)
+
+            return time_diff
+
+        except Exception as e:
+            # 时间检查失败，不影响运行
+            return None
 
     def print_recent_trades(self, days=3):
         """打印最近的交易记录（用于调试）"""
