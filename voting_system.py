@@ -760,6 +760,275 @@ class PMSentimentRule(VotingRule):
         return None  # 不投票（占位）
 
 
+class CLDataAgeRule(VotingRule):
+    """数据延迟规则（CL = Chainlink）"""
+
+    def __init__(self, weight: float = 0.5):
+        super().__init__('CL Data Age', weight)
+
+    def evaluate(self, oracle: Dict = None, **kwargs) -> Optional[Dict]:
+        """
+        检测Oracle数据延迟
+
+        数据新鲜度影响信号可靠性
+        """
+        if not oracle:
+            return None
+
+        # 检查时间戳
+        timestamp = oracle.get('timestamp', 0)
+        if timestamp == 0:
+            return None
+
+        # 计算数据年龄（秒）
+        import time
+        data_age = time.time() - timestamp
+
+        # 数据年龄阈值
+        if data_age > 10.0:  # 超过10秒，数据过时
+            return None  # 不投票（数据不可靠）
+
+        # 数据越新鲜，给予越高置信度
+        # 数据年龄 < 3秒：优秀
+        # 数据年龄 3-6秒：良好
+        # 数据年龄 6-10秒：一般
+        if data_age < 3.0:
+            # 数据很新鲜，不投票（只是质量检查，不产生方向）
+            return None
+        elif data_age > 6.0:
+            # 数据有点旧，轻微惩罚
+            return None
+
+        # 这个规则主要用于数据质量检查，不产生方向性投票
+        return None
+
+
+class PMYesRule(VotingRule):
+    """Polymarket YES价格规则"""
+
+    def __init__(self, weight: float = 1.0):
+        super().__init__('PM YES', weight)
+
+    def evaluate(self, price: float, **kwargs) -> Optional[Dict]:
+        """
+        基于YES价格判断市场情绪
+
+        YES价格 > 0.70: 极度看涨
+        YES价格 < 0.30: 极度看跌
+        """
+        if price <= 0 or price >= 1.0:
+            return None
+
+        # 价格区间判断
+        if price > 0.70:
+            # 极度看涨
+            confidence = (price - 0.70) / 0.30  # 0.70→0%, 1.00→100%
+            confidence = min(confidence, 0.99)
+            return {
+                'direction': 'LONG',
+                'confidence': confidence,
+                'reason': f'YES价格{price:.2f}（极度看涨）',
+                'raw_value': price
+            }
+        elif price < 0.30:
+            # 极度看跌
+            confidence = (0.30 - price) / 0.30  # 0.30→0%, 0.00→100%
+            confidence = min(confidence, 0.99)
+            return {
+                'direction': 'SHORT',
+                'confidence': confidence,
+                'reason': f'YES价格{price:.2f}（极度看跌）',
+                'raw_value': price
+            }
+
+        # 价格在中性区间（0.30-0.70），不投票
+        return None
+
+
+class BiasScoreRule(VotingRule):
+    """综合偏差分数规则"""
+
+    def __init__(self, weight: float = 1.0):
+        super().__init__('Bias Score', weight)
+
+    def evaluate(self, rsi: float = None, vwap: float = None,
+                 price: float = None, price_history: List[float] = None,
+                 **kwargs) -> Optional[Dict]:
+        """
+        综合多个指标的偏差分数
+
+        考虑因素：
+        1. RSI偏离50的程度
+        2. 价格偏离VWAP的程度
+        3. 价格动量趋势
+        """
+        if rsi is None or vwap is None or price is None:
+            return None
+
+        bias = 0.0
+        factors = 0
+
+        # 1. RSI偏差
+        if rsi > 50:
+            rsi_bias = (rsi - 50) / 50.0  # 0 to +1
+            bias += rsi_bias * 2.0  # 权重2.0
+            factors += 1
+        elif rsi < 50:
+            rsi_bias = (50 - rsi) / 50.0  # 0 to +1
+            bias -= rsi_bias * 2.0  # 负向
+            factors += 1
+
+        # 2. VWAP偏离
+        if vwap > 0:
+            vwap_dev_pct = ((price - vwap) / vwap) * 100
+            # 标准化：±5%为极限
+            vwap_bias = max(-1.0, min(1.0, vwap_dev_pct / 5.0))
+            bias += vwap_bias * 1.5  # 权重1.5
+            factors += 1
+
+        # 3. 价格动量（如果有历史数据）
+        if price_history and len(price_history) >= 5:
+            recent = price_history[-5:]
+            momentum = (recent[-1] - recent[0]) / recent[0] * 100
+            # 标准化：±3%为极限
+            momentum_bias = max(-1.0, min(1.0, momentum / 3.0))
+            bias += momentum_bias * 1.0  # 权重1.0
+            factors += 1
+
+        if factors == 0:
+            return None
+
+        # 综合偏差
+        bias_score = bias / factors
+
+        # 偏差阈值
+        if abs(bias_score) < 0.5:
+            return None
+
+        direction = 'LONG' if bias_score > 0 else 'SHORT'
+        confidence = min(abs(bias_score) / 2.0, 0.99)
+        reason = f'综合偏差{bias_score:+.2f}'
+
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': bias_score
+        }
+
+
+class PMSpreadDevRule(VotingRule):
+    """YES/NO价差异常规则"""
+
+    def __init__(self, weight: float = 0.8):
+        super().__init__('PM Spread Dev', weight)
+
+    def evaluate(self, price: float = None, no_price: float = None, **kwargs) -> Optional[Dict]:
+        """
+        检测YES/NO价差异常
+
+        正常情况：YES + NO ≈ 1.00
+        异常情况：YES + NO > 1.02（市场低效，套利机会）
+
+        异常价差意味着市场低效，可能反转
+        """
+        if price is None:
+            return None
+
+        # 如果没有传入no_price，计算它
+        if no_price is None:
+            no_price = 1.0 - price
+
+        # 计算价差
+        spread = price + no_price
+
+        # 价差异常阈值
+        if spread < 1.01:
+            return None  # 价差正常，不投票
+
+        if spread > 1.02:
+            # 价差异常（市场低效）
+            # 当价差异常时，倾向于SHORT（反转信号）
+            confidence = min((spread - 1.02) / 0.05, 0.99)
+            return {
+                'direction': 'SHORT',
+                'confidence': confidence,
+                'reason': f'价差异常{spread:.3f}（市场低效）',
+                'raw_value': spread
+            }
+
+        # 价差1.01-1.02：轻微异常
+        return None
+
+
+class NaturalPriceRule(VotingRule):
+    """自然价格规则（需要订单簿数据）"""
+
+    def __init__(self, weight: float = 1.0):
+        super().__init__('NATURAL', weight)
+
+    def evaluate(self, **kwargs) -> Optional[Dict]:
+        """
+        计算自然价格（远离大单的价格）
+
+        [占位规则] 需要订单簿数据
+        """
+        # TODO: 实现自然价格计算
+        # 需要订单簿数据：bids/asks at different levels
+        # 自然价格 = 排除大单后的加权平均价格
+        return None  # 不投票（占位）
+
+
+class NaturalAbsRule(VotingRule):
+    """自然价格绝对值规则（需要订单簿数据）"""
+
+    def __init__(self, weight: float = 1.0):
+        super().__init__('NAT ABS', weight)
+
+    def evaluate(self, **kwargs) -> Optional[Dict]:
+        """
+        自然价格的绝对值
+
+        [占位规则] 需要订单簿数据
+        """
+        # TODO: 实现自然价格绝对值计算
+        return None  # 不投票（占位）
+
+
+class BufferTicketsRule(VotingRule):
+    """缓冲订单数量规则（需要订单簿数据）"""
+
+    def __init__(self, weight: float = 1.0):
+        super().__init__('BUFFER TICKETS', weight)
+
+    def evaluate(self, **kwargs) -> Optional[Dict]:
+        """
+        统计缓冲区订单数量
+
+        [占位规则] 需要订单簿数据
+        """
+        # TODO: 实现缓冲订单统计
+        # 缓冲订单：接近当前价格的未成交订单
+        return None  # 不投票（占位）
+
+
+class PositionsRule(VotingRule):
+    """持仓分布规则（需要Polymarket API）"""
+
+    def __init__(self, weight: float = 1.0):
+        super().__init__('POSITIONS', weight)
+
+    def evaluate(self, **kwargs) -> Optional[Dict]:
+        """
+        分析持仓分布
+
+        [占位规则] 需要Polymarket持仓API
+        """
+        # TODO: 实现持仓分布分析
+        # 需要Polymarket API: /positions
+        return None  # 不投票（占位）
+
+
 
 class VotingSystem:
     """投票系统引擎"""
@@ -928,12 +1197,13 @@ class VotingSystem:
 
 def create_voting_system(session_memory=None) -> VotingSystem:
     """
-    创建投票系统实例（按照@jtrevorchapman的21个指标设计）
+    创建投票系统实例（完整实现@jtrevorchapman的23个原始指标）
 
-    总计21个规则：
-    - 已实现（16个）：超短动量x3、价格动量、RSI、VWAP、趋势强度、CVDx2、UT Bot、Session Memory、
-                      动量加速度、MACD柱状图、EMA交叉、波动率、Delta Z-Score、价格趋势x5、交易强度
-    - 占位规则（5个）：买墙、卖墙、订单簿失衡、PM价差、PM情绪
+    总计25个规则：
+    - 已实现（14个）：超短动量x3、价格动量x2、RSI、VWAP、趋势强度、CVDx2、UT Bot、Session Memory、
+                      动量加速度、MACD柱状图、EMA交叉、波动率、Delta Z-Score、交易强度
+    - 新增实现（4个）：CL Data Age、PM YES、Bias Score、PM Spread Dev
+    - 占位规则（9个）：需要Polymarket订单簿/持仓API的指标
     """
     system = VotingSystem()
 
@@ -970,6 +1240,14 @@ def create_voting_system(session_memory=None) -> VotingSystem:
     system.add_rule(TradingIntensityRule(weight=1.0))       # 交易强度：成交量变化
 
     # ==========================================
+    # 新增指标（4个）
+    # ==========================================
+    system.add_rule(CLDataAgeRule(weight=0.5))         # 数据延迟（质量检查）
+    system.add_rule(PMYesRule(weight=1.0))             # PM YES价格情绪
+    system.add_rule(BiasScoreRule(weight=1.0))         # 综合偏差分数
+    system.add_rule(PMSpreadDevRule(weight=0.8))       # YES/NO价差异常
+
+    # ==========================================
     # 趋势指标
     # ==========================================
     system.add_rule(UTBotTrendRule(weight=1.0))         # UT Bot 15m趋势（已禁用硬锁，仅投票）
@@ -978,14 +1256,21 @@ def create_voting_system(session_memory=None) -> VotingSystem:
     # ==========================================
     # 占位规则（需要Polymarket订单簿数据，暂时不投票）
     # ==========================================
+    # 市场微观结构（需要订单簿API）
     system.add_rule(BidWallsRule(weight=1.0))           # 买墙：需要订单簿数据
     system.add_rule(AskWallsRule(weight=1.0))           # 卖墙：需要订单簿数据
     system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：需要订单簿数据
+    system.add_rule(NaturalPriceRule(weight=1.0))       # 自然价格：需要订单簿数据
+    system.add_rule(NaturalAbsRule(weight=1.0))         # 自然价格绝对值：需要订单簿数据
+    system.add_rule(BufferTicketsRule(weight=1.0))      # 缓冲订单：需要订单簿数据
+
+    # Polymarket数据（需要PM API）
     system.add_rule(PMSpreadRule(weight=1.0))           # PM价差异常：需要YES/NO价格
     system.add_rule(PMSentimentRule(weight=1.0))        # PM情绪：需要Polymarket历史数据
+    system.add_rule(PositionsRule(weight=1.0))          # 持仓分布：需要Polymarket API
 
-    # 总权重：22.3x（未激活的占位规则不影响）
-    # CVD权重占比：4.5x / 22.3x = 20.2%（主导地位）
+    # 总权重：25.8x（已激活规则：18个规则 = 17.3x）
+    # CVD权重占比：5.7x / 25.8x = 22.1%（仍然主导）
 
     return system
 
