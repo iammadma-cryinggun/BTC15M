@@ -1813,59 +1813,7 @@ class AutoTraderV5:
         print(f"       [ORACLE] 先知分:{oracle_score:+.2f} | 15m UT Bot:{ut_hull_trend} | 本地分:{score:.2f}")
 
         # ==========================================
-        # 🚨 轨道一：【核弹级巨鲸狙击模块】（完全独立VIP通道）
-        # ==========================================
-        # 配置：只赌极端异常，十年等一回的V型反转
-        WHALE_NUCLEAR_SCORE = 12.0      # 核弹阈值：必须是12.0分以上！
-        WHALE_MAX_PRICE_LONG = 0.20    # 做多只买20¢以下的彩票
-        WHALE_MIN_PRICE_SHORT = 0.80   # 做空只买80¢以上的彩票
-        WHALE_MAX_RSI_LONG = 70        # 做多时RSI不能>70
-        WHALE_MIN_RSI_SHORT = 30       # 做空时RSI不能<30
-
-        # 做多核弹：大盘暴跌，突发利好（ETF通过/降息等）
-        if oracle_score >= WHALE_NUCLEAR_SCORE:
-            if rsi < WHALE_MAX_RSI_LONG and price < WHALE_MAX_PRICE_LONG:
-                print(f"🚨 [💥核弹巨鲸狙击] oracle={oracle_score:.1f}≥{WHALE_NUCLEAR_SCORE} | price={price:.2f}<{WHALE_MAX_PRICE_LONG} | RSI={rsi:.1f}<{WHALE_MAX_RSI_LONG}")
-                print(f"    ⚠️  无视15m趋势({ut_hull_trend})，强制赌V型反转！")
-                return {
-                    'direction': 'LONG',
-                    'strategy': 'WHALE_SNIPER',
-                    'score': oracle_score,
-                    'confidence': 0.99,
-                    'rsi': rsi,
-                    'vwap': vwap,
-                    'price': price,
-                    'components': components,
-                    'oracle_score': oracle_score,
-                    'oracle_15m_trend': ut_hull_trend,
-                    'defense_multiplier': 1.0,  # 🛡️ 巨鲸狙击模式：全仓通过
-                }
-            else:
-                print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
-
-        # 做空核弹：大盘暴涨，突发利空（监管打压/黑客事件等）
-        elif oracle_score <= -WHALE_NUCLEAR_SCORE:
-            if rsi > WHALE_MIN_RSI_SHORT and price > WHALE_MIN_PRICE_SHORT:
-                print(f"🚨 [💥核弹巨鲸狙击] oracle={oracle_score:.1f}≤-{WHALE_NUCLEAR_SCORE} | price={price:.2f}>{WHALE_MIN_PRICE_SHORT} | RSI={rsi:.1f}>{WHALE_MIN_RSI_SHORT}")
-                print(f"    ⚠️  无视15m趋势({ut_hull_trend})，强制赌瀑布暴跌！")
-                return {
-                    'direction': 'SHORT',
-                    'strategy': 'WHALE_SNIPER',
-                    'score': oracle_score,
-                    'confidence': 0.99,
-                    'rsi': rsi,
-                    'vwap': vwap,
-                    'price': price,
-                    'components': components,
-                    'oracle_score': oracle_score,
-                    'oracle_15m_trend': ut_hull_trend,
-                    'defense_multiplier': 1.0,  # 🛡️ 巨鲸狙击模式：全仓通过
-                }
-            else:
-                print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
-
-        # ==========================================
-        # 🛡️ 轨道二：【常规趋势跟踪模块】（旧版融合逻辑）
+        # 🛡️ Oracle融合：同向增强，反向削弱
         # ==========================================
         # 🔄 恢复旧版Oracle融合：同向增强（权重20%），反向削弱（权重10%）
         # 避免Oracle把弱信号推过门槛，或把强信号压下去
