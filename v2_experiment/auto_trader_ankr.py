@@ -1780,11 +1780,38 @@ class AutoTraderV5:
             multiplier *= 0.5
             defense_reasons.append(f"混沌x{self.session_cross_count}")
 
-        # ========== 因子C: CVD一致性检查（强化版）==========
-        # [CVD强化] 参考 @jtrevorchapman: CVD是最强指标，背离时严厉惩罚
-        # 如果Oracle（代表CVD方向）与本地信号背离，大幅压缩仓位
+        # ========== 因子C: 利润空间（价格分层逻辑）==========
+        # [逻辑] 价格位置决定风险收益比，而非绝对高低
+        # 0.50附近是翻转最剧烈区域，两端是趋势确认区
+        if current_price >= 0.50:
+            multiplier *= 0.3  # 高价区，上升空间有限
+            defense_reasons.append(f"高价区{current_price:.2f}")
+        elif current_price >= 0.45:
+            multiplier *= 0.5  # 中高价区，接近翻转点
+            defense_reasons.append(f"中高价{current_price:.2f}")
+        elif current_price >= 0.43:
+            multiplier *= 0.7  # 中性区，轻微风险
+            defense_reasons.append(f"中性区{current_price:.2f}")
+        elif current_price < 0.28:
+            multiplier *= 0.6  # 极低价，可能已过度反应
+            defense_reasons.append(f"极低价{current_price:.2f}")
+        # 0.28-0.43: 黄金区间，无惩罚（隐含1.0）
+
+        # ========== 因子D: 距离基准价格风险 ==========
+        # [逻辑] 价格越接近0.50，多空分歧越大，翻转风险越高
+        distance_from_baseline = abs(current_price - 0.50)
+        if distance_from_baseline < 0.05:
+            multiplier *= 0.7  # 非常接近基准，高不确定性
+            defense_reasons.append(f"近基准{distance_from_baseline:.2f}")
+        elif distance_from_baseline < 0.10:
+            multiplier *= 0.9  # 较近基准，轻微风险
+            defense_reasons.append(f"较近基准{distance_from_baseline:.2f}")
+
+        # ========== 因子E: CVD一致性检查 ==========
+        # [逻辑] CVD是最强单一指标，Oracle代表CVD方向
+        # 如果Oracle与本地信号背离，说明结构性与动量信号冲突，降半仓
         if oracle_score * score < 0:
-            multiplier *= 0.2  # 从0.5改为0.2（更严厉的惩罚）
+            multiplier *= 0.2
             defense_reasons.append(f"CVD背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
             print(f"[CVD一致性] Oracle({oracle_score:+.1f})与本地({score:+.1f})背离，仓位压缩至20%")
 
