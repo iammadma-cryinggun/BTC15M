@@ -2067,9 +2067,9 @@ class AutoTraderV5:
         all_long = positions.get('LONG', 0) + real_positions.get('LONG', 0)
         all_short = positions.get('SHORT', 0) + real_positions.get('SHORT', 0)
 
-        if signal['direction'] == 'LONG' and all_short > 0:
+        if signal['direction'] == 'LONG' and all_short >= 1:
             return False, f" [反向冲突] 已有 {all_short:.0f} 空头仓位，禁止同时做多！"
-        if signal['direction'] == 'SHORT' and all_long > 0:
+        if signal['direction'] == 'SHORT' and all_long >= 1:
             return False, f" [反向冲突] 已有 {all_long:.0f} 多头仓位，禁止同时做空！"
 
         #  === 总持仓额度限制（防止多笔交易累计超仓）===
