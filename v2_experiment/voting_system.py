@@ -1626,12 +1626,15 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     """
     创建投票系统实例（完整实现@jtrevorchapman的23个原始指标）
 
-    总计25个规则（25个激活）：
-    - 已实现（17个）：超短动量x3、价格动量x2、RSI、VWAP、趋势强度、CVDx2、UT Bot、Session Memory、
-                      动量加速度、MACD柱状图、EMA交叉、波动率、Delta Z-Score、交易强度
-    - 新增PM指标（4个）：CL Data Age、PM YES、Bias Score、PM Spread Dev
-    - 订单簿规则（7个）：买墙、卖墙、订单簿失衡、自然价格、自然价格绝对值、缓冲订单、PM价差
-    - 持仓规则（1个）：Positions（需要Polymarket Data API + wallet_address）
+    总计31个规则（全部激活）：
+    - 超短动量x3：30s/60s/120s 精确时间窗口
+    - 技术指标x8：Price Momentum, Price Trend, RSI, VWAP, Trend Strength, MACD, EMA, 波动率
+    - CVD指标x3：5m CVD (3.0x权重), 1m CVD, Delta Z-Score
+    - 高级指标x2：动量加速度, 交易强度
+    - PM指标x6：CL Data Age, PM YES, Bias Score, PM Spread Dev, PM Sentiment, PM Spread
+    - 趋势指标x2：UT Bot, Session Memory (Layer 1)
+    - 订单簿x7：买墙, 卖墙, OBI, 自然价格, 自然绝对值, 缓冲订单
+    - 持仓规则x1：Positions（当前暴露管理）
 
     Args:
         session_memory: SessionMemory实例（用于SessionMemoryRule）

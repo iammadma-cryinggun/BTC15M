@@ -651,9 +651,9 @@ class AutoTraderV5:
                 http_session=self.http_session
             )
             self.use_voting_system = True
-            print("[VOTING] 投票系统已启用（25个规则）")
+            print("[VOTING] 投票系统已启用（31个规则全激活）")
             print("    Layer 1: Session Memory (30场先验)")
-            print("    Layer 2: 投票规则 (技术x8 + CVDx3 + PMx4 + 订单簿x7 + Positions)")
+            print("    Layer 2: 投票规则 (超短x3 + 技术x8 + CVDx3 + 高级x2 + PMx6 + 趋势x2 + 订单簿x7 + 持仓x1)")
             print("    Layer 3: 防御哨兵 (5因子仓位管理)")
         except Exception as e:
             print(f"[WARN] 投票系统初始化失败: {e}")
@@ -1896,7 +1896,7 @@ class AutoTraderV5:
         # ==========================================
         # [VOTING] 投票系统（统一信号生成）
         # ==========================================
-        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：24个激活 + 1个占位）")
+        print(f"       [VOTING SYSTEM] 所有指标统一投票（31个规则全激活）")
 
         # 获取Polymarket订单簿数据（用于7个订单簿规则）
         orderbook = self.get_polymarket_orderbook(market)
