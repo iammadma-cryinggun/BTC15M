@@ -493,7 +493,7 @@ def create_voting_system(session_memory=None) -> VotingSystem:
     """创建投票系统实例"""
     system = VotingSystem()
 
-    # ⚡ 超短动量规则（使用币安真实数据：30s/60s/120s）
+    #  超短动量规则（使用币安真实数据：30s/60s/120s）
     system.add_rule(UltraShortMomentumRule(30, 'Momentum 30s', weight=0.8))    # 30秒精确时间窗口
     system.add_rule(UltraShortMomentumRule(60, 'Momentum 60s', weight=0.9))    # 60秒精确时间窗口
     system.add_rule(UltraShortMomentumRule(120, 'Momentum 120s', weight=1.0))  # 120秒精确时间窗口
@@ -521,20 +521,20 @@ if __name__ == "__main__":
         0.368, 0.372, 0.375, 0.378, 0.380   # 16-20 (稳定上升)
     ]
 
-    # ⚡ 模拟币安超短动量数据（真实精确时间）
+    #  模拟币安超短动量数据（真实精确时间）
     oracle = {
         'signal_score': 4.27,
         'cvd_5m': 120000,
         'cvd_1m': 45000,
         'ut_hull_trend': 'LONG',
-        # ⚡ 新增：币安超短动量（精确30s/60s/120s）- 强动量场景
+        #  新增：币安超短动量（精确30s/60s/120s）- 强动量场景
         'momentum_30s': 1.25,   # 30秒内上涨1.25%（强动量）
         'momentum_60s': 2.48,   # 60秒内上涨2.48%（强动量）
         'momentum_120s': 3.82,  # 120秒内上涨3.82%（强动量）
     }
 
     print(f"Polymarket价格历史趋势: {price_history[0]:.3f} → {price_history[-1]:.3f} ({((price_history[-1]-price_history[0])/price_history[0]*100):+.1f}%)")
-    print(f"\n⚡ 币安超短动量（真实精确时间）:")
+    print(f"\n 币安超短动量（真实精确时间）:")
     print(f"  30s动量: {oracle['momentum_30s']:+.2f}%")
     print(f"  60s动量: {oracle['momentum_60s']:+.2f}%")
     print(f"  120s动量: {oracle['momentum_120s']:+.2f}%")
