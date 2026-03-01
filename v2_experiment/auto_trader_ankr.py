@@ -1912,23 +1912,14 @@ class AutoTraderV5:
         score = 5.0 if direction == 'LONG' else -5.0
 
         print(f"\n       [VOTING RESULT] 最终方向: {direction} | 置信度: {confidence:.0%}")
-        print(f"       [VOTE] 继续执行风控检查（RSI防呆、防御层）...")
+        print(f"       [VOTE] 继续执行防御层评估...")
 
-        # 投票系统已经返回了 direction，继续执行风控检查
+        # 投票系统已经返回了 direction，直接进入防御层
         if direction:
             # ==========================================
-            #  极简风控：只保留基础RSI防呆
+            # [已删除] RSI防呆 - 交由31规则投票系统决策
+            # [已删除] UT Bot趋势锁 - 15分钟趋势对3-6分钟入场窗口无效
             # ==========================================
-            # 彻底抛弃1H/15m UT Bot趋势锁，交由防御层裁决
-            if direction == 'LONG' and rsi > 70:
-                print(f"[BLOCK] [RSI防呆] 拒绝做多！RSI={rsi:.1f}>70（超买），追高风险！")
-                return None
-            elif direction == 'SHORT' and rsi < 30:
-                print(f"[BLOCK] [RSI防呆] 拒绝做空！RSI={rsi:.1f}<30（超卖），反弹风险！")
-                return None
-
-            # ==========================================
-            # [已禁用] UT Bot趋势过滤（因3-6分钟入场窗口太短，15m趋势过时）
             # 理由：
             #   1. 15m蜡烛图含11分钟历史（4分钟剩余入场时）
             #   2. 无法反映最近1-2分钟变化
