@@ -1690,17 +1690,16 @@ class AutoTraderV5:
 
     def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float, oracle: Dict = None) -> float:
         """
-         核心防御层 (Sentinel Dampening) - 灵感来自 @jtrevorchapman 的系统
+        核心防御层 (Sentinel Dampening)
 
         评估各项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
 
-        五大防御因子：
-        1. 黄金6分钟法则 - session剩余时间
+        四大防御因子：
+        1. 时间窗口管理 - session剩余时间动态仓位调整
         2. 混沌过滤器 - 预言机报价反复穿越基准价格次数
         3. 利润空间防御 - 高价位压缩仓位
-        4. CVD一致性检查 - Oracle与本地信号背离惩罚
-        5. 距离基准价格风险 - 价格咬合度检查
-        
+        4. CVD否决权 - 混沌市场中的CVD强度检查
+
         Args:
             current_price: 当前价格
             oracle_score: Oracle 评分
@@ -2258,13 +2257,13 @@ class AutoTraderV5:
                     # 市场已过期，拒绝开仓
                     return False, f" 时间防火墙: 市场已过期({time_left:.0f}秒)，拒绝开仓"
 
-                # [时间窗口] 参考 @jtrevorchapman: 只在剩余 3-6 分钟之间开仓
-                # 早期指标不可靠，晚期风险太高
-                if time_left > 360:
-                    return False, f" [时间窗口] 指标尚未可靠，剩余{time_left:.0f}秒 > 6分钟，等待入场时机"
-
-                if time_left < 180:
-                    return False, f" 时间防火墙: 距离结算仅{time_left:.0f}秒 < 3分钟，拒绝开仓"
+                # [已移除] 3-6分钟时间窗口限制
+                # 现在通过防御层的动态仓位管理来控制不同时间段的风险
+                # ==========================================
+                # if time_left > 360:
+                #     return False, f" [时间窗口] 指标尚未可靠，剩余{time_left:.0f}秒 > 6分钟，等待入场时机"
+                # if time_left < 180:
+                #     return False, f" 时间防火墙: 距离结算仅{time_left:.0f}秒 < 3分钟，拒绝开仓"
             else:
                 return False, " 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
