@@ -81,15 +81,15 @@ CONFIG = {
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
 
-        # [策略调整] 禁用止盈止损，持有到期（参考 @jtrevorchapman）
-        # 理由：我们在3-6分钟开仓，就是赌15分钟到期结算，不应该中间退出
-        'max_stop_loss_pct': 0.80,      # 80%止损（仅极端情况保护，基本不触发）
-        'take_profit_pct': 0.90,        # 90%止盈（基本不触发，持有到期）
-        'enable_stop_loss': False,      #  禁用止盈止损：持有到期，赌结算结果
+        # [策略调整] 恢复止盈止损功能
+        # 理由：允许全时段入场后，需要止盈止损保护
+        'max_stop_loss_pct': 0.50,      # 🔴 50%止损（确认）
+        'take_profit_pct': 0.30,        # 30%止盈
+        'enable_stop_loss': True,       # ✅ 启用止盈止损
         
         # [止盈开关] 可以单独控制每种止盈机制
-        'enable_trailing_tp': False,    # 🔴 禁用追踪止盈（0.75激活，回撤5¢触发）
-        'enable_absolute_tp': False,    # 🔴 禁用绝对止盈（0.92强制平仓）
+        'enable_trailing_tp': True,     # ✅ 启用追踪止盈（0.75激活，回撤5¢触发）
+        'enable_absolute_tp': True,     # ✅ 启用绝对止盈（0.92强制平仓）
     },
 
     'signal': {
@@ -1685,7 +1685,7 @@ class AutoTraderV5:
         except Exception:
             return None
 
-    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float) -> float:
+    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float, oracle: Dict = None) -> float:
         """
          核心防御层 (Sentinel Dampening) - 灵感来自 @jtrevorchapman 的系统
 
@@ -1697,6 +1697,12 @@ class AutoTraderV5:
         3. 利润空间防御 - 高价位压缩仓位
         4. CVD一致性检查 - Oracle与本地信号背离惩罚
         5. 距离基准价格风险 - 价格咬合度检查
+        
+        Args:
+            current_price: 当前价格
+            oracle_score: Oracle 评分
+            score: 本地信号评分
+            oracle: Oracle 数据字典（包含 cvd_5m 等）
         """
         from datetime import datetime
         now = datetime.now()
@@ -1724,31 +1730,24 @@ class AutoTraderV5:
         is_nuke = abs(oracle_score) >= 6.0
 
         # ========== 因子A: 黄金时间窗口精细管理 (Time left to expiry) ==========
-        # @jtrevorchapman 发现：session剩余6分钟后指标才开始可靠
-        # 进一步优化：在3-6分钟窗口内细分仓位管理
+        # 🔴 已移除 6 分钟限制，允许全时段入场
         minutes_to_expiry = 15 - (now.minute % 15)
 
-        if minutes_to_expiry > 6:
-            if is_nuke:
-                # [ROCKET] 核弹级巨鲸掀桌子，无视时间锁！
-                print(f"[ROCKET] [防御穿透-A] 核弹级信号(Oracle={oracle_score:+.2f})！无视{minutes_to_expiry}分钟时间锁，全军出击！")
-            else:
-                print(f" [防御层-A] 拦截: 剩余{minutes_to_expiry}分钟(>6分钟)，处于无序震荡期")
-                return 0.0
-
-        # [精细仓位管理] 在黄金窗口内进一步细分
-        elif minutes_to_expiry > 5:  # 5-6分钟
-            multiplier *= 0.8  # 轻微压缩（刚进入窗口，信号尚不稳定）
+        # [精细仓位管理] 根据剩余时间调整仓位
+        if minutes_to_expiry > 10:  # 10-15 分钟
+            multiplier *= 0.9  # 轻微压缩（时间充足但信号可能变化）
             defense_reasons.append(f"早期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 精细管理: {minutes_to_expiry}分钟剩余，仓位80%（刚进入窗口）")
-
-        elif minutes_to_expiry < 2:  # < 2分钟（通常不会到达，因为can_trade已拦截）
+            print(f" [防御层-A] 早期窗口: {minutes_to_expiry}分钟剩余，仓位90%")
+        elif minutes_to_expiry > 5:  # 5-10 分钟
+            multiplier *= 1.0  # 全仓（最佳窗口）
+            print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
+        elif minutes_to_expiry > 2:  # 2-5 分钟
+            multiplier *= 1.0  # 全仓（仍可交易）
+            print(f" [防御层-A] 中期窗口: {minutes_to_expiry}分钟剩余，仓位100%")
+        else:  # < 2 分钟
             multiplier *= 0.5  # 大幅压缩（快到期，风险陡增）
             defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 精细管理: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
-
-        else:  # 2-5分钟：最佳窗口，全仓执行
-            print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
+            print(f" [防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
 
         # ========== 因子B: 混沌过滤器 + CVD否决权 ==========
         # 参考 @jtrevorchapman: "CVD是预测力最强的单一指标，在混沌市场甚至有投票否决权"
@@ -1962,7 +1961,7 @@ class AutoTraderV5:
             # ==========================================
             # 防御层包含：时间锁、混沌过滤、利润空间、核弹穿透
             # 注意：这里传递的score是方向对应的分数（+5.0/-5.0），不代表"本地分"概念
-            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score)
+            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score, oracle)
 
             # 如果防御层返回0，直接拦截
             if defense_multiplier <= 0:
