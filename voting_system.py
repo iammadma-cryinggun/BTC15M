@@ -41,36 +41,45 @@ class VotingRule:
 
 
 class UltraShortMomentumRule(VotingRule):
-    """超短动量规则（类似图片平台的30s/60s/120s）"""
+    """超短动量规则（使用币安真实数据：30s/60s/120s）"""
 
-    def __init__(self, periods: int, name: str, weight: float = 1.0):
+    def __init__(self, period_seconds: int, name: str, weight: float = 1.0):
         """
         Args:
-            periods: 周期数（3/5/10）
+            period_seconds: 时间窗口秒数（30/60/120）
             name: 规则名称
             weight: 权重
         """
         super().__init__(name, weight)
-        self.periods = periods
+        self.period_seconds = period_seconds
 
-    def evaluate(self, price_history: List[float], **kwargs) -> Optional[Dict]:
-        min_points = self.periods + 1
-        if len(price_history) < min_points:
+    def evaluate(self, oracle: Dict = None, **kwargs) -> Optional[Dict]:
+        """
+        从币安 Oracle 读取超短动量数据
+
+        Args:
+            oracle: Oracle 信号字典（包含 momentum_30s, momentum_60s, momentum_120s）
+        """
+        if not oracle:
             return None
 
-        # 计算动量
-        recent = price_history[-min_points:]
-        momentum_pct = (recent[-1] - recent[0]) / recent[0] * 100
+        # 根据时间窗口选择对应的动量字段
+        momentum_key = f'momentum_{self.period_seconds}s'
+        momentum_pct = oracle.get(momentum_key, 0.0)
+
+        # 如果币安数据不可用（0.0），返回None（不投票）
+        if abs(momentum_pct) < 0.01:
+            return None
 
         # 降低阈值（超短动量更敏感）
-        threshold = 0.3 if self.periods <= 3 else 0.5
+        threshold = 0.2  # 0.2% 就算有动量
 
         if abs(momentum_pct) < threshold:
             return None  # 动量太小，不投票
 
         direction = 'LONG' if momentum_pct > 0 else 'SHORT'
         confidence = min(abs(momentum_pct) / 3.0, 0.99)  # 超短动量更敏感
-        reason = f'{self.periods}点动量 {momentum_pct:+.2f}%'
+        reason = f'{self.period_seconds}s动量 {momentum_pct:+.2f}%'
 
         return {
             'direction': direction,
@@ -484,10 +493,10 @@ def create_voting_system(session_memory=None) -> VotingSystem:
     """创建投票系统实例"""
     system = VotingSystem()
 
-    # 超短动量规则（类似图片平台的30s/60s/120s）
-    system.add_rule(UltraShortMomentumRule(3, 'Momentum 3pt', weight=0.8))    # ~9-27秒
-    system.add_rule(UltraShortMomentumRule(5, 'Momentum 5pt', weight=0.9))    # ~15-45秒
-    system.add_rule(UltraShortMomentumRule(10, 'Momentum 10pt', weight=1.0))  # ~30-90秒
+    # ⚡ 超短动量规则（使用币安真实数据：30s/60s/120s）
+    system.add_rule(UltraShortMomentumRule(30, 'Momentum 30s', weight=0.8))    # 30秒精确时间窗口
+    system.add_rule(UltraShortMomentumRule(60, 'Momentum 60s', weight=0.9))    # 60秒精确时间窗口
+    system.add_rule(UltraShortMomentumRule(120, 'Momentum 120s', weight=1.0))  # 120秒精确时间窗口
 
     # 标准规则
     system.add_rule(PriceMomentumRule(weight=1.0))
@@ -504,24 +513,31 @@ def create_voting_system(session_memory=None) -> VotingSystem:
 
 # 测试代码
 if __name__ == "__main__":
-    # 模拟数据（更长的价格历史）
+    # 模拟数据（Polymarket 价格历史）
     price_history = [
         0.320, 0.325, 0.330, 0.335, 0.340,  # 1-5 (上升)
         0.338, 0.342, 0.345, 0.350, 0.355,  # 6-10 (继续上升)
         0.352, 0.358, 0.360, 0.365, 0.370,  # 11-15 (加速上升)
         0.368, 0.372, 0.375, 0.378, 0.380   # 16-20 (稳定上升)
     ]
+
+    # ⚡ 模拟币安超短动量数据（真实精确时间）
     oracle = {
         'signal_score': 4.27,
         'cvd_5m': 120000,
         'cvd_1m': 45000,
-        'ut_hull_trend': 'LONG'
+        'ut_hull_trend': 'LONG',
+        # ⚡ 新增：币安超短动量（精确30s/60s/120s）- 强动量场景
+        'momentum_30s': 1.25,   # 30秒内上涨1.25%（强动量）
+        'momentum_60s': 2.48,   # 60秒内上涨2.48%（强动量）
+        'momentum_120s': 3.82,  # 120秒内上涨3.82%（强动量）
     }
 
-    print(f"价格历史趋势: {price_history[0]:.3f} → {price_history[-1]:.3f} ({((price_history[-1]-price_history[0])/price_history[0]*100):+.1f}%)")
-    print(f"3点动量: {((price_history[-1]-price_history[-4])/price_history[-4]*100):+.1f}%")
-    print(f"5点动量: {((price_history[-1]-price_history[-6])/price_history[-6]*100):+.1f}%")
-    print(f"10点动量: {((price_history[-1]-price_history[-11])/price_history[-11]*100):+.1f}%")
+    print(f"Polymarket价格历史趋势: {price_history[0]:.3f} → {price_history[-1]:.3f} ({((price_history[-1]-price_history[0])/price_history[0]*100):+.1f}%)")
+    print(f"\n⚡ 币安超短动量（真实精确时间）:")
+    print(f"  30s动量: {oracle['momentum_30s']:+.2f}%")
+    print(f"  60s动量: {oracle['momentum_60s']:+.2f}%")
+    print(f"  120s动量: {oracle['momentum_120s']:+.2f}%")
 
     # 创建投票系统（不使用Session Memory，避免数据库错误）
     system = create_voting_system(session_memory=None)

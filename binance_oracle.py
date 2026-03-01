@@ -148,6 +148,12 @@ class BinanceOracle:
         self.buy_wall_history = deque(maxlen=10) # 买单墙历史（用于平滑）
         self.sell_wall_history = deque(maxlen=10) # 卖墙历史（用于平滑）
         self.last_price = 0.0                   # 最新成交价
+
+        # ⚡ 超短动量价格历史（精确时间戳，用于投票系统）
+        # 存储格式: [(timestamp, price), ...]
+        # 保留150秒数据（足够计算120s动量）
+        self.price_history = deque(maxlen=50)   # 假设每3秒一个价格点，50个点=150秒
+
         self.trade_count = 0                    # 成交笔数
         self.last_signal_score = 0.0            # 上次信号分
         self.last_write_time = 0                # 上次写文件时间
@@ -421,6 +427,54 @@ class BinanceOracle:
 
         return result
 
+    def get_ultra_short_momentum(self) -> dict:
+        """
+        计算超短动量（基于币安实时价格）
+        返回: {
+            'momentum_30s': float,  # 30秒动量（百分比）
+            'momentum_60s': float,  # 60秒动量（百分比）
+            'momentum_120s': float  # 120秒动量（百分比）
+        }
+        """
+        result = {'momentum_30s': 0.0, 'momentum_60s': 0.0, 'momentum_120s': 0.0}
+
+        if len(self.price_history) < 2:
+            return result
+
+        now = time.time()
+
+        # 计算30秒动量
+        price_30s_ago = None
+        for ts, price in reversed(self.price_history):
+            if now - ts >= 30:
+                price_30s_ago = price
+                break
+
+        if price_30s_ago:
+            result['momentum_30s'] = ((self.last_price - price_30s_ago) / price_30s_ago) * 100
+
+        # 计算60秒动量
+        price_60s_ago = None
+        for ts, price in reversed(self.price_history):
+            if now - ts >= 60:
+                price_60s_ago = price
+                break
+
+        if price_60s_ago:
+            result['momentum_60s'] = ((self.last_price - price_60s_ago) / price_60s_ago) * 100
+
+        # 计算120秒动量
+        price_120s_ago = None
+        for ts, price in reversed(self.price_history):
+            if now - ts >= 120:
+                price_120s_ago = price
+                break
+
+        if price_120s_ago:
+            result['momentum_120s'] = ((self.last_price - price_120s_ago) / price_120s_ago) * 100
+
+        return result
+
     def _write_signal(self):
         """每秒写一次信号文件供 V6 引擎读取"""
         now = time.time()
@@ -444,6 +498,9 @@ class BinanceOracle:
         # 计算高级指标（MACD和Z-Score）
         advanced = self.get_advanced_indicators()
 
+        # ⚡ 计算超短动量（基于币安实时价格）
+        ultra_short = self.get_ultra_short_momentum()
+
         signal = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'ts_unix': now,
@@ -459,6 +516,10 @@ class BinanceOracle:
             # 高级指标
             'macd_histogram': advanced['macd_histogram'],
             'delta_z_score': advanced['delta_z_score'],
+            # ⚡ 超短动量（基于币安实时价格，精确到秒）
+            'momentum_30s': round(ultra_short['momentum_30s'], 4),
+            'momentum_60s': round(ultra_short['momentum_60s'], 4),
+            'momentum_120s': round(ultra_short['momentum_120s'], 4),
             # 趋势字段
             'ut_hull_trend': ut_hull_trend if ut_hull_trend else 'NEUTRAL',
             'trend_1h': trend_1h if trend_1h else 'NEUTRAL',  # 1小时大趋势
@@ -489,9 +550,14 @@ class BinanceOracle:
                         self.last_price = price
                         self.trade_count += 1
 
+                        # ⚡ 记录价格历史（用于超短动量计算）
+                        # 为了避免deque过于频繁更新，每秒只记录一次
+                        ts = time.time()
+                        if not self.price_history or ts - self.price_history[-1][0] >= 1.0:
+                            self.price_history.append((ts, price))
+
                         # CVD：主动买入+，主动卖出-（用成交额加权）
                         delta = (qty * price) if not is_buyer_maker else -(qty * price)
-                        ts = time.time()
 
                         # 同时更新双窗口
                         self.cvd_window_short.append((ts, delta))
@@ -608,6 +674,9 @@ class BinanceOracle:
                   f"CVD(5m): {color}{self.cvd_long:+.1f}{reset} | "
                   f"MACD: {advanced['macd_histogram']:+.4f} | "
                   f"Z-Score: {advanced['delta_z_score']:+.3f} | "
+                  f"⚡Mom(30s): {ultra_short['momentum_30s']:+.2f}% | "
+                  f"⚡Mom(60s): {ultra_short['momentum_60s']:+.2f}% | "
+                  f"⚡Mom(120s): {ultra_short['momentum_120s']:+.2f}% | "
                   f"Imbalance: {imbalance*100:+.1f}% | "
                   f"UT+Hull: {ut_hull_color}{ut_hull or 'CALC'}{reset} | "
                   f"BTC: {self.last_price:.1f}")
