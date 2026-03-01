@@ -1622,18 +1622,29 @@ class AutoTraderV5:
         multiplier = 1.0
         defense_reasons = []
 
+        # 🚀 定义核弹级别（用于防御层穿透）
+        is_nuke = abs(oracle_score) >= 6.0
+
         # ========== 因子A: 黄金6分钟法则 (Time left to expiry) ==========
         # @jtrevorchapman 发现：session剩余6分钟后指标才开始可靠
         minutes_to_expiry = 15 - (now.minute % 15)
         if minutes_to_expiry > 6:
-            print(f"🛡️ [防御层-A] 拦截: 剩余{minutes_to_expiry}分钟(>6分钟)，处于无序震荡期")
-            return 0.0
+            if is_nuke:
+                # 🚀 核弹级巨鲸掀桌子，无视时间锁！
+                print(f"🚀 [防御穿透-A] 核弹级信号(Oracle={oracle_score:+.2f})！无视{minutes_to_expiry}分钟时间锁，全军出击！")
+            else:
+                print(f"🛡️ [防御层-A] 拦截: 剩余{minutes_to_expiry}分钟(>6分钟)，处于无序震荡期")
+                return 0.0
 
         # ========== 因子B: 混沌过滤器 (Choppiness Filter) ==========
         # 反复穿越5次以上说明市场极度混乱，信号不可靠
         if self.session_cross_count >= 5:
-            print(f"🛡️ [防御层-B] 拦截: 盘面反复穿越已达{self.session_cross_count}次，市场极度混乱")
-            return 0.0
+            if is_nuke:
+                # 🚀 核弹级巨鲸掀桌子，无视混沌锁！
+                print(f"🚀 [防御穿透-B] 核弹级信号(Oracle={oracle_score:+.2f})！无视{self.session_cross_count}次穿越混乱，强行突破！")
+            else:
+                print(f"🛡️ [防御层-B] 拦截: 盘面反复穿越已达{self.session_cross_count}次，市场极度混乱")
+                return 0.0
         elif self.session_cross_count >= 3:
             multiplier *= 0.5
             defense_reasons.append(f"混沌x{self.session_cross_count}")
