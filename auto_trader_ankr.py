@@ -1308,9 +1308,11 @@ class AutoTraderV5:
 
                     print(f"\n  {i}. [{t['entry_time']}] {t['side']:6s} {t['entry_token_price']:.4f}->{exit_price} {pnl_icon:8s} ${t['pnl_usd']:+.2f}")
 
-                    if t.get('oracle_score'):
-                        oracle_icon = "🔥" if abs(t['oracle_score']) >= 10 else "⚡" if abs(t['oracle_score']) >= 7 else ""
-                        print(f"     Oracle:{oracle_icon} {t['oracle_score']:+.2f} | 1H:{t['oracle_1h_trend']} 15m:{t['oracle_15m_trend']}")
+                    # sqlite3.Row 不支持 .get() 方法，直接访问并检查 None
+                    oracle_score = t['oracle_score']
+                    if oracle_score is not None:
+                        oracle_icon = "🔥" if abs(oracle_score) >= 10 else "⚡" if abs(oracle_score) >= 7 else ""
+                        print(f"     Oracle:{oracle_icon} {oracle_score:+.2f} | 1H:{t['oracle_1h_trend']} 15m:{t['oracle_15m_trend']}")
                     else:
                         print(f"     Oracle: 未保存")
 
