@@ -159,8 +159,7 @@ class SessionMemory:
                 pnl_usd,
                 status,
                 score,
-                oracle_score,
-                rsi
+                oracle_score
             FROM positions
             WHERE status = 'closed'
             ORDER BY entry_time DESC
@@ -185,7 +184,7 @@ class SessionMemory:
                     'is_long': is_long,
                     'score': row['score'] or 0.0,
                     'oracle_score': row['oracle_score'] or 0.0,
-                    'rsi': row.get('rsi', 50.0)
+                    'rsi': 50.0  # 默认中性值（数据库中没有保存rsi）
                 }
                 sessions.append(session)
 
