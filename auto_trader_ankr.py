@@ -1688,15 +1688,28 @@ class AutoTraderV5:
         else:  # 2-5分钟：最佳窗口，全仓执行
             print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
 
-        # ========== 因子B: 混沌过滤器 (Choppiness Filter) ==========
-        # 反复穿越5次以上说明市场极度混乱，信号不可靠
+        # ========== 因子B: 混沌过滤器 + CVD否决权 ==========
+        # 参考 @jtrevorchapman: "CVD是预测力最强的单一指标，在混沌市场甚至有投票否决权"
+        # 反复穿越5次以上说明市场极度混乱，此时只有CVD强烈信号才能开仓
         if self.session_cross_count >= 5:
             if is_nuke:
-                # 🚀 核弹级巨鲸掀桌子，无视混沌锁！
-                print(f"🚀 [防御穿透-B] 核弹级信号(Oracle={oracle_score:+.2f})！无视{self.session_cross_count}次穿越混乱，强行突破！")
+                # 核弹级巨鲸掀桌子，无视混沌锁！
+                print(f"[防御穿透-B] 核弹级信号(Oracle={oracle_score:+.2f})！无视{self.session_cross_count}次穿越混乱，强行突破！")
             else:
-                print(f" [防御层-B] 拦截: 盘面反复穿越已达{self.session_cross_count}次，市场极度混乱")
-                return 0.0
+                # [CVD否决权] 混沌市场：检查CVD强度
+                cvd_5m = oracle.get('cvd_5m', 0.0) if oracle else 0.0
+
+                if abs(cvd_5m) >= 150000:  # CVD强烈信号（±15万）
+                    if abs(oracle_score) >= 8.0:  # Oracle综合评分也支持
+                        print(f"[CVD否决权-A] 市场混乱(session_cross_count={self.session_cross_count})但CVD极强({cvd_5m:+.0f})，强行开仓！")
+                        # CVD否决权通过，继续评估其他因子
+                    else:
+                        print(f"[CVD否决权-B] 混乱市场且CVD强({cvd_5m:+.0f})但Oracle不够强({oracle_score:+.2f})，谨慎")
+                        multiplier *= 0.3  # 大幅压缩仓位到30%
+                        defense_reasons.append(f"混乱CVD强({cvd_5m:+.0f})")
+                else:
+                    print(f"[CVD否决权-C] 混乱市场(session_cross_count={self.session_cross_count})且CVD弱({cvd_5m:+.0f})，拒绝")
+                    return 0.0
         elif self.session_cross_count >= 3:
             multiplier *= 0.5
             defense_reasons.append(f"混沌x{self.session_cross_count}")
@@ -1731,11 +1744,13 @@ class AutoTraderV5:
                 print(f" [防御层-C] 拦截: 入场价{current_price:.2f}过低，市场一边倒，需Oracle≥5.0")
                 return 0.0
 
-        # ========== 因子D: CVD一致性检查 ==========
-        # 如果Oracle（代表CVD方向）与本地信号背离，降半仓
+        # ========== 因子D: CVD一致性检查（强化版）==========
+        # [CVD强化] 参考 @jtrevorchapman: CVD是最强指标，背离时严厉惩罚
+        # 如果Oracle（代表CVD方向）与本地信号背离，大幅压缩仓位
         if oracle_score * score < 0:
-            multiplier *= 0.5
-            defense_reasons.append(f"背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
+            multiplier *= 0.2  # 从0.5改为0.2（更严厉的惩罚）
+            defense_reasons.append(f"CVD背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
+            print(f"[CVD一致性] Oracle({oracle_score:+.1f})与本地({score:+.1f})背离，仓位压缩至20%")
 
         # ========== 因子E: 距离基准价格风险 ==========
         # 价格越接近0.50，翻转风险越大

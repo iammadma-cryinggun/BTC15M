@@ -503,8 +503,12 @@ def create_voting_system(session_memory=None) -> VotingSystem:
     system.add_rule(RSIRule(weight=1.0))
     system.add_rule(VWAPRule(weight=1.0))
     system.add_rule(TrendStrengthRule(weight=1.0))
-    system.add_rule(OracleCVDRule('5m', weight=1.2))
-    system.add_rule(OracleCVDRule('1m', weight=0.8))
+
+    # [CVD强化] 参考 @jtrevorchapman: CVD是预测力最强的单一指标
+    # 大幅提高CVD权重：从1.2x提升到3.0x（2.5倍）
+    system.add_rule(OracleCVDRule('5m', weight=3.0))  # 5分钟CVD：最强指标
+    system.add_rule(OracleCVDRule('1m', weight=1.5))  # 1分钟CVD：即时动量
+
     system.add_rule(UTBotTrendRule(weight=1.0))
     system.add_rule(SessionMemoryRule(session_memory, weight=1.0))
 
