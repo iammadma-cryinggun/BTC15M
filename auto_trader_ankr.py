@@ -1751,15 +1751,13 @@ class AutoTraderV5:
         # ========== 双核融合：读取币安先知Oracle信号 ==========
         oracle = self._read_oracle_signal()
         oracle_score = 0.0
-        trend_1h = 'NEUTRAL'
         ut_hull_trend = 'NEUTRAL'
 
         if oracle:
             oracle_score = oracle.get('signal_score', 0.0)
-            trend_1h = oracle.get('trend_1h', 'NEUTRAL')
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
 
-        print(f"       [ORACLE] 先知分:{oracle_score:+.2f} | 15m:{ut_hull_trend} | 1h:{trend_1h} | 本地分:{score:.2f}")
+        print(f"       [ORACLE] 先知分:{oracle_score:+.2f} | 15m UT Bot:{ut_hull_trend} | 本地分:{score:.2f}")
 
         # ==========================================
         # 🚨 轨道一：【核弹级巨鲸狙击模块】（完全独立VIP通道）
@@ -1775,7 +1773,7 @@ class AutoTraderV5:
         if oracle_score >= WHALE_NUCLEAR_SCORE:
             if rsi < WHALE_MAX_RSI_LONG and price < WHALE_MAX_PRICE_LONG:
                 print(f"🚨 [💥核弹巨鲸狙击] oracle={oracle_score:.1f}≥{WHALE_NUCLEAR_SCORE} | price={price:.2f}<{WHALE_MAX_PRICE_LONG} | RSI={rsi:.1f}<{WHALE_MAX_RSI_LONG}")
-                print(f"    ⚠️  无视1h趋势({trend_1h})，无视15m趋势({ut_hull_trend})，强制赌V型反转！")
+                print(f"    ⚠️  无视15m趋势({ut_hull_trend})，强制赌V型反转！")
                 return {
                     'direction': 'LONG',
                     'strategy': 'WHALE_SNIPER',
@@ -1786,7 +1784,6 @@ class AutoTraderV5:
                     'price': price,
                     'components': components,
                     'oracle_score': oracle_score,
-                    'oracle_1h_trend': trend_1h,
                     'oracle_15m_trend': ut_hull_trend,
                     'defense_multiplier': 1.0,  # 🛡️ 巨鲸狙击模式：全仓通过
                 }
@@ -1797,7 +1794,7 @@ class AutoTraderV5:
         elif oracle_score <= -WHALE_NUCLEAR_SCORE:
             if rsi > WHALE_MIN_RSI_SHORT and price > WHALE_MIN_PRICE_SHORT:
                 print(f"🚨 [💥核弹巨鲸狙击] oracle={oracle_score:.1f}≤-{WHALE_NUCLEAR_SCORE} | price={price:.2f}>{WHALE_MIN_PRICE_SHORT} | RSI={rsi:.1f}>{WHALE_MIN_RSI_SHORT}")
-                print(f"    ⚠️  无视1h趋势({trend_1h})，无视15m趋势({ut_hull_trend})，强制赌瀑布暴跌！")
+                print(f"    ⚠️  无视15m趋势({ut_hull_trend})，强制赌瀑布暴跌！")
                 return {
                     'direction': 'SHORT',
                     'strategy': 'WHALE_SNIPER',
@@ -1808,7 +1805,6 @@ class AutoTraderV5:
                     'price': price,
                     'components': components,
                     'oracle_score': oracle_score,
-                    'oracle_1h_trend': trend_1h,
                     'oracle_15m_trend': ut_hull_trend,
                     'defense_multiplier': 1.0,  # 🛡️ 巨鲸狙击模式：全仓通过
                 }
@@ -1881,7 +1877,7 @@ class AutoTraderV5:
                 return None
 
             # 所有风控通过，返回常规信号（带上防御层乘数）
-            print(f"✅ [🛡️HFT模式] {direction} 信号确认（微结构共振+防御层通过）")
+            print(f"✅ [🛡️常规模式] {direction} 信号确认（15m趋势+防御层通过）")
             return {
                 'direction': direction,
                 'strategy': 'TREND_FOLLOWING',
@@ -1892,9 +1888,8 @@ class AutoTraderV5:
                 'price': price,
                 'components': components,
                 'oracle_score': oracle_score,
-                'oracle_1h_trend': trend_1h,
                 'oracle_15m_trend': ut_hull_trend,
-                'defense_multiplier': defense_multiplier,  # 🆕 防御层乘数
+                'defense_multiplier': defense_multiplier,
             }
 
         return None
