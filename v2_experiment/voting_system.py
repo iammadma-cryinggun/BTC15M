@@ -1651,13 +1651,13 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     system.add_rule(UltraShortMomentumRule(120, 'Momentum 120s', weight=1.0))  # 120秒精确时间窗口
 
     # ==========================================
-    # 标准技术指标
+    # 标准技术指标（低权重）
     # ==========================================
     system.add_rule(PriceMomentumRule(weight=1.0))      # 价格动量（10周期）
     system.add_rule(PriceTrendRule(weight=0.8))         # 价格趋势（5周期，短期）
-    system.add_rule(RSIRule(weight=1.0))                # RSI 14
-    system.add_rule(VWAPRule(weight=1.0))               # VWAP偏离
-    system.add_rule(TrendStrengthRule(weight=1.0))      # 趋势强度（3周期）
+    system.add_rule(RSIRule(weight=0.3))                # RSI 14（降为低权重）
+    system.add_rule(VWAPRule(weight=0.3))               # VWAP偏离（降为低权重）
+    system.add_rule(TrendStrengthRule(weight=0.3))      # 趋势强度（降为低权重）
 
     # ==========================================
     # [CVD强化] 参考 @jtrevorchapman: CVD是预测力最强的单一指标
@@ -1667,44 +1667,44 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     system.add_rule(DeltaZScoreRule(weight=1.2))        # Delta Z-Score：CVD标准化
 
     # ==========================================
-    # 高级技术指标（新增7个）
+    # 高级技术指标（降为低权重）
     # ==========================================
     system.add_rule(MomentumAccelerationRule(weight=1.2))   # 动量加速度：超短动量的变化率
-    system.add_rule(MACDHistogramRule(weight=1.0))          # MACD柱状图：趋势转折点
-    system.add_rule(EMACrossRule(weight=0.9))               # EMA交叉：EMA9/21
-    system.add_rule(VolatilityRegimeRule(weight=0.8))       # 波动率制度：高/低波动
-    system.add_rule(TradingIntensityRule(weight=1.0))       # 交易强度：成交量变化
+    system.add_rule(MACDHistogramRule(weight=0.3))          # MACD柱状图：趋势转折点（降为低权重）
+    system.add_rule(EMACrossRule(weight=0.3))               # EMA交叉：EMA9/21（降为低权重）
+    system.add_rule(VolatilityRegimeRule(weight=0.3))       # 波动率制度：高/低波动（降为低权重）
+    system.add_rule(TradingIntensityRule(weight=0.3))       # 交易强度：成交量变化（降为低权重）
 
     # ==========================================
-    # 新增指标（4个）
+    # 新增指标（降为低权重）
     # ==========================================
-    system.add_rule(CLDataAgeRule(weight=0.5))         # 数据延迟（质量检查）
-    system.add_rule(PMYesRule(weight=1.0))             # PM YES价格情绪
-    system.add_rule(BiasScoreRule(weight=1.0))         # 综合偏差分数
-    system.add_rule(PMSpreadDevRule(weight=0.8))       # YES/NO价差异常
+    system.add_rule(CLDataAgeRule(weight=0.3))         # 数据延迟（降为低权重）
+    system.add_rule(PMYesRule(weight=0.3))             # PM YES价格情绪（降为低权重）
+    system.add_rule(BiasScoreRule(weight=1.0))         # 综合偏差分数（保持中等权重）
+    system.add_rule(PMSpreadDevRule(weight=0.3))       # YES/NO价差异常（降为低权重）
 
     # ==========================================
-    # 趋势指标
+    # 趋势指标（降为低权重）
     # ==========================================
-    system.add_rule(UTBotTrendRule(weight=1.0))         # UT Bot 15m趋势（已禁用硬锁，仅投票）
-    system.add_rule(SessionMemoryRule(session_memory, weight=1.0))  # Session Memory：30场先验
+    system.add_rule(UTBotTrendRule(weight=0.3))         # UT Bot 15m趋势（降为低权重）
+    system.add_rule(SessionMemoryRule(session_memory, weight=0.3))  # Session Memory（降为低权重）
 
     # ==========================================
-    # 市场微观结构规则（需要订单簿API - 已集成）
+    # 市场微观结构规则（保持OBI中等，其他降为低权重）
     # ==========================================
-    system.add_rule(BidWallsRule(weight=1.0))           # 买墙：大单支撑检测
-    system.add_rule(AskWallsRule(weight=1.0))           # 卖墙：大单阻力检测
-    system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：买卖力量对比
-    system.add_rule(NaturalPriceRule(weight=1.0))       # 自然价格：VWAP排除前2档
-    system.add_rule(NaturalAbsRule(weight=1.0))         # 自然价格绝对值：偏离度检测
-    system.add_rule(BufferTicketsRule(weight=1.0))      # 缓冲订单：市场深度检测
+    system.add_rule(BidWallsRule(weight=0.3))           # 买墙（降为低权重）
+    system.add_rule(AskWallsRule(weight=0.3))           # 卖墙（降为低权重）
+    system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：买卖力量对比（保持中等）
+    system.add_rule(NaturalPriceRule(weight=0.3))       # 自然价格（降为低权重）
+    system.add_rule(NaturalAbsRule(weight=0.3))         # 自然价格绝对值（降为低权重）
+    system.add_rule(BufferTicketsRule(weight=0.3))      # 缓冲订单（降为低权重）
 
     # ==========================================
-    # Polymarket特定规则（需要PM API - 已集成）
+    # Polymarket特定规则（降为低权重）
     # ==========================================
-    system.add_rule(PMSpreadRule(weight=1.0))           # PM价差异常：YES/NO价差检测
-    system.add_rule(PMSentimentRule(weight=1.0))        # PM情绪：历史价格情绪
-    system.add_rule(PositionsRule(weight=1.0, wallet_address=wallet_address, http_session=http_session))  # 持仓分析：当前暴露管理
+    system.add_rule(PMSpreadRule(weight=0.3))           # PM价差异常（降为低权重）
+    system.add_rule(PMSentimentRule(weight=0.3))        # PM情绪（降为低权重）
+    system.add_rule(PositionsRule(weight=0.3, wallet_address=wallet_address, http_session=http_session))  # 持仓分析（降为低权重）
 
     # 总权重：25.8x（全部25个规则已激活）
     # CVD权重占比：5.7x / 25.8x = 22.1%（仍然主导）
