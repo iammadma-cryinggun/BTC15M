@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 import sys
 
-# 🔥 强制无缓冲输出（解决容器环境日志不显示问题）
+#  强制无缓冲输出（解决容器环境日志不显示问题）
 sys.stdout.reconfigure(encoding='utf-8', line_buffering=True)
 
 import auto_trader_ankr as v5
@@ -36,12 +36,12 @@ class V6HFTEngine:
 
         self.current_market = None
         self.current_price = None
-        # 🔥 修复：分别存储bid和ask价格，避免spread被抹除
+        #  修复：分别存储bid和ask价格，避免spread被抹除
         self.yes_best_bid = None  # YES买一价（卖出时用）
         self.yes_best_ask = None  # YES卖一价（买入时用）
         self.no_best_bid = None   # NO买一价（卖出时用）
         self.no_best_ask = None   # NO卖一价（买入时用）
-        # 🔧 修复：初始化current_yes_price和current_no_price，避免AttributeError
+        #  修复：初始化current_yes_price和current_no_price，避免AttributeError
         self.current_yes_price = None
         self.current_no_price = None
         self.token_yes_id = None
@@ -54,7 +54,7 @@ class V6HFTEngine:
         self._last_indicator_update = 0
         self._reconnect_delay = 3
 
-        # 🚀 性能优化：创建更大的线程池（默认是min(32, cpu_count + 4)）
+        #  性能优化：创建更大的线程池（默认是min(32, cpu_count + 4)）
         # 提升并发能力，避免HTTP/数据库操作阻塞WebSocket
         self.executor = ThreadPoolExecutor(max_workers=50, thread_name_prefix="v6_worker")
         print(f"[PERF] 线程池已创建: max_workers=50 (提升并发能力)")
@@ -62,14 +62,14 @@ class V6HFTEngine:
         print("\n[INFO] V5组件初始化完成，WebSocket连接准备中...\n")
         self._patch_v5_order_book()
 
-        # 🚀 Fire-and-Forget：异步任务跟踪
+        #  Fire-and-Forget：异步任务跟踪
         self.pending_tasks = []  # 跟踪后台任务
         self.completed_tasks = 0  # 完成的任务计数
 
-        # 🔒 状态锁：防止并发幽灵（重复下单）
+        #  状态锁：防止并发幽灵（重复下单）
         self._processing_orders = set()  # 正在处理中的订单/动作集合
 
-        # 🛡️ GC防护：抓住后台任务，防止被垃圾回收器提前销毁
+        #  GC防护：抓住后台任务，防止被垃圾回收器提前销毁
         self._background_tasks = set()  # 存储所有活跃的后台Task
 
         # 加载动态参数（与V5保持一致）
@@ -87,7 +87,7 @@ class V6HFTEngine:
         original = self.v5.get_order_book
 
         def fast_get_order_book(token_id: str, side: str = 'BUY'):
-            # 🔥 关键修复：根据side返回正确的bid/ask价格
+            #  关键修复：根据side返回正确的bid/ask价格
             # BUY时返回ask（卖一价，买入成本），SELL时返回bid（买一价，卖出收入）
             if token_id == self.token_yes_id:
                 if side == 'BUY':
@@ -118,7 +118,7 @@ class V6HFTEngine:
     def _reset_price_cache(self):
         """切换市场时重置价格缓存"""
         self.current_price = None
-        # 🔥 修复：重置bid/ask价格
+        #  修复：重置bid/ask价格
         self.yes_best_bid = None
         self.yes_best_ask = None
         self.no_best_bid = None
@@ -128,7 +128,7 @@ class V6HFTEngine:
 
     async def _async_fire_and_forget(self, func, *args, task_name: str = "后台任务"):
         """
-        🚀 后台异步任务包装器：Fire-and-Forget 模式
+         后台异步任务包装器：Fire-and-Forget 模式
 
         在子线程中执行同步代码（如 py_clob_client SDK），
         主WebSocket循环完全不阻塞，继续监听价格更新
@@ -139,7 +139,7 @@ class V6HFTEngine:
             task_name: 任务名称（用于日志）
         """
         try:
-            # 🚀 关键：使用 asyncio.to_thread 在后台线程执行
+            #  关键：使用 asyncio.to_thread 在后台线程执行
             # 主循环立即返回，继续监听WebSocket！
             result = await asyncio.to_thread(func, *args)
 
@@ -153,7 +153,7 @@ class V6HFTEngine:
 
     async def _async_execute_trade(self, func, *args, task_name: str = "交易任务"):
         """
-        🚀 后台执行完整交易流程：下单 + 记录
+         后台执行完整交易流程：下单 + 记录
 
         Args:
             func: 下单函数
@@ -166,7 +166,7 @@ class V6HFTEngine:
             self.completed_tasks += 1
 
             if order_result:
-                print(f"       [后台捷报] 🚀 {task_name}成功: {order_result.get('orderId', 'N/A')[:8]}")
+                print(f"       [后台捷报]  {task_name}成功: {order_result.get('orderId', 'N/A')[:8]}")
 
                 # 步骤2：后台记录交易（不阻塞主循环）
                 market = args[0]  # self.current_market
@@ -178,20 +178,20 @@ class V6HFTEngine:
                 )
                 print(f"       [后台捷报] [OK] 交易记录已保存")
             else:
-                print(f"       [后台警报] ⚠️  {task_name}失败: 返回空结果")
+                print(f"       [后台警报] ⚠  {task_name}失败: 返回空结果")
 
         except Exception as e:
             print(f"       [后台警报] ❌ {task_name}异常: {str(e)[:150]}")
 
     async def fetch_market_info_via_rest(self, force_next_window=False):
         # 尝试当前窗口，过期则尝试下一个
-        # 🔥 修复：force_next_window=True 时跳过当前窗口，直接使用下一个（避免死循环）
+        #  修复：force_next_window=True 时跳过当前窗口，直接使用下一个（避免死循环）
         now = int(datetime.now(timezone.utc).timestamp())
         aligned = (now // 900) * 900
 
         # 如果强制使用下一个窗口，从 offset=900 开始
         if force_next_window:
-            offsets = [900]  # 🔥 跳过当前窗口，只尝试下一个
+            offsets = [900]  #  跳过当前窗口，只尝试下一个
         else:
             offsets = [0, 900]  # 正常：先尝试当前窗口，再尝试下一个
         for offset in offsets:
@@ -265,7 +265,7 @@ class V6HFTEngine:
         2. list - 订单簿快照格式
         """
         try:
-            # 🔍 调试：打印前5条原始消息的完整结构
+            #  调试：打印前5条原始消息的完整结构
             if self.ws_message_count <= 5:
                 data_str = json.dumps(data, ensure_ascii=False)[:400] if isinstance(data, (dict, list)) else str(data)
                 print(f"[DEBUG] 第{self.ws_message_count}条消息: {data_str}")
@@ -306,7 +306,7 @@ class V6HFTEngine:
                         if 0.02 <= token_price <= 0.98:
                             self.current_no_price = token_price
 
-                # 🚨 修复二：指标更新间隔从1秒改为30秒，避免时间轴坍缩
+                #  修复二：指标更新间隔从1秒改为30秒，避免时间轴坍缩
                 now = time.time()
                 if now - self._last_indicator_update >= 30.0 and self.current_yes_price:
                     self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
@@ -322,7 +322,7 @@ class V6HFTEngine:
             asks = data.get("asks", [])
             if not bids or not asks:
                 return
-            # 🔥 关键修复：必须用min/max，不能假设列表已排序
+            #  关键修复：必须用min/max，不能假设列表已排序
             # bids[0]可能不是最高价，asks[0]可能不是最低价
             best_bid = max(float(bid['price']) for bid in bids)   # 买一 = 最高买价
             best_ask = min(float(ask['price']) for ask in asks)   # 卖一 = 最低卖价
@@ -337,7 +337,7 @@ class V6HFTEngine:
                 self.no_best_bid = best_bid
                 self.no_best_ask = best_ask
                 self.current_no_price = mid_price
-            # 🚨 修复二：指标更新间隔从1秒改为30秒
+            #  修复二：指标更新间隔从1秒改为30秒
             now = time.time()
             if now - self._last_indicator_update >= 30.0 and self.current_yes_price:
                 self.v5.update_indicators(self.current_yes_price, self.current_yes_price, self.current_yes_price)
@@ -370,7 +370,7 @@ class V6HFTEngine:
                     best_ask = min(float(ask['price']) for ask in asks)
                     mid_price = (best_bid + best_ask) / 2
 
-            # 🚨 致命修复一：处理简单price字段（WebSocket type="market"的主要格式）
+            #  致命修复一：处理简单price字段（WebSocket type="market"的主要格式）
             elif "price" in item:
                 price_val = float(item["price"])
                 mid_price = price_val
@@ -395,7 +395,7 @@ class V6HFTEngine:
                     if best_ask: self.no_best_ask = best_ask
                     self.current_no_price = mid_price
 
-            # 🚨 致命修复二：指标时间轴坍缩问题！
+            #  致命修复二：指标时间轴坍缩问题！
             # 从 1.0 秒改为 30.0 秒。让历史K线真正积累动能，激活 Oracle 融合放大器！
             now = time.time()
             if now - self._last_indicator_update >= 30.0 and self.current_yes_price:
@@ -441,18 +441,18 @@ class V6HFTEngine:
             if can_trade:
                 print(f"[TRADE] 风控通过: {reason}")
 
-                # 🔒 状态锁：防止同一市场重复下单
+                #  状态锁：防止同一市场重复下单
                 action_key = f"trade_{self.current_market.get('slug', 'unknown')}"
 
                 if action_key in self._processing_orders:
-                    print(f"[LOCK] ⚠️  该市场正在处理中，跳过重复下单: {action_key}")
+                    print(f"[LOCK] ⚠  该市场正在处理中，跳过重复下单: {action_key}")
                 else:
-                    print(f"[TRADE] 🚀 发射后台下单任务（0延迟）...")
+                    print(f"[TRADE]  发射后台下单任务（0延迟）...")
 
-                    # 🔒 加锁：标记正在处理
+                    #  加锁：标记正在处理
                     self._processing_orders.add(action_key)
 
-                    # 🚀 关键优化：Fire-and-Forget 模式 + 状态锁
+                    #  关键优化：Fire-and-Forget 模式 + 状态锁
                     async def task_with_unlock():
                         try:
                             await self._async_execute_trade(
@@ -460,12 +460,12 @@ class V6HFTEngine:
                                 task_name="下单"
                             )
                         finally:
-                            # 🔒 解锁：无论成功失败都释放锁
+                            #  解锁：无论成功失败都释放锁
                             self._processing_orders.discard(action_key)
 
                     task = asyncio.create_task(task_with_unlock())
 
-                    # 🛡️ GC防护：抓住任务，防止被提前回收
+                    #  GC防护：抓住任务，防止被提前回收
                     self._background_tasks.add(task)
                     task.add_done_callback(self._background_tasks.discard)
 
@@ -480,7 +480,7 @@ class V6HFTEngine:
 
             else:
                 print(f"[BLOCK] 风控拦截: {reason}")
-                # 🚀 Fire-and-Forget：异步记录学习
+                #  Fire-and-Forget：异步记录学习
                 action_key = "record_learning"
                 if action_key not in self._processing_orders:
                     self._processing_orders.add(action_key)
@@ -495,7 +495,7 @@ class V6HFTEngine:
                         finally:
                             self._processing_orders.discard(action_key)
 
-                    # 🛡️ GC防护：抓住任务，防止被提前回收
+                    #  GC防护：抓住任务，防止被提前回收
                     task = asyncio.create_task(learning_task_with_unlock())
                     self._background_tasks.add(task)
                     task.add_done_callback(self._background_tasks.discard)
@@ -503,7 +503,7 @@ class V6HFTEngine:
     async def check_positions(self):
         """检查持仓止盈止损（复用V5逻辑）- 异步模式"""
         if self.current_price:
-            # 🔒 状态锁：防止持仓检查重复执行
+            #  状态锁：防止持仓检查重复执行
             action_key = "check_positions"
 
             if action_key in self._processing_orders:
@@ -512,7 +512,7 @@ class V6HFTEngine:
 
             self._processing_orders.add(action_key)
 
-            # 🚀 Fire-and-Forget：不阻塞WebSocket
+            #  Fire-and-Forget：不阻塞WebSocket
             async def positions_task_with_unlock():
                 try:
                     await self._async_fire_and_forget(
@@ -522,14 +522,14 @@ class V6HFTEngine:
                 finally:
                     self._processing_orders.discard(action_key)
 
-            # 🛡️ GC防护：抓住任务，防止被提前回收
+            #  GC防护：抓住任务，防止被提前回收
             task = asyncio.create_task(positions_task_with_unlock())
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
 
     async def verify_predictions(self):
         """验证待验证的预测（修复：只调用一次，避免重复验证）- 异步模式"""
-        # 🔒 状态锁：防止预测验证重复执行
+        #  状态锁：防止预测验证重复执行
         action_key = "verify_predictions"
 
         if action_key in self._processing_orders:
@@ -537,7 +537,7 @@ class V6HFTEngine:
 
         self._processing_orders.add(action_key)
 
-        # 🚀 Fire-and-Forget：不阻塞WebSocket
+        #  Fire-and-Forget：不阻塞WebSocket
         async def verify_task_with_unlock():
             try:
                 await self._async_fire_and_forget(
@@ -547,14 +547,14 @@ class V6HFTEngine:
             finally:
                 self._processing_orders.discard(action_key)
 
-        # 🛡️ GC防护：抓住任务，防止被提前回收
+        #  GC防护：抓住任务，防止被提前回收
         task = asyncio.create_task(verify_task_with_unlock())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
 
     async def auto_adjust(self):
         """定期自动调整参数（复用V5逻辑）- 异步模式"""
-        # 🔒 状态锁：防止参数调整重复执行
+        #  状态锁：防止参数调整重复执行
         action_key = "auto_adjust"
 
         if action_key in self._processing_orders:
@@ -562,7 +562,7 @@ class V6HFTEngine:
 
         self._processing_orders.add(action_key)
 
-        # 🚀 Fire-and-Forget：不阻塞WebSocket
+        #  Fire-and-Forget：不阻塞WebSocket
         async def adjust_task_with_unlock():
             try:
                 await self._async_fire_and_forget(
@@ -572,7 +572,7 @@ class V6HFTEngine:
             finally:
                 self._processing_orders.discard(action_key)
 
-        # 🛡️ GC防护：抓住任务，防止被提前回收
+        #  GC防护：抓住任务，防止被提前回收
         task = asyncio.create_task(adjust_task_with_unlock())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -580,7 +580,7 @@ class V6HFTEngine:
     async def print_trading_analysis(self):
         """输出交易分析（调用V5的方法）- 异步模式"""
         print("[V6] 开始调用交易分析...")
-        # 🔒 状态锁：防止分析重复执行
+        #  状态锁：防止分析重复执行
         action_key = "print_trading_analysis"
 
         if action_key in self._processing_orders:
@@ -588,7 +588,7 @@ class V6HFTEngine:
 
         self._processing_orders.add(action_key)
 
-        # 🚀 Fire-and-Forget：不阻塞WebSocket
+        #  Fire-and-Forget：不阻塞WebSocket
         async def analysis_task_with_unlock():
             try:
                 await self._async_fire_and_forget(
@@ -598,7 +598,7 @@ class V6HFTEngine:
             finally:
                 self._processing_orders.discard(action_key)
 
-        # 🛡️ GC防护：抓住任务，防止被提前回收
+        #  GC防护：抓住任务，防止被提前回收
         task = asyncio.create_task(analysis_task_with_unlock())
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -607,7 +607,7 @@ class V6HFTEngine:
         """WebSocket主循环"""
         wss_uri = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-        # 🔥 标记：是否需要强制切换到下一个窗口（避免市场即将到期时的死循环）
+        #  标记：是否需要强制切换到下一个窗口（避免市场即将到期时的死循环）
         force_next_window = False
 
         while True:
@@ -651,9 +651,9 @@ class V6HFTEngine:
                     last_trade_check = time.time()
                     last_adjust_check = time.time()
                     last_cleanup_check = time.time()
-                    last_analysis_check = 0  # 🔥 启动时立即触发一次交易分析
+                    last_analysis_check = 0  #  启动时立即触发一次交易分析
 
-                    # 🔥 启动时立即输出交易分析
+                    #  启动时立即输出交易分析
                     print("[ANALYSIS] 启动时输出交易分析...")
                     await self.print_trading_analysis()
                     last_analysis_check = time.time()
@@ -711,13 +711,13 @@ class V6HFTEngine:
 
                         # 每5分钟清理过期持仓
                         if now - last_cleanup_check >= 300:
-                            # 🔒 状态锁：防止清理任务重复执行
+                            #  状态锁：防止清理任务重复执行
                             action_key = "cleanup_stale_positions"
 
                             if action_key not in self._processing_orders:
                                 self._processing_orders.add(action_key)
 
-                                # 🚀 Fire-and-Forget：异步清理，不阻塞WebSocket
+                                #  Fire-and-Forget：异步清理，不阻塞WebSocket
                                 async def cleanup_task_with_unlock():
                                     try:
                                         await self._async_fire_and_forget(
@@ -727,7 +727,7 @@ class V6HFTEngine:
                                     finally:
                                         self._processing_orders.discard(action_key)
 
-                                # 🛡️ GC防护：抓住任务，防止被提前回收
+                                #  GC防护：抓住任务，防止被提前回收
                                 task = asyncio.create_task(cleanup_task_with_unlock())
                                 self._background_tasks.add(task)
                                 task.add_done_callback(self._background_tasks.discard)
@@ -737,17 +737,17 @@ class V6HFTEngine:
                         # 检查是否需要切换市场
                         if self.market_end_time:
                             time_left = (self.market_end_time - datetime.now(timezone.utc)).total_seconds()
-                            # 🔥 修复：只在剩余时间>0且<200秒时切换，避免已过期市场循环
+                            #  修复：只在剩余时间>0且<200秒时切换，避免已过期市场循环
                             if 0 < time_left < 200:
                                 print(f"[SWITCH] 市场即将到期({time_left:.0f}秒)，切换到下一个15分钟窗口...")
                                 self._reset_price_cache()
-                                force_next_window = True  # 🔥 标记：强制使用下一个窗口
+                                force_next_window = True  #  标记：强制使用下一个窗口
                                 break
                             elif time_left <= 0:
                                 # 市场已过期，强制重新获取市场
                                 print(f"[SWITCH] 市场已过期({time_left:.0f}秒)，强制重新获取...")
                                 self._reset_price_cache()
-                                force_next_window = True  # 🔥 标记：强制使用下一个窗口
+                                force_next_window = True  #  标记：强制使用下一个窗口
                                 break
                         else:
                             # market_end_time 解析失败，用slug时间戳判断
@@ -755,17 +755,17 @@ class V6HFTEngine:
                                 try:
                                     ts = int(self.current_slug.split('-')[-1])
                                     time_left = ts + 900 - int(datetime.now(timezone.utc).timestamp())
-                                    # 🔥 修复：只在剩余时间>0且<200秒时切换
+                                    #  修复：只在剩余时间>0且<200秒时切换
                                     if 0 < time_left < 200:
                                         print(f"[SWITCH] 市场即将到期(slug判断，剩余{time_left:.0f}秒)，切换...")
                                         self._reset_price_cache()
-                                        force_next_window = True  # 🔥 标记：强制使用下一个窗口
+                                        force_next_window = True  #  标记：强制使用下一个窗口
                                         break
                                     elif time_left <= 0:
                                         # 市场已过期，强制重新获取市场
                                         print(f"[SWITCH] 市场已过期(slug判断，{time_left:.0f}秒)，强制重新获取...")
                                         self._reset_price_cache()
-                                        force_next_window = True  # 🔥 标记：强制使用下一个窗口
+                                        force_next_window = True  #  标记：强制使用下一个窗口
                                         break
                                 except:
                                     pass
@@ -791,7 +791,7 @@ class V6HFTEngine:
             print(f"  总交易: {self.v5.stats['total_trades']}")
             print("=" * 70)
         finally:
-            # 🚀 性能优化：关闭线程池，释放资源
+            #  性能优化：关闭线程池，释放资源
             print("[PERF] 正在关闭线程池...")
             self.executor.shutdown(wait=True, cancel_futures=False)
             print("[PERF] 线程池已关闭")

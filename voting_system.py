@@ -459,7 +459,7 @@ class VotingSystem:
         # 打印投票结果
         print(f"\n       [VOTING] 规则投票 ({len(votes)}个规则参与):")
         for i, vote in enumerate(votes, 1):
-            icon = "🟢" if vote['direction'] == 'LONG' else "🔴"
+            icon = "" if vote['direction'] == 'LONG' else ""
             print(f"         {i}. {icon} {vote['rule_name']:15s}: {vote['direction']:4s} {vote['confidence']:>6.0%} - {vote['reason']}")
 
         # 聚合投票

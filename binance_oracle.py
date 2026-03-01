@@ -29,14 +29,14 @@ PROXY = os.getenv('HTTP_PROXY', os.getenv('HTTPS_PROXY', ''))
 SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_signal.json')
 
 # CVD滚动窗口（秒）
-# 🎯 双窗口系统：1分钟（即时）+ 5分钟（趋势确认）
+#  双窗口系统：1分钟（即时）+ 5分钟（趋势确认）
 # 理由：匹配专业平台配置，平衡速度和稳定性
 # 参考：图片平台显示CVD 1m: -$178.1K, CVD 5m: +$268.4K
 CVD_WINDOW_SHORT = 60   # 1分钟即时窗口（捕捉瞬时资金流）
 CVD_WINDOW_LONG = 300   # 5分钟趋势窗口（确认持续方向）
 
 # UT Bot + Hull 参数（默认值）- 硬编码默认值，可被 oracle_params.json 覆盖
-UT_BOT_KEY_VALUE = 1.5  # 🎯 保守稳健：需要明确趋势才触发（避免假信号）
+UT_BOT_KEY_VALUE = 1.5  #  保守稳健：需要明确趋势才触发（避免假信号）
 UT_BOT_ATR_PERIOD = 10  # ATR周期
 HULL_LENGTH = 20        # Hull MA周期（过去5小时）
 
@@ -245,7 +245,7 @@ class BinanceOracle:
 
     def _calc_signal_score(self) -> float:
         """
-        🎯 双窗口融合版：即时性 + 稳定性
+         双窗口融合版：即时性 + 稳定性
 
         核心理念：
         - 1分钟窗口：捕捉瞬时资金流变化（快速响应）
@@ -274,20 +274,20 @@ class BinanceOracle:
         imbalance = 0.0
         if total_wall > 0:
             imbalance = (avg_buy_wall - avg_sell_wall) / total_wall
-            wall_score = imbalance * 3.0  # ⚠️ 从 5.0 降到 3.0，降低挂单权重
+            wall_score = imbalance * 3.0  # ⚠ 从 5.0 降到 3.0，降低挂单权重
             score += wall_score
 
         # ==========================================
-        # 💥 3. 终极抢跑特权 (保留，但必须极度极端)
+        #  3. 终极抢跑特权 (保留，但必须极度极端)
         # ==========================================
 
         # 绝杀：必须挂单极度倾斜，且真金白银已经开始吃货
         # 使用5分钟窗口的CVD进行判断（更可靠）
         if imbalance > 0.85 and self.cvd_long > 50000:
-            print(f"       [🚀 NUCLEAR SIGNAL] 托盘如山+真金爆破 (imbalance={imbalance:.2f}, cvd_5m={self.cvd_long/1000:.1f}K)，强制做多！")
+            print(f"       [ NUCLEAR SIGNAL] 托盘如山+真金爆破 (imbalance={imbalance:.2f}, cvd_5m={self.cvd_long/1000:.1f}K)，强制做多！")
             return 10.0
         elif imbalance < -0.85 and self.cvd_long < -50000:
-            print(f"       [☄️ NUCLEAR SIGNAL] 压盘如山+真金砸盘 (imbalance={imbalance:.2f}, cvd_5m={abs(self.cvd_long)/1000:.1f}K)，强制做空！")
+            print(f"       [☄ NUCLEAR SIGNAL] 压盘如山+真金砸盘 (imbalance={imbalance:.2f}, cvd_5m={abs(self.cvd_long)/1000:.1f}K)，强制做空！")
             return -10.0
 
         return round(max(-10.0, min(10.0, score)), 3)
@@ -615,7 +615,7 @@ class BinanceOracle:
                         kline_close = float(kline['c'])
                         kline_volume = float(kline['v'])
 
-                        # 🔥 关键修复：实时更新未闭合的K线，避免14分钟滞后
+                        #  关键修复：实时更新未闭合的K线，避免14分钟滞后
                         if not self.klines_data:
                             # 第一次添加K线
                             self.add_kline_with_closed(kline_timestamp, kline_open, kline_high, kline_low, kline_close, kline_volume, is_closed)
