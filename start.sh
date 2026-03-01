@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Zeabur双核架构启动脚本（轻量级版）
-同时启动 binance_oracle.py 和 v6_hft_engine.py
+Zeabur v2_experiment 启动脚本
+同时启动 binance_oracle.py 和 v2_experiment/auto_trader_ankr.py
 """
 import os
 import sys
@@ -9,7 +9,8 @@ import subprocess
 import time
 
 print("=" * 70)
-print("  BTC 15min 轻量级极速版 - 双核架构启动中")
+print("  BTC 15min - v2_experiment 版本启动中")
+print("  特性: 全时段入场 | 止盈止损 | 25规则全激活")
 print("=" * 70)
 print()
 
@@ -18,8 +19,8 @@ if not os.path.exists('binance_oracle.py'):
     print("[ERROR] binance_oracle.py not found!")
     sys.exit(1)
 
-if not os.path.exists('v6_hft_engine.py'):
-    print("[ERROR] v6_hft_engine.py not found!")
+if not os.path.exists('v2_experiment/auto_trader_ankr.py'):
+    print("[ERROR] v2_experiment/auto_trader_ankr.py not found!")
     sys.exit(1)
 
 # 清理可能存在的旧oracle.log
@@ -64,7 +65,7 @@ else:
     print("[WARN] oracle_signal.json 尚未生成（可能正在初始化）")
 
 print()
-print("[2/2] 启动V6高频引擎（前台）...")
+print("[2/2] 启动 v2_experiment 交易引擎（前台）...")
 print("=" * 70)
 print()
 
@@ -88,9 +89,11 @@ import signal
 signal.signal(signal.SIGINT, cleanup)
 signal.signal(signal.SIGTERM, cleanup)
 
-# 启动V6（前台运行）
+# 启动 v2_experiment（前台运行）
 try:
-    process = subprocess.Popen([sys.executable, 'v6_hft_engine.py'])
+    # 切换到 v2_experiment 目录并启动
+    os.chdir('v2_experiment')
+    process = subprocess.Popen([sys.executable, 'auto_trader_ankr.py'])
     process.wait()
 except KeyboardInterrupt:
     cleanup()
