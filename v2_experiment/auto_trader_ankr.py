@@ -81,11 +81,15 @@ CONFIG = {
         'same_direction_cooldown_sec': 60,  # 同市场同方向最小间隔秒数
         'max_trades_per_window': 999,     # 每个15分钟窗口最多开单总数（已放宽，仅最后3分钟限制）
 
-        # [策略调整] 禁用止盈止损，持有到期（参考 @jtrevorchapman）
-        # 理由：我们在3-6分钟开仓，就是赌15分钟到期结算，不应该中间退出
-        'max_stop_loss_pct': 0.80,      # 80%止损（仅极端情况保护，基本不触发）
-        'take_profit_pct': 0.90,        # 90%止盈（基本不触发，持有到期）
-        'enable_stop_loss': False,      #  禁用止盈止损：持有到期，赌结算结果
+        # [策略调整] 恢复止盈止损功能
+        # 理由：允许全时段入场后，需要止盈止损保护
+        'max_stop_loss_pct': 0.50,      # 🔴 50%止损（确认）
+        'take_profit_pct': 0.30,        # 30%止盈
+        'enable_stop_loss': True,       # ✅ 启用止盈止损
+        
+        # [止盈开关] 可以单独控制每种止盈机制
+        'enable_trailing_tp': True,     # ✅ 启用追踪止盈（0.75激活，回撤5¢触发）
+        'enable_absolute_tp': True,     # ✅ 启用绝对止盈（0.92强制平仓）
     },
 
     'signal': {
@@ -570,13 +574,14 @@ class V5SignalScorer:
 class AutoTraderV5:
     def __init__(self):
         # --- 强制使用网页版代理钱包 ---
-        wallet_address = "0xd5d037390c6216CCFa17DFF7148549B9C2399BD3" 
+        wallet_address = "0xd5d037390c6216CCFa17DFF7148549B9C2399BD3"
         CONFIG['wallet_address'] = wallet_address
 
         print("=" * 70)
-        print("V5 Auto Trading - WITH REAL BALANCE")
+        print("V5 Auto Trading - v2_experiment 版本")
         print("=" * 70)
         print(f"Wallet: {wallet_address}")
+        print(f"特性: 全时段入场 | 止盈止损 | 25规则全激活")
         print()
 
         # Fetch REAL balance
@@ -586,14 +591,14 @@ class AutoTraderV5:
         # Position manager with REAL balance
         self.position_mgr = PositionManager(usdc)
 
-        print("[BALANCE] Trading Configuration:")
-        print(f"  REAL Balance: {usdc:.2f} USDC.e")
-        print(f"  Available: {usdc - CONFIG['risk']['reserve_usdc']:.2f} USDC")
-        print(f"  Reserve: {CONFIG['risk']['reserve_usdc']:.2f} USDC")
-        print(f"  Min Position: {CONFIG['risk']['min_position_usdc']:.2f} USDC (Polymarket requirement)")
-        print(f"  Max Position: {usdc * CONFIG['risk']['max_position_pct']:.2f} USDC (10%)")
-        print(f"  Max Daily Loss: {self.position_mgr.get_max_daily_loss():.2f} USDC (20%)")
-        print(f"  Estimated Trades: {int((usdc - CONFIG['risk']['reserve_usdc']) / 2)} trades")
+        print("[BALANCE] 交易配置:")
+        print(f"  余额: {usdc:.2f} USDC.e")
+        print(f"  可用: {usdc - CONFIG['risk']['reserve_usdc']:.2f} USDC")
+        print(f"  保留: {CONFIG['risk']['reserve_usdc']:.2f} USDC")
+        print(f"  单笔最小: {CONFIG['risk']['min_position_usdc']:.2f} USDC")
+        print(f"  单笔最大: {usdc * CONFIG['risk']['max_position_pct']:.2f} USDC ({CONFIG['risk']['max_position_pct']*100:.0%})")
+        print(f"  日最大亏损: {self.position_mgr.get_max_daily_loss():.2f} USDC")
+        print(f"  预计交易次数: {int((usdc - CONFIG['risk']['reserve_usdc']) / 2)} 笔")
         print()
 
         # Telegram 通知
@@ -619,20 +624,7 @@ class AutoTraderV5:
             print(f"[WARN] Session Memory初始化失败: {e}")
             self.session_memory = None
 
-        # [VOTING] 投票系统（实验性，替换原评分系统）
-        try:
-            from voting_system import create_voting_system
-            self.voting_system = create_voting_system(self.session_memory)
-            self.use_voting_system = True  # 开关：True使用投票，False使用原系统
-            print("[VOTING] 投票系统已启用（9个规则 + 超短动量）")
-            print("    规则: Momentum 30s/60s/120s, Price, RSI, VWAP, Trend, Oracle CVD, UT Bot, Memory")
-        except Exception as e:
-            print(f"[WARN] 投票系统初始化失败: {e}")
-            self.voting_system = None
-            self.use_voting_system = False
-
-
-        # [ROCKET] HTTP Session池（复用TCP连接，提速3-5倍）
+        # [ROCKET] HTTP Session池（复用TCP连接，提速3-5倍）- 移到前面供PositionsRule使用
         self.http_session = requests.Session()
         # 配置连接池
         from requests.adapters import HTTPAdapter
@@ -649,6 +641,24 @@ class AutoTraderV5:
         )
         self.http_session.mount("http://", adapter)
         self.http_session.mount("https://", adapter)
+
+        # [VOTING] 投票系统（三层决策架构）
+        try:
+            from voting_system import create_voting_system
+            self.voting_system = create_voting_system(
+                session_memory=self.session_memory,
+                wallet_address=CONFIG.get('wallet_address'),
+                http_session=self.http_session
+            )
+            self.use_voting_system = True
+            print("[VOTING] 投票系统已启用（25个规则）")
+            print("    Layer 1: Session Memory (30场先验)")
+            print("    Layer 2: 投票规则 (技术x8 + CVDx3 + PMx4 + 订单簿x7 + Positions)")
+            print("    Layer 3: 防御哨兵 (5因子仓位管理)")
+        except Exception as e:
+            print(f"[WARN] 投票系统初始化失败: {e}")
+            self.voting_system = None
+            self.use_voting_system = False
 
         # CLOB client
         self.client = None
@@ -1681,18 +1691,23 @@ class AutoTraderV5:
         except Exception:
             return None
 
-    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float) -> float:
+    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float, oracle: Dict = None) -> float:
         """
-         核心防御层 (Sentinel Dampening) - 灵感来自 @jtrevorchapman 的系统
+        核心防御层 (Sentinel Dampening) - v2_experiment版本
 
         评估各项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
 
-        五大防御因子：
-        1. 黄金6分钟法则 - session剩余时间
+        四大防御因子（v2版本）：
+        1. 时间窗口管理 - 全时段入场 + 动态仓位调整（已移除6分钟限制）
         2. 混沌过滤器 - 预言机报价反复穿越基准价格次数
-        3. 利润空间防御 - 高价位压缩仓位
-        4. CVD一致性检查 - Oracle与本地信号背离惩罚
-        5. 距离基准价格风险 - 价格咬合度检查
+        3. 利润空间防御 - 基于实盘数据的价格区间分层
+        4. CVD否决权 - 混沌市场中的CVD强度检查
+
+        Args:
+            current_price: 当前价格
+            oracle_score: Oracle 评分
+            score: 本地信号评分
+            oracle: Oracle 数据字典（包含 cvd_5m 等）
         """
         from datetime import datetime
         now = datetime.now()
@@ -1720,31 +1735,24 @@ class AutoTraderV5:
         is_nuke = abs(oracle_score) >= 6.0
 
         # ========== 因子A: 黄金时间窗口精细管理 (Time left to expiry) ==========
-        # @jtrevorchapman 发现：session剩余6分钟后指标才开始可靠
-        # 进一步优化：在3-6分钟窗口内细分仓位管理
+        # 🔴 已移除 6 分钟限制，允许全时段入场
         minutes_to_expiry = 15 - (now.minute % 15)
 
-        if minutes_to_expiry > 6:
-            if is_nuke:
-                # [ROCKET] 核弹级巨鲸掀桌子，无视时间锁！
-                print(f"[ROCKET] [防御穿透-A] 核弹级信号(Oracle={oracle_score:+.2f})！无视{minutes_to_expiry}分钟时间锁，全军出击！")
-            else:
-                print(f" [防御层-A] 拦截: 剩余{minutes_to_expiry}分钟(>6分钟)，处于无序震荡期")
-                return 0.0
-
-        # [精细仓位管理] 在黄金窗口内进一步细分
-        elif minutes_to_expiry > 5:  # 5-6分钟
-            multiplier *= 0.8  # 轻微压缩（刚进入窗口，信号尚不稳定）
+        # [精细仓位管理] 根据剩余时间调整仓位
+        if minutes_to_expiry > 10:  # 10-15 分钟
+            multiplier *= 0.9  # 轻微压缩（时间充足但信号可能变化）
             defense_reasons.append(f"早期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 精细管理: {minutes_to_expiry}分钟剩余，仓位80%（刚进入窗口）")
-
-        elif minutes_to_expiry < 2:  # < 2分钟（通常不会到达，因为can_trade已拦截）
+            print(f" [防御层-A] 早期窗口: {minutes_to_expiry}分钟剩余，仓位90%")
+        elif minutes_to_expiry > 5:  # 5-10 分钟
+            multiplier *= 1.0  # 全仓（最佳窗口）
+            print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
+        elif minutes_to_expiry > 2:  # 2-5 分钟
+            multiplier *= 1.0  # 全仓（仍可交易）
+            print(f" [防御层-A] 中期窗口: {minutes_to_expiry}分钟剩余，仓位100%")
+        else:  # < 2 分钟
             multiplier *= 0.5  # 大幅压缩（快到期，风险陡增）
             defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 精细管理: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
-
-        else:  # 2-5分钟：最佳窗口，全仓执行
-            print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
+            print(f" [防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
 
         # ========== 因子B: 混沌过滤器 + CVD否决权 ==========
         # 参考 @jtrevorchapman: "CVD是预测力最强的单一指标，在混沌市场甚至有投票否决权"
@@ -1888,7 +1896,10 @@ class AutoTraderV5:
         # ==========================================
         # [VOTING] 投票系统（统一信号生成）
         # ==========================================
-        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：18个已激活 + 7个占位）")
+        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：24个激活 + 1个占位）")
+
+        # 获取Polymarket订单簿数据（用于7个订单簿规则）
+        orderbook = self.get_polymarket_orderbook(market)
 
         # 收集投票（所有指标平等输入）
         vote_result = self.voting_system.decide(
@@ -1898,7 +1909,8 @@ class AutoTraderV5:
             rsi=rsi,
             vwap=vwap,
             price_history=price_hist,
-            oracle=oracle
+            oracle=oracle,
+            orderbook=orderbook
         )
 
         if not vote_result or not vote_result.get('passed_gate', False):
@@ -1958,7 +1970,7 @@ class AutoTraderV5:
             # ==========================================
             # 防御层包含：时间锁、混沌过滤、利润空间、核弹穿透
             # 注意：这里传递的score是方向对应的分数（+5.0/-5.0），不代表"本地分"概念
-            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score)
+            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score, oracle)
 
             # 如果防御层返回0，直接拦截
             if defense_multiplier <= 0:
@@ -2019,7 +2031,7 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [POSITION LOCK CHECK ERROR] {e}")
 
-        # ⏱ 【已禁用】5分钟全局冷却，使用弹匣微冷却（60秒）即可
+        # [已禁用] 5分钟全局冷却
         # 原因：仓位绝对锁定已经足够防止连续加仓，60秒微冷却防止同一市场疯狂交易
         # ==========================================
         # # 检查最后一次交易时间，强制冷却5分钟
@@ -2040,8 +2052,7 @@ class AutoTraderV5:
                 print(f"       [RESET] 新的15分钟窗口: {self.last_traded_market} → {current_slug}")
                 self.last_traded_market = None
 
-        # 【已解除】每个市场只交易一次的限制
-        # 改为：通过弹匣限制、射击冷却、时间防火墙等精细风控来控制频率
+        # [已解除] 每个市场只交易一次的限制（v2版本允许多次交易）
         # if market and self.last_traded_market:
         #     current_slug = market.get('slug', '')
         #     if current_slug == self.last_traded_market:
@@ -2248,13 +2259,13 @@ class AutoTraderV5:
                     # 市场已过期，拒绝开仓
                     return False, f" 时间防火墙: 市场已过期({time_left:.0f}秒)，拒绝开仓"
 
-                # [时间窗口] 参考 @jtrevorchapman: 只在剩余 3-6 分钟之间开仓
-                # 早期指标不可靠，晚期风险太高
-                if time_left > 360:
-                    return False, f" [时间窗口] 指标尚未可靠，剩余{time_left:.0f}秒 > 6分钟，等待入场时机"
-
-                if time_left < 180:
-                    return False, f" 时间防火墙: 距离结算仅{time_left:.0f}秒 < 3分钟，拒绝开仓"
+                # [v2版本] 已移除3-6分钟时间窗口限制
+                # 现在通过防御层的动态仓位管理来控制不同时间段的风险
+                # ==========================================
+                # if time_left > 360:
+                #     return False, f" [时间窗口] 指标尚未可靠，剩余{time_left:.0f}秒 > 6分钟，等待入场时机"
+                # if time_left < 180:
+                #     return False, f" 时间防火墙: 距离结算仅{time_left:.0f}秒 < 3分钟，拒绝开仓"
             else:
                 return False, " 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
@@ -3116,6 +3127,59 @@ class AutoTraderV5:
         except:
             return 0.0
 
+    def get_polymarket_orderbook(self, market: Dict) -> Optional[Dict]:
+        """
+        获取完整的Polymarket订单簿数据（用于投票系统的7个订单簿规则）
+
+        返回格式:
+        {
+            'bids': [(price, size), ...],  # 买单列表
+            'asks': [(price, size), ...],  # 卖单列表
+            'spread': float,               # 买卖价差
+            'timestamp': float             # 时间戳
+        }
+        """
+        try:
+            token_ids = market.get('clobTokenIds', [])
+            if isinstance(token_ids, str):
+                token_ids = json.loads(token_ids)
+            if not token_ids:
+                return None
+
+            token_id_yes = str(token_ids[0])
+            url = "https://clob.polymarket.com/book"
+
+            resp = self.http_session.get(url, params={"token_id": token_id_yes},
+                                proxies=CONFIG.get('proxy'), timeout=5)
+            if resp.status_code != 200:
+                return None
+
+            book = resp.json()
+            bids = book.get('bids', [])
+            asks = book.get('asks', [])
+
+            if not bids or not asks:
+                return None
+
+            # 转换为 (price, size) 元组列表
+            bid_list = [(float(b.get('price', 0)), float(b.get('size', 0))) for b in bids]
+            ask_list = [(float(a.get('price', 0)), float(a.get('size', 0))) for a in asks]
+
+            # 计算买卖价差
+            best_bid = bid_list[0][0] if bid_list else 0
+            best_ask = ask_list[0][0] if ask_list else 0
+            spread = best_ask - best_bid if best_ask > 0 and best_bid > 0 else 0
+
+            return {
+                'bids': bid_list,
+                'asks': ask_list,
+                'spread': spread,
+                'timestamp': time.time()
+            }
+        except Exception as e:
+            # 静默失败，不影响其他规则
+            return None
+
     def place_order(self, market: Dict, signal: Dict) -> Optional[Dict]:
         if not self.client:
             print("       [SIGNAL MODE]")
@@ -3514,7 +3578,7 @@ class AutoTraderV5:
 
                 # 根据止盈止损单状态显示不同信息
                 if tp_order_id:
-                    sl_status = "已禁用" if not CONFIG['risk'].get('enable_stop_loss', False) else "本地监控"
+                    sl_status = "本地监控" if CONFIG['risk'].get('enable_stop_loss', False) else "已禁用"
                     print(f"       [POSITION]  止盈单已挂 @ {tp_target_price:.4f}，止损线 @ {sl_target_price:.4f} ({sl_status})")
                 else:
                     print(f"       [POSITION] ⚠  止盈单挂单失败，将使用本地监控双向平仓")
@@ -3825,30 +3889,64 @@ class AutoTraderV5:
                 TRAILING_ACTIVATION = 0.75  # 启动门槛：涨到75¢才激活追踪
                 TRAILING_DRAWDOWN = 0.05    # 容忍回撤：从最高点回撤5¢直接砸盘走人
 
-                # 读取数据库中的历史最高价
-                try:
-                    cursor.execute("SELECT highest_price FROM positions WHERE id = ?", (pos_id,))
-                    hp_row = cursor.fetchone()
-                    db_highest_price = float(hp_row[0]) if hp_row and hp_row[0] else float(entry_token_price)
-                except:
-                    db_highest_price = float(entry_token_price)
+                # 🔴 检查追踪止盈开关
+                if not CONFIG['risk'].get('enable_trailing_tp', True):
+                    # 追踪止盈已禁用，跳过
+                    trailing_triggered = False
+                else:
+                    # 读取数据库中的历史最高价
+                    try:
+                        cursor.execute("SELECT highest_price FROM positions WHERE id = ?", (pos_id,))
+                        hp_row = cursor.fetchone()
+                        db_highest_price = float(hp_row[0]) if hp_row and hp_row[0] else float(entry_token_price)
+                    except:
+                        db_highest_price = float(entry_token_price)
 
-                # 更新历史最高价
-                if pos_current_price > db_highest_price:
-                    db_highest_price = pos_current_price
-                    cursor.execute("UPDATE positions SET highest_price = ? WHERE id = ?", (db_highest_price, pos_id))
-                    conn.commit()
-                    # print(f"       [[UP] 追踪拔高] 历史最高价刷新: {db_highest_price:.4f}")
+                    # 更新历史最高价
+                    if pos_current_price > db_highest_price:
+                        db_highest_price = pos_current_price
+                        cursor.execute("UPDATE positions SET highest_price = ? WHERE id = ?", (db_highest_price, pos_id))
+                        conn.commit()
+                        # print(f"       [[UP] 追踪拔高] 历史最高价刷新: {db_highest_price:.4f}")
 
-                # 检查追踪止盈触发条件
-                trailing_triggered = False
-                if db_highest_price >= TRAILING_ACTIVATION:
-                    # 条件A：最高价已越过激活线（开始锁定利润）
-                    if pos_current_price <= (db_highest_price - TRAILING_DRAWDOWN):
-                        # 条件B：现价比最高价跌了超过5¢（动能衰竭，做市商开始反扑）
-                        print(f"       [[ROCKET] 吸星大法] 追踪止盈触发！最高{db_highest_price:.2f}→现价{pos_current_price:.2f}，回撤达5¢，锁定暴利平仓！")
+                    # 检查追踪止盈触发条件
+                    trailing_triggered = False
+                    if db_highest_price >= TRAILING_ACTIVATION:
+                        # 条件A：最高价已越过激活线（开始锁定利润）
+                        if pos_current_price <= (db_highest_price - TRAILING_DRAWDOWN):
+                            # 条件B：现价比最高价跌了超过5¢（动能衰竭，做市商开始反扑）
+                            print(f"       [[ROCKET] 吸星大法] 追踪止盈触发！最高{db_highest_price:.2f}→现价{pos_current_price:.2f}，回撤达5¢，锁定暴利平仓！")
+                            trailing_triggered = True
+                            exit_reason = 'TRAILING_TAKE_PROFIT'
+                            actual_exit_price = pos_current_price
+
+                            # 立即市价平仓
+                            try:
+                                from py_clob_client.clob_types import OrderArgs
+                                close_order_args = OrderArgs(
+                                    token_id=token_id,
+                                    price=max(0.01, min(0.99, pos_current_price)),
+                                    size=float(size),
+                                    side=SELL
+                                )
+                                close_response = self.client.create_and_post_order(close_order_args)
+                                if close_response and 'orderID' in close_response:
+                                    triggered_order_id = close_response['orderID']
+                                    print(f"       [[ROCKET] 吸星大法]  追踪止盈平仓单已发送: {triggered_order_id[-8:]}")
+                                else:
+                                    print(f"       [[ROCKET] 吸星大法] ⚠ 平仓单发送失败，继续监控")
+                                    trailing_triggered = False
+                            except Exception as e:
+                                print(f"       [[ROCKET] 吸星大法] [X] 平仓异常: {e}")
+                                trailing_triggered = False
+
+                # 超高位强制结算保护（防止最后1秒画门）
+                # 🔴 检查绝对止盈开关
+                if not trailing_triggered and CONFIG['risk'].get('enable_absolute_tp', True):
+                    if pos_current_price >= 0.92:
+                        print(f"       [[TARGET] 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
                         trailing_triggered = True
-                        exit_reason = 'TRAILING_TAKE_PROFIT'
+                        exit_reason = 'ABSOLUTE_TAKE_PROFIT'
                         actual_exit_price = pos_current_price
 
                         # 立即市价平仓
@@ -3863,37 +3961,10 @@ class AutoTraderV5:
                             close_response = self.client.create_and_post_order(close_order_args)
                             if close_response and 'orderID' in close_response:
                                 triggered_order_id = close_response['orderID']
-                                print(f"       [[ROCKET] 吸星大法]  追踪止盈平仓单已发送: {triggered_order_id[-8:]}")
-                            else:
-                                print(f"       [[ROCKET] 吸星大法] ⚠ 平仓单发送失败，继续监控")
-                                trailing_triggered = False
+                                print(f"       [[TARGET] 绝对止盈]  平仓单已发送: {triggered_order_id[-8:]}")
                         except Exception as e:
-                            print(f"       [[ROCKET] 吸星大法] [X] 平仓异常: {e}")
+                            print(f"       [[TARGET] 绝对止盈] [X] 平仓异常: {e}")
                             trailing_triggered = False
-
-                # 超高位强制结算保护（防止最后1秒画门）
-                if not trailing_triggered and pos_current_price >= 0.92:
-                    print(f"       [[TARGET] 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
-                    trailing_triggered = True
-                    exit_reason = 'ABSOLUTE_TAKE_PROFIT'
-                    actual_exit_price = pos_current_price
-
-                    # 立即市价平仓
-                    try:
-                        from py_clob_client.clob_types import OrderArgs
-                        close_order_args = OrderArgs(
-                            token_id=token_id,
-                            price=max(0.01, min(0.99, pos_current_price)),
-                            size=float(size),
-                            side=SELL
-                        )
-                        close_response = self.client.create_and_post_order(close_order_args)
-                        if close_response and 'orderID' in close_response:
-                            triggered_order_id = close_response['orderID']
-                            print(f"       [[TARGET] 绝对止盈]  平仓单已发送: {triggered_order_id[-8:]}")
-                    except Exception as e:
-                        print(f"       [[TARGET] 绝对止盈] [X] 平仓异常: {e}")
-                        trailing_triggered = False
 
                 # 如果追踪止盈已触发，跳过后续的止盈单检查
                 if trailing_triggered:
@@ -4857,6 +4928,242 @@ class AutoTraderV5:
     def _adjust_ut_bot_params(self):
         """轻量版无学习系统，跳过UT Bot参数调整"""
         pass
+
+    # ==========================================
+    # Polymarket API 方法实现
+    # ==========================================
+
+    def get_order_book(self, token_id: str, side: str = 'BUY') -> Optional[float]:
+        """获取订单簿价格（买一/卖一价）
+        
+        Args:
+            token_id: Token ID
+            side: 'BUY' 获取卖一价（ask），'SELL' 获取买一价（bid）
+            
+        Returns:
+            价格，失败返回 None
+        """
+        try:
+            # Polymarket CLOB API: /price 端点
+            url = f"{CONFIG['clob_host']}/price"
+            params = {
+                'token_id': token_id,
+                'side': side
+            }
+            
+            response = self.http_session.get(
+                url,
+                params=params,
+                proxies=CONFIG.get('proxy'),
+                timeout=5
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                price = float(data.get('price', 0))
+                if 0.01 <= price <= 0.99:
+                    return price
+            
+            return None
+            
+        except Exception as e:
+            print(f"       [ORDER BOOK ERROR] {e}")
+            return None
+
+    def get_positions(self) -> Dict[str, float]:
+        """获取数据库中的持仓统计
+        
+        Returns:
+            {'LONG': 总多头仓位, 'SHORT': 总空头仓位}
+        """
+        try:
+            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.execute('PRAGMA journal_mode=WAL;')
+            cursor = conn.cursor()
+            
+            # 查询未过期市场的持仓（最近25分钟内）
+            cutoff_time = (datetime.now() - timedelta(minutes=25)).strftime('%Y-%m-%d %H:%M:%S')
+            
+            cursor.execute("""
+                SELECT side, SUM(size) as total_size
+                FROM positions
+                WHERE status IN ('open', 'closing')
+                  AND entry_time >= ?
+                GROUP BY side
+            """, (cutoff_time,))
+            
+            positions = {'LONG': 0.0, 'SHORT': 0.0}
+            for row in cursor.fetchall():
+                side, total_size = row
+                positions[side] = float(total_size) if total_size else 0.0
+            
+            conn.close()
+            return positions
+            
+        except Exception as e:
+            print(f"       [GET POSITIONS ERROR] {e}")
+            return {'LONG': 0.0, 'SHORT': 0.0}
+
+    def get_real_positions(self) -> Dict[str, float]:
+        """获取链上实时持仓（通过查询所有 token 余额）
+        
+        Returns:
+            {'LONG': 总多头仓位, 'SHORT': 总空头仓位}
+        """
+        try:
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            
+            positions = {'LONG': 0.0, 'SHORT': 0.0}
+            
+            # 获取当前市场的 token IDs
+            market = self.get_market_data()
+            if not market:
+                return positions
+            
+            token_ids = market.get('clobTokenIds', [])
+            if isinstance(token_ids, str):
+                token_ids = json.loads(token_ids)
+            
+            if not token_ids or len(token_ids) < 2:
+                return positions
+            
+            # YES token (LONG)
+            yes_token_id = str(token_ids[0])
+            params_yes = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=yes_token_id,
+                signature_type=2
+            )
+            result_yes = self.client.get_balance_allowance(params_yes)
+            if result_yes:
+                amount = float(result_yes.get('balance', '0') or '0')
+                positions['LONG'] = amount / 1e6
+            
+            # NO token (SHORT)
+            no_token_id = str(token_ids[1])
+            params_no = BalanceAllowanceParams(
+                asset_type=AssetType.CONDITIONAL,
+                token_id=no_token_id,
+                signature_type=2
+            )
+            result_no = self.client.get_balance_allowance(params_no)
+            if result_no:
+                amount = float(result_no.get('balance', '0') or '0')
+                positions['SHORT'] = amount / 1e6
+            
+            return positions
+            
+        except Exception as e:
+            print(f"       [GET REAL POSITIONS ERROR] {e}")
+            return {'LONG': 0.0, 'SHORT': 0.0}
+
+    def cancel_order(self, order_id: str) -> bool:
+        """取消订单
+        
+        Args:
+            order_id: 订单 ID
+            
+        Returns:
+            是否成功
+        """
+        try:
+            if not order_id or not self.client:
+                return False
+            
+            # 使用 CLOB client 的 cancel 方法
+            result = self.client.cancel(order_id)
+            
+            if result:
+                print(f"       [CANCEL] 订单已取消: {order_id[-8:]}")
+                return True
+            else:
+                print(f"       [CANCEL] 取消失败: {order_id[-8:]}")
+                return False
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            # 订单不存在或已成交不算错误
+            if 'not found' in error_msg or 'does not exist' in error_msg:
+                print(f"       [CANCEL] 订单不存在（可能已成交）: {order_id[-8:]}")
+                return True
+            else:
+                print(f"       [CANCEL ERROR] {e}")
+                return False
+
+    def cancel_pair_orders(self, tp_order_id: str, sl_order_id: str, reason: str = '') -> None:
+        """取消止盈止损订单对
+        
+        Args:
+            tp_order_id: 止盈订单 ID
+            sl_order_id: 止损订单 ID（可能是价格字符串）
+            reason: 取消原因（用于日志）
+        """
+        try:
+            # 取消止盈单
+            if tp_order_id:
+                try:
+                    self.cancel_order(tp_order_id)
+                except Exception as e:
+                    print(f"       [CANCEL PAIR] 取消止盈单失败: {e}")
+            
+            # 取消止损单（如果是订单ID）
+            if sl_order_id and sl_order_id.startswith('0x'):
+                try:
+                    self.cancel_order(sl_order_id)
+                except Exception as e:
+                    print(f"       [CANCEL PAIR] 取消止损单失败: {e}")
+            
+            if reason:
+                print(f"       [CANCEL PAIR] 原因: {reason}")
+                
+        except Exception as e:
+            print(f"       [CANCEL PAIR ERROR] {e}")
+
+    def update_allowance_fixed(self, asset_type, token_id: str = None) -> bool:
+        """更新授权（修复版，支持 COLLATERAL 和 CONDITIONAL）
+        
+        Args:
+            asset_type: AssetType.COLLATERAL 或 AssetType.CONDITIONAL
+            token_id: Token ID（CONDITIONAL 类型需要）
+            
+        Returns:
+            是否成功
+        """
+        try:
+            from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+            
+            if asset_type == AssetType.COLLATERAL:
+                # USDC 授权
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.COLLATERAL,
+                    signature_type=2
+                )
+            else:
+                # Token 授权
+                if not token_id:
+                    print(f"       [ALLOWANCE] Token ID 缺失")
+                    return False
+                
+                params = BalanceAllowanceParams(
+                    asset_type=AssetType.CONDITIONAL,
+                    token_id=token_id,
+                    signature_type=2
+                )
+            
+            # 发送授权请求
+            result = self.client.update_balance_allowance(params)
+            
+            if result:
+                asset_name = "USDC" if asset_type == AssetType.COLLATERAL else f"Token {token_id[-8:]}"
+                print(f"       [ALLOWANCE] {asset_name} 授权成功")
+                return True
+            else:
+                print(f"       [ALLOWANCE] 授权失败")
+                return False
+                
+        except Exception as e:
+            print(f"       [ALLOWANCE ERROR] {e}")
+            return False
 
 def start_api_server(port=8888):
     """在后台线程启动HTTP API服务器"""

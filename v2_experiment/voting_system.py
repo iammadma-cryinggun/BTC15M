@@ -349,24 +349,24 @@ class MomentumAccelerationRule(VotingRule):
         if mom_30 == 0.0 or mom_60 == 0.0 or mom_120 == 0.0:
             return None
 
-        # 计算加速度（60s相对于30s的变化率）
-        accel_1 = (mom_60 - mom_30) / 30.0 if mom_30 != 0 else 0
+        # 计算加速度（60s相对于30s的变化）
+        accel_1 = mom_60 - mom_30
 
-        # 计算加速度（120s相对于60s的变化率）
-        accel_2 = (mom_120 - mom_60) / 60.0 if mom_60 != 0 else 0
+        # 计算加速度（120s相对于60s的变化）
+        accel_2 = mom_120 - mom_60
 
-        # 综合加速度
+        # 综合加速度（平均变化）
         acceleration = (accel_1 + accel_2) / 2.0
 
-        # 加速度阈值（0.05%每秒的平方）
-        threshold = 0.05
+        # 加速度阈值（0.1%的动量变化）
+        threshold = 0.1
 
         if abs(acceleration) < threshold:
             return None
 
         direction = 'LONG' if acceleration > 0 else 'SHORT'
-        confidence = min(abs(acceleration) / 0.5, 0.99)
-        reason = f'加速度{acceleration:+.3f}%/s²'
+        confidence = min(abs(acceleration) / 1.0, 0.99)  # 1.0%变化为满分
+        reason = f'加速度{acceleration:+.2f}%'
 
         return {
             'direction': direction,
@@ -400,40 +400,33 @@ class MACDHistogramRule(VotingRule):
         """
         计算MACD柱状图
 
-        Histogram > 0: 牛市
-        Histogram < 0: 熊市
-        Histogram柱子增长：趋势加强
+        简化版本：直接使用 MACD 线（快慢 EMA 差值）
+        MACD > 0: 牛市
+        MACD < 0: 熊市
         """
-        if len(price_history) < self.slow_period + self.signal_period:
+        if len(price_history) < self.slow_period:
             return None
 
         # 计算快慢EMA
         ema_fast = self._calculate_ema(price_history, self.fast_period)
         ema_slow = self._calculate_ema(price_history, self.slow_period)
 
-        # MACD线
+        # MACD线（简化版：不计算信号线和柱状图）
         macd_line = ema_fast - ema_slow
 
-        # 需要历史MACD值来计算信号线
-        # 这里简化处理：使用当前MACD作为信号线估计
-        signal_line = macd_line * 0.8  # 简化估计
-
-        # MACD柱状图
-        histogram = macd_line - signal_line
-
-        # 柱状图阈值
-        if abs(histogram) < 0.001:
+        # MACD阈值
+        if abs(macd_line) < 0.001:
             return None
 
-        direction = 'LONG' if histogram > 0 else 'SHORT'
-        confidence = min(abs(histogram) / 0.01, 0.99)
-        reason = f'MACD柱{histogram:+.4f}'
+        direction = 'LONG' if macd_line > 0 else 'SHORT'
+        confidence = min(abs(macd_line) / 0.01, 0.99)
+        reason = f'MACD{macd_line:+.4f}'
 
         return {
             'direction': direction,
             'confidence': confidence,
             'reason': reason,
-            'raw_value': histogram
+            'raw_value': macd_line
         }
 
 
@@ -523,27 +516,33 @@ class VolatilityRegimeRule(VotingRule):
         variance = sum((r - mean_ret) ** 2 for r in returns) / len(returns)
         volatility = math.sqrt(variance)
 
-        # 波动率阈值
-        if volatility < 0.005:  # 0.5%以下为低波动
+        # 波动率阈值：至少 0.5% 才有意义
+        if volatility < 0.005:
             return None  # 波动率太低，不投票
 
         # 当前价格动量
         recent_returns = returns[-5:] if len(returns) >= 5 else returns
         momentum = sum(recent_returns) / len(recent_returns)
 
-        # 波动率越高，跟随趋势的置信度越高
+        # 动量阈值：至少 0.1% 才有方向
         if abs(momentum) < 0.001:
             return None
 
+        # 方向基于动量，置信度基于动量强度（不是波动率）
         direction = 'LONG' if momentum > 0 else 'SHORT'
-        confidence = min(volatility / 0.02, 0.99)
+        
+        # 置信度 = 动量强度 × 波动率因子
+        # 波动率越高，动量越可靠（趋势延续性强）
+        volatility_factor = min(volatility / 0.01, 1.5)  # 1% 波动率 = 1.0x, 1.5% = 1.5x
+        confidence = min(abs(momentum) / 0.005 * volatility_factor, 0.99)
+        
         reason = f'波动率{volatility:.2%} 动量{momentum:+.2%}'
 
         return {
             'direction': direction,
             'confidence': confidence,
             'reason': reason,
-            'raw_value': volatility
+            'raw_value': momentum
         }
 
 
@@ -673,15 +672,48 @@ class BidWallsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('Bid Walls', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         检测买墙（大单支撑）
-
-        [占位规则] 需要Polymarket订单簿数据，暂时不投票
+        
+        买墙：在当前价格下方有大量买单堆积
+        意义：强支撑，价格不易下跌
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现买墙检测逻辑
-        # 需要订单簿数据： bids at different price levels
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        if not bids or len(bids) < 5:
+            return None
+        
+        # 计算买单总量
+        total_bid_size = sum(size for _, size in bids)
+        if total_bid_size == 0:
+            return None
+        
+        # 检测买墙：前5档买单中是否有单档占比超过30%
+        top_5_bids = bids[:5]
+        max_bid_size = max(size for _, size in top_5_bids)
+        max_bid_ratio = max_bid_size / total_bid_size
+        
+        # 买墙阈值：单档占比 > 30%
+        if max_bid_ratio < 0.30:
+            return None
+        
+        # 买墙存在 → 支撑强 → 做多
+        confidence = min(max_bid_ratio / 0.5, 0.99)  # 30%→60%, 50%→100%
+        reason = f'买墙{max_bid_ratio:.0%}（强支撑）'
+        
+        return {
+            'direction': 'LONG',
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': max_bid_ratio
+        }
 
 
 class AskWallsRule(VotingRule):
@@ -690,15 +722,48 @@ class AskWallsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('Ask Walls', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         检测卖墙（大单阻力）
-
-        [占位规则] 需要Polymarket订单簿数据，暂时不投票
+        
+        卖墙：在当前价格上方有大量卖单堆积
+        意义：强阻力，价格不易上涨
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现卖墙检测逻辑
-        # 需要订单簿数据： asks at different price levels
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        asks = orderbook.get('asks', [])
+        if not asks or len(asks) < 5:
+            return None
+        
+        # 计算卖单总量
+        total_ask_size = sum(size for _, size in asks)
+        if total_ask_size == 0:
+            return None
+        
+        # 检测卖墙：前5档卖单中是否有单档占比超过30%
+        top_5_asks = asks[:5]
+        max_ask_size = max(size for _, size in top_5_asks)
+        max_ask_ratio = max_ask_size / total_ask_size
+        
+        # 卖墙阈值：单档占比 > 30%
+        if max_ask_ratio < 0.30:
+            return None
+        
+        # 卖墙存在 → 阻力强 → 做空
+        confidence = min(max_ask_ratio / 0.5, 0.99)  # 30%→60%, 50%→100%
+        reason = f'卖墙{max_ask_ratio:.0%}（强阻力）'
+        
+        return {
+            'direction': 'SHORT',
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': max_ask_ratio
+        }
 
 
 class OBIRule(VotingRule):
@@ -707,20 +772,58 @@ class OBIRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('Orderbook Imbalance', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, **kwargs) -> Optional[Dict]:
         """
         计算订单簿失衡（OBI）
 
         OBI = (买量 - 卖量) / (买量 + 卖量)
-
-        [占位规则] 需要Polymarket订单簿数据，暂时不投票
+        
+        OBI > 0.3: 买盘强势，做多
+        OBI < -0.3: 卖盘强势，做空
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
         """
-        # TODO: 实现OBI计算逻辑
-        return None  # 不投票（占位）
+        if not orderbook:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 计算前10档的买卖量
+        top_bids = bids[:10] if len(bids) >= 10 else bids
+        top_asks = asks[:10] if len(asks) >= 10 else asks
+        
+        total_bid_size = sum(size for _, size in top_bids)
+        total_ask_size = sum(size for _, size in top_asks)
+        
+        if total_bid_size + total_ask_size == 0:
+            return None
+        
+        # 计算OBI
+        obi = (total_bid_size - total_ask_size) / (total_bid_size + total_ask_size)
+        
+        # OBI阈值：±0.3
+        if abs(obi) < 0.3:
+            return None
+        
+        direction = 'LONG' if obi > 0 else 'SHORT'
+        confidence = min(abs(obi) / 0.6, 0.99)  # 0.3→50%, 0.6→100%
+        reason = f'OBI{obi:+.2f}（{"买盘" if obi > 0 else "卖盘"}强势）'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': obi
+        }
 
 
 class PMSpreadRule(VotingRule):
-    """PM价差异常规则（需要Polymarket数据）"""
+    """PM价差异常规则（需要Polymarket YES/NO价格）"""
 
     def __init__(self, weight: float = 1.0):
         super().__init__('PM Spread Dev', weight)
@@ -729,17 +832,37 @@ class PMSpreadRule(VotingRule):
         """
         检测YES/NO价差异常
 
-        正常情况：YES + NO ≈ 1.00
-        异常情况：YES + NO > 1.00（套利机会）
+        正常情况：YES + NO ≈ 1.00（允许微小套利空间）
+        异常情况：YES + NO > 1.02（价差异常，市场流动性问题）
 
-        [占位规则] 需要Polymarket YES/NO实时价格，暂时不投票
+        价差异常说明市场存在套利机会或流动性不足
         """
-        # TODO: 实现价差异常检测
-        # if no_price:
-        #     spread = price + no_price
-        #     if spread > 1.02:  # 价差异常
-        #         return {'direction': ..., 'confidence': ...}
-        return None  # 不投票（占位）
+        if not price or not no_price:
+            return None
+
+        # 计算价差
+        spread = price + no_price
+        deviation = spread - 1.0
+
+        # 价差异常阈值：> 2%
+        if abs(deviation) < 0.02:
+            return None
+
+        # 价差过大说明市场不稳定，降低置信度
+        confidence = min(abs(deviation) / 0.05, 0.99)  # 2%→40%, 5%→100%
+
+        # 价差异常时，倾向于不做交易（中性投票）
+        # 但如果一定要选，选择价格较低的一边（更安全）
+        direction = 'LONG' if price < 0.5 else 'SHORT'
+
+        reason = f'价差异常{deviation*100:+.1f}%（YES={price:.2f}+NO={no_price:.2f}）'
+
+        return {
+            'direction': direction,
+            'confidence': confidence * 0.3,  # 降低置信度（价差异常时风险高）
+            'reason': reason,
+            'raw_value': deviation
+        }
 
 
 class PMSentimentRule(VotingRule):
@@ -748,16 +871,60 @@ class PMSentimentRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('PM Sentiment', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, price: float = None, price_history: List[float] = None, **kwargs) -> Optional[Dict]:
         """
         分析Polymarket市场情绪
-
-        基于交易量、持仓量、价格变化等
-
-        [占位规则] 需要Polymarket历史数据，暂时不投票
+        
+        基于价格变化速度和方向判断市场情绪
+        快速上涨 → 乐观情绪 → 做多
+        快速下跌 → 悲观情绪 → 做空
+        
+        Args:
+            price: 当前价格
+            price_history: 价格历史（最近20个数据点）
         """
-        # TODO: 实现情绪分析逻辑
-        return None  # 不投票（占位）
+        if not price or not price_history or len(price_history) < 10:
+            return None
+        
+        # 计算最近10个周期的价格变化
+        recent = price_history[-10:]
+        
+        # 计算价格变化速度（每周期平均变化）
+        price_changes = []
+        for i in range(1, len(recent)):
+            change_pct = (recent[i] - recent[i-1]) / recent[i-1] * 100
+            price_changes.append(change_pct)
+        
+        if not price_changes:
+            return None
+        
+        # 平均变化率
+        avg_change = sum(price_changes) / len(price_changes)
+        
+        # 变化率标准差（波动性）
+        variance = sum((c - avg_change) ** 2 for c in price_changes) / len(price_changes)
+        volatility = variance ** 0.5
+        
+        # 情绪强度 = 平均变化率 × 一致性（低波动 = 高一致性）
+        consistency = max(0, 1.0 - volatility / 2.0)  # 波动越小，一致性越高
+        sentiment_strength = abs(avg_change) * consistency
+        
+        # 情绪阈值：0.5%
+        if sentiment_strength < 0.5:
+            return None
+        
+        direction = 'LONG' if avg_change > 0 else 'SHORT'
+        confidence = min(sentiment_strength / 2.0, 0.99)  # 0.5%→25%, 2.0%→100%
+        
+        sentiment_label = "乐观" if avg_change > 0 else "悲观"
+        reason = f'市场{sentiment_label}（{avg_change:+.2f}%/周期）'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': sentiment_strength
+        }
 
 
 class CLDataAgeRule(VotingRule):
@@ -967,16 +1134,68 @@ class NaturalPriceRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('NATURAL', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         计算自然价格（远离大单的价格）
-
-        [占位规则] 需要订单簿数据
+        
+        自然价格：排除异常大单后的加权平均价格
+        如果当前价格偏离自然价格，可能是大单操纵
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现自然价格计算
-        # 需要订单簿数据：bids/asks at different levels
-        # 自然价格 = 排除大单后的加权平均价格
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 计算买卖单的加权平均价格（排除前2档大单）
+        filtered_bids = bids[2:12] if len(bids) > 2 else bids
+        filtered_asks = asks[2:12] if len(asks) > 2 else asks
+        
+        if not filtered_bids or not filtered_asks:
+            return None
+        
+        # 加权平均价格
+        bid_weighted_sum = sum(p * s for p, s in filtered_bids)
+        bid_total_size = sum(s for _, s in filtered_bids)
+        
+        ask_weighted_sum = sum(p * s for p, s in filtered_asks)
+        ask_total_size = sum(s for _, s in filtered_asks)
+        
+        if bid_total_size == 0 or ask_total_size == 0:
+            return None
+        
+        avg_bid = bid_weighted_sum / bid_total_size
+        avg_ask = ask_weighted_sum / ask_total_size
+        
+        # 自然价格 = 买卖加权平均的中点
+        natural_price = (avg_bid + avg_ask) / 2.0
+        
+        # 计算偏离度
+        deviation_pct = ((price - natural_price) / natural_price) * 100
+        
+        # 偏离阈值：±1%
+        if abs(deviation_pct) < 1.0:
+            return None
+        
+        # 当前价格 > 自然价格：被拉高，做空
+        # 当前价格 < 自然价格：被压低，做多
+        direction = 'SHORT' if deviation_pct > 0 else 'LONG'
+        confidence = min(abs(deviation_pct) / 3.0, 0.99)  # 1%→33%, 3%→100%
+        reason = f'偏离自然价{deviation_pct:+.2f}%'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': deviation_pct
+        }
 
 
 class NaturalAbsRule(VotingRule):
@@ -985,14 +1204,70 @@ class NaturalAbsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('NAT ABS', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, **kwargs) -> Optional[Dict]:
         """
-        自然价格的绝对值
-
-        [占位规则] 需要订单簿数据
+        自然价格的绝对值判断
+        
+        基于自然价格本身的高低判断市场情绪
+        自然价格 > 0.60: 市场看涨
+        自然价格 < 0.40: 市场看跌
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
         """
-        # TODO: 实现自然价格绝对值计算
-        return None  # 不投票（占位）
+        if not orderbook:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 计算自然价格（同NaturalPriceRule）
+        filtered_bids = bids[2:12] if len(bids) > 2 else bids
+        filtered_asks = asks[2:12] if len(asks) > 2 else asks
+        
+        if not filtered_bids or not filtered_asks:
+            return None
+        
+        bid_weighted_sum = sum(p * s for p, s in filtered_bids)
+        bid_total_size = sum(s for _, s in filtered_bids)
+        
+        ask_weighted_sum = sum(p * s for p, s in filtered_asks)
+        ask_total_size = sum(s for _, s in filtered_asks)
+        
+        if bid_total_size == 0 or ask_total_size == 0:
+            return None
+        
+        avg_bid = bid_weighted_sum / bid_total_size
+        avg_ask = ask_weighted_sum / ask_total_size
+        natural_price = (avg_bid + avg_ask) / 2.0
+        
+        # 基于自然价格绝对值判断
+        if natural_price > 0.60:
+            # 自然价格高 → 市场看涨 → 跟随做多
+            confidence = (natural_price - 0.60) / 0.40  # 0.60→0%, 1.00→100%
+            confidence = min(confidence, 0.99)
+            return {
+                'direction': 'LONG',
+                'confidence': confidence,
+                'reason': f'自然价{natural_price:.2f}（看涨）',
+                'raw_value': natural_price
+            }
+        elif natural_price < 0.40:
+            # 自然价格低 → 市场看跌 → 跟随做空
+            confidence = (0.40 - natural_price) / 0.40  # 0.40→0%, 0.00→100%
+            confidence = min(confidence, 0.99)
+            return {
+                'direction': 'SHORT',
+                'confidence': confidence,
+                'reason': f'自然价{natural_price:.2f}（看跌）',
+                'raw_value': natural_price
+            }
+        
+        # 自然价格在中性区间（0.40-0.60），不投票
+        return None
 
 
 class BufferTicketsRule(VotingRule):
@@ -1001,32 +1276,184 @@ class BufferTicketsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('BUFFER TICKETS', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         统计缓冲区订单数量
-
-        [占位规则] 需要订单簿数据
+        
+        缓冲订单：接近当前价格（±2%）的未成交订单
+        缓冲订单多 → 流动性好 → 价格稳定
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现缓冲订单统计
-        # 缓冲订单：接近当前价格的未成交订单
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 定义缓冲区：当前价格 ±2%
+        buffer_range = price * 0.02
+        lower_bound = price - buffer_range
+        upper_bound = price + buffer_range
+        
+        # 统计缓冲区内的订单数量
+        buffer_bids = [s for p, s in bids if lower_bound <= p <= price]
+        buffer_asks = [s for p, s in asks if price <= p <= upper_bound]
+        
+        buffer_bid_count = len(buffer_bids)
+        buffer_ask_count = len(buffer_asks)
+        total_buffer_count = buffer_bid_count + buffer_ask_count
+        
+        # 缓冲订单阈值：至少5个订单
+        if total_buffer_count < 5:
+            return None
+        
+        # 计算买卖缓冲订单的不平衡
+        if buffer_bid_count + buffer_ask_count == 0:
+            return None
+        
+        buffer_imbalance = (buffer_bid_count - buffer_ask_count) / (buffer_bid_count + buffer_ask_count)
+        
+        # 不平衡阈值：±0.4
+        if abs(buffer_imbalance) < 0.4:
+            return None
+        
+        # 买单多 → 支撑强 → 做多
+        # 卖单多 → 阻力强 → 做空
+        direction = 'LONG' if buffer_imbalance > 0 else 'SHORT'
+        confidence = min(abs(buffer_imbalance) / 0.6, 0.99)  # 0.4→67%, 0.6→100%
+        reason = f'缓冲订单{total_buffer_count}个（{"买" if buffer_imbalance > 0 else "卖"}盘多）'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': buffer_imbalance
+        }
 
 
 class PositionsRule(VotingRule):
-    """持仓分布规则（需要Polymarket API）"""
+    """持仓分析规则（基于Polymarket Data API）"""
 
-    def __init__(self, weight: float = 1.0):
+    def __init__(self, weight: float = 1.0, wallet_address: str = None, http_session=None):
         super().__init__('POSITIONS', weight)
+        self.wallet_address = wallet_address
+        self.http_session = http_session
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, price: float = None, side: str = None, **kwargs) -> Optional[Dict]:
         """
-        分析持仓分布
+        分析当前持仓状态（避免过度暴露和风险集中）
 
-        [占位规则] 需要Polymarket持仓API
+        使用Polymarket Data API: GET /positions
+
+        策略：
+        - 获取当前所有持仓的PnL状态
+        - 如果正在连败（连续亏损）→ 降低新开仓置信度
+        - 如果当前已有大额持仓 → 降低加仓置信度
+        - 如果正在连胜 → 可以适当提高置信度（趋势跟随）
+
+        注意：这个规则返回的是"仓位调整建议"，不是方向性信号
         """
-        # TODO: 实现持仓分布分析
-        # 需要Polymarket API: /positions
-        return None  # 不投票（占位）
+        if not self.wallet_address or not self.http_session:
+            return None  # 没有配置钱包地址或HTTP会话，无法获取持仓数据
+
+        try:
+            # 获取当前持仓
+            url = "https://data-api.polymarket.com/positions"
+            params = {"user": self.wallet_address}
+
+            response = self.http_session.get(url, params=params, timeout=3)
+            if response.status_code != 200:
+                return None
+
+            positions = response.json()
+
+            # 过滤出BTC 15min市场的持仓
+            # （通过条件ID匹配，或者检查是否是相关市场）
+            total_exposure = 0.0
+            winning_positions = 0
+            losing_positions = 0
+            current_pnl = 0.0
+
+            for pos in positions:
+                # 计算总暴露
+                size = pos.get('currentValue', 0)
+                total_exposure += size
+
+                # 统计盈亏
+                pnl = pos.get('cashPnl', 0)
+                current_pnl += pnl
+
+                if pnl > 0:
+                    winning_positions += 1
+                else:
+                    losing_positions += 1
+
+            # 如果没有持仓，返回中性
+            if total_exposure == 0:
+                return None
+
+            # 策略1：检查总暴露（避免过度杠杆）
+            max_exposure = 1000  # 最大总暴露（USDC）
+            exposure_ratio = min(total_exposure / max_exposure, 1.0)
+
+            # 策略2：检查当前盈亏状态
+            total_positions = winning_positions + losing_positions
+            win_rate = winning_positions / total_positions if total_positions > 0 else 0.5
+
+            # 策略3：连败检测（最近5笔）
+            # 简化版本：如果当前PnL为负且亏损仓位多，降低置信度
+            is_drawing_down = current_pnl < -50  # 亏损超过50美元
+            is_on_tear = win_rate > 0.6 and total_positions >= 3  # 胜率>60%且至少3笔
+
+            # 生成调整建议
+            adjustment = 1.0
+            reasons = []
+
+            if exposure_ratio > 0.8:
+                adjustment *= 0.5  # 暴露过高，大幅降低
+                reasons.append(f"高暴露({total_exposure:.0f}USDC)")
+            elif exposure_ratio > 0.5:
+                adjustment *= 0.7  # 暴露较高，适度降低
+                reasons.append(f"中等暴露({total_exposure:.0f}USDC)")
+
+            if is_drawing_down:
+                adjustment *= 0.6  # 正在回撤，降低
+                reasons.append(f"回撤中({current_pnl:+.0f})")
+            elif is_on_tear:
+                adjustment *= 1.2  # 连胜中，可以提高
+                reasons.append(f"连胜中({win_rate:.0%})")
+
+            # 如果没有调整，返回中性
+            if adjustment >= 0.95 and adjustment <= 1.05:
+                return None
+
+            # 返回调整后的置信度（保持原有方向）
+            confidence = min(adjustment, 0.99)
+
+            # 注意：这个规则不改变方向，只调整置信度
+            # 但为了让投票系统工作，我们需要返回一个方向
+            # 这里返回当前建议的方向，置信度已经调整过了
+            direction = side or 'LONG'
+
+            reason = f"持仓调整 {adjustment:.0%} ({', '.join(reasons)})"
+
+            return {
+                'direction': direction,
+                'confidence': confidence,
+                'reason': reason,
+                'raw_value': adjustment,
+                'is_adjustment': True  # 标记这是调整规则，不是方向规则
+            }
+
+        except Exception as e:
+            # API调用失败，静默返回None
+            return None
 
 
 
@@ -1195,15 +1622,21 @@ class VotingSystem:
         return result
 
 
-def create_voting_system(session_memory=None) -> VotingSystem:
+def create_voting_system(session_memory=None, wallet_address=None, http_session=None) -> VotingSystem:
     """
     创建投票系统实例（完整实现@jtrevorchapman的23个原始指标）
 
-    总计25个规则：
-    - 已实现（14个）：超短动量x3、价格动量x2、RSI、VWAP、趋势强度、CVDx2、UT Bot、Session Memory、
+    总计25个规则（25个激活）：
+    - 已实现（17个）：超短动量x3、价格动量x2、RSI、VWAP、趋势强度、CVDx2、UT Bot、Session Memory、
                       动量加速度、MACD柱状图、EMA交叉、波动率、Delta Z-Score、交易强度
-    - 新增实现（4个）：CL Data Age、PM YES、Bias Score、PM Spread Dev
-    - 占位规则（9个）：需要Polymarket订单簿/持仓API的指标
+    - 新增PM指标（4个）：CL Data Age、PM YES、Bias Score、PM Spread Dev
+    - 订单簿规则（7个）：买墙、卖墙、订单簿失衡、自然价格、自然价格绝对值、缓冲订单、PM价差
+    - 持仓规则（1个）：Positions（需要Polymarket Data API + wallet_address）
+
+    Args:
+        session_memory: SessionMemory实例（用于SessionMemoryRule）
+        wallet_address: Polymarket钱包地址（用于PositionsRule）
+        http_session: requests.Session实例（用于PositionsRule的API调用）
     """
     system = VotingSystem()
 
@@ -1254,22 +1687,23 @@ def create_voting_system(session_memory=None) -> VotingSystem:
     system.add_rule(SessionMemoryRule(session_memory, weight=1.0))  # Session Memory：30场先验
 
     # ==========================================
-    # 占位规则（需要Polymarket订单簿数据，暂时不投票）
+    # 市场微观结构规则（需要订单簿API - 已集成）
     # ==========================================
-    # 市场微观结构（需要订单簿API）
-    system.add_rule(BidWallsRule(weight=1.0))           # 买墙：需要订单簿数据
-    system.add_rule(AskWallsRule(weight=1.0))           # 卖墙：需要订单簿数据
-    system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：需要订单簿数据
-    system.add_rule(NaturalPriceRule(weight=1.0))       # 自然价格：需要订单簿数据
-    system.add_rule(NaturalAbsRule(weight=1.0))         # 自然价格绝对值：需要订单簿数据
-    system.add_rule(BufferTicketsRule(weight=1.0))      # 缓冲订单：需要订单簿数据
+    system.add_rule(BidWallsRule(weight=1.0))           # 买墙：大单支撑检测
+    system.add_rule(AskWallsRule(weight=1.0))           # 卖墙：大单阻力检测
+    system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：买卖力量对比
+    system.add_rule(NaturalPriceRule(weight=1.0))       # 自然价格：VWAP排除前2档
+    system.add_rule(NaturalAbsRule(weight=1.0))         # 自然价格绝对值：偏离度检测
+    system.add_rule(BufferTicketsRule(weight=1.0))      # 缓冲订单：市场深度检测
 
-    # Polymarket数据（需要PM API）
-    system.add_rule(PMSpreadRule(weight=1.0))           # PM价差异常：需要YES/NO价格
-    system.add_rule(PMSentimentRule(weight=1.0))        # PM情绪：需要Polymarket历史数据
-    system.add_rule(PositionsRule(weight=1.0))          # 持仓分布：需要Polymarket API
+    # ==========================================
+    # Polymarket特定规则（需要PM API - 已集成）
+    # ==========================================
+    system.add_rule(PMSpreadRule(weight=1.0))           # PM价差异常：YES/NO价差检测
+    system.add_rule(PMSentimentRule(weight=1.0))        # PM情绪：历史价格情绪
+    system.add_rule(PositionsRule(weight=1.0, wallet_address=wallet_address, http_session=http_session))  # 持仓分析：当前暴露管理
 
-    # 总权重：25.8x（已激活规则：18个规则 = 17.3x）
+    # 总权重：25.8x（全部25个规则已激活）
     # CVD权重占比：5.7x / 25.8x = 22.1%（仍然主导）
 
     return system

@@ -11,9 +11,8 @@ import os
 
 def print_banner():
     print("=" * 70)
-    print("  BTC 15分钟自动交易系统 - 轻量级版本")
-    print("  V5: REST轮询模式 (稳定)")
-    print("  V6: WebSocket高频模式 (实验性)")
+    print("  BTC 15分钟自动交易系统 - v2_experiment 版本")
+    print("  最新特性: 全时段入场 + 止盈止损 + 25规则全激活")
     print("=" * 70)
     print()
 
@@ -24,8 +23,14 @@ def main():
     # 检查是否有命令行参数
     if len(sys.argv) > 1:
         version = sys.argv[1].upper()
-        if version == "V5":
-            print("[INFO] 启动 V5 (REST轮询模式)...")
+        if version == "V2":
+            print("[INFO] 启动 v2_experiment (最新版本)...")
+            import v2_experiment.auto_trader_ankr
+            bot = v2_experiment.auto_trader_ankr.AutoTraderV5()
+            bot.run()
+            return
+        elif version == "V5":
+            print("[INFO] 启动 V5 (稳定版本)...")
             import auto_trader_ankr
             bot = auto_trader_ankr.AutoTraderV5()
             bot.run()
@@ -38,31 +43,14 @@ def main():
             asyncio.run(engine.run())
             return
 
-    # 没有参数时，让用户选择
-    print("请选择版本:")
-    print("  1. V5 (REST轮询) - 稳定版本，适合生产环境")
-    print("  2. V6 (WebSocket) - 实验性版本，更快但需要测试")
+    # 没有参数时，默认运行 v2_experiment
+    print("[INFO] 启动 v2_experiment (最新版本)...")
+    print("[提示] 请确保已先启动 binance_oracle.py")
     print()
-
     try:
-        choice = input("输入选择 [1/2] (默认:1): ").strip()
-
-        if choice == "2":
-            print("\n[INFO] 启动 V6 (WebSocket高频模式)...")
-            print("[提示] 请确保已先启动 binance_oracle.py")
-            print()
-            import v6_hft_engine
-            asyncio = v6_hft_engine.asyncio
-            engine = v6_hft_engine.V6HFTEngine()
-            asyncio.run(engine.run())
-
-        else:  # 默认V5
-            print("\n[INFO] 启动 V5 (REST轮询模式)...")
-            print("[提示] 请确保已先启动 binance_oracle.py")
-            print()
-            import auto_trader_ankr
-            bot = auto_trader_ankr.AutoTraderV5()
-            bot.run()
+        import v2_experiment.auto_trader_ankr
+        bot = v2_experiment.auto_trader_ankr.AutoTraderV5()
+        bot.run()
 
     except KeyboardInterrupt:
         print("\n\n[STOP] 收到停止信号，正在退出...")

@@ -623,20 +623,7 @@ class AutoTraderV5:
             print(f"[WARN] Session Memory初始化失败: {e}")
             self.session_memory = None
 
-        # [VOTING] 投票系统（实验性，替换原评分系统）
-        try:
-            from voting_system import create_voting_system
-            self.voting_system = create_voting_system(self.session_memory)
-            self.use_voting_system = True  # 开关：True使用投票，False使用原系统
-            print("[VOTING] 投票系统已启用（9个规则 + 超短动量）")
-            print("    规则: Momentum 30s/60s/120s, Price, RSI, VWAP, Trend, Oracle CVD, UT Bot, Memory")
-        except Exception as e:
-            print(f"[WARN] 投票系统初始化失败: {e}")
-            self.voting_system = None
-            self.use_voting_system = False
-
-
-        # [ROCKET] HTTP Session池（复用TCP连接，提速3-5倍）
+        # [ROCKET] HTTP Session池（复用TCP连接，提速3-5倍）- 移到前面供PositionsRule使用
         self.http_session = requests.Session()
         # 配置连接池
         from requests.adapters import HTTPAdapter
@@ -653,6 +640,22 @@ class AutoTraderV5:
         )
         self.http_session.mount("http://", adapter)
         self.http_session.mount("https://", adapter)
+
+        # [VOTING] 投票系统（实验性，替换原评分系统）
+        try:
+            from voting_system import create_voting_system
+            self.voting_system = create_voting_system(
+                session_memory=self.session_memory,
+                wallet_address=CONFIG.get('wallet_address'),
+                http_session=self.http_session
+            )
+            self.use_voting_system = True  # 开关：True使用投票，False使用原系统
+            print("[VOTING] 投票系统已启用（25个规则全激活）")
+            print("    规则: 超短动量x3, 技术指标x8, CVDx3, PM指标x4, 订单簿x7, Memory, Positions")
+        except Exception as e:
+            print(f"[WARN] 投票系统初始化失败: {e}")
+            self.voting_system = None
+            self.use_voting_system = False
 
         # CLOB client
         self.client = None
@@ -1891,7 +1894,10 @@ class AutoTraderV5:
         # ==========================================
         # [VOTING] 投票系统（统一信号生成）
         # ==========================================
-        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：18个已激活 + 7个占位）")
+        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：24个激活 + 1个占位）")
+
+        # 获取Polymarket订单簿数据（用于7个订单簿规则）
+        orderbook = self.get_polymarket_orderbook(market)
 
         # 收集投票（所有指标平等输入）
         vote_result = self.voting_system.decide(
@@ -1901,7 +1907,8 @@ class AutoTraderV5:
             rsi=rsi,
             vwap=vwap,
             price_history=price_hist,
-            oracle=oracle
+            oracle=oracle,
+            orderbook=orderbook
         )
 
         if not vote_result or not vote_result.get('passed_gate', False):
@@ -3118,6 +3125,59 @@ class AutoTraderV5:
             return round(bias, 3)
         except:
             return 0.0
+
+    def get_polymarket_orderbook(self, market: Dict) -> Optional[Dict]:
+        """
+        获取完整的Polymarket订单簿数据（用于投票系统的7个订单簿规则）
+
+        返回格式:
+        {
+            'bids': [(price, size), ...],  # 买单列表
+            'asks': [(price, size), ...],  # 卖单列表
+            'spread': float,               # 买卖价差
+            'timestamp': float             # 时间戳
+        }
+        """
+        try:
+            token_ids = market.get('clobTokenIds', [])
+            if isinstance(token_ids, str):
+                token_ids = json.loads(token_ids)
+            if not token_ids:
+                return None
+
+            token_id_yes = str(token_ids[0])
+            url = "https://clob.polymarket.com/book"
+
+            resp = self.http_session.get(url, params={"token_id": token_id_yes},
+                                proxies=CONFIG.get('proxy'), timeout=5)
+            if resp.status_code != 200:
+                return None
+
+            book = resp.json()
+            bids = book.get('bids', [])
+            asks = book.get('asks', [])
+
+            if not bids or not asks:
+                return None
+
+            # 转换为 (price, size) 元组列表
+            bid_list = [(float(b.get('price', 0)), float(b.get('size', 0))) for b in bids]
+            ask_list = [(float(a.get('price', 0)), float(a.get('size', 0))) for a in asks]
+
+            # 计算买卖价差
+            best_bid = bid_list[0][0] if bid_list else 0
+            best_ask = ask_list[0][0] if ask_list else 0
+            spread = best_ask - best_bid if best_ask > 0 and best_bid > 0 else 0
+
+            return {
+                'bids': bid_list,
+                'asks': ask_list,
+                'spread': spread,
+                'timestamp': time.time()
+            }
+        except Exception as e:
+            # 静默失败，不影响其他规则
+            return None
 
     def place_order(self, market: Dict, signal: Dict) -> Optional[Dict]:
         if not self.client:

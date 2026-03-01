@@ -47,6 +47,13 @@ ORACLE_PARAMS_FILE = os.path.join(_DATA_DIR, 'oracle_params.json')
 # 参数热更新间隔（秒）
 PARAMS_RELOAD_INTERVAL = 300  # 5分钟
 
+# Polymarket CLOB API配置
+POLYMARKET_CLOB_API = "https://clob.polymarket.com"
+POLYMARKET_GAMMA_API = "https://gamma-api.polymarket.com"
+
+# BTC 15min市场slug（用于获取token_id）
+BTC_15M_SLUG = "will-bitcoin-price-go-up-in-the-next-15-minutes"
+
 
 def load_oracle_params() -> dict:
     """从 oracle_params.json 加载动态参数，失败时返回硬编码默认值"""
