@@ -2208,8 +2208,14 @@ class AutoTraderV5:
                 if time_left < 0:
                     # 市场已过期，拒绝开仓
                     return False, f" 时间防火墙: 市场已过期({time_left:.0f}秒)，拒绝开仓"
+
+                # [时间窗口] 参考 @jtrevorchapman: 只在剩余 3-6 分钟之间开仓
+                # 早期指标不可靠，晚期风险太高
+                if time_left > 360:
+                    return False, f" [时间窗口] 指标尚未可靠，剩余{time_left:.0f}秒 > 6分钟，等待入场时机"
+
                 if time_left < 180:
-                    return False, f" 时间防火墙: 距离结算仅{time_left:.0f}秒，拒绝开仓"
+                    return False, f" 时间防火墙: 距离结算仅{time_left:.0f}秒 < 3分钟，拒绝开仓"
             else:
                 return False, " 时间防火墙: 缺少市场结束时间，拒绝开仓"
 
