@@ -36,6 +36,14 @@ try:
 except ImportError:
     CLOB_AVAILABLE = False
 
+# 导入Session Memory系统（Layer 1）
+try:
+    from session_memory import SessionMemory
+    MEMORY_AVAILABLE = True
+except ImportError:
+    MEMORY_AVAILABLE = False
+    print("[WARN] Session Memory module not found, Layer 1 disabled")
+
 CONFIG = {
     'clob_host': 'https://clob.polymarket.com',
     'gamma_host': 'https://gamma-api.polymarket.com',
@@ -596,6 +604,17 @@ class AutoTraderV5:
         self.vwap = StandardVWAP()
         self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
+
+        # 🧠 Layer 1: Session Memory System
+        self.session_memory = None
+        if MEMORY_AVAILABLE:
+            try:
+                self.session_memory = SessionMemory()
+                print("[🧠 MEMORY] Session Memory System (Layer 1) 已启用")
+                print("    功能: 基于历史会话计算先验偏差")
+            except Exception as e:
+                print(f"[WARN] Session Memory初始化失败: {e}")
+                self.session_memory = None
 
 
         # 🚀 HTTP Session池（复用TCP连接，提速3-5倍）
@@ -1747,6 +1766,40 @@ class AutoTraderV5:
 
         # 评分（ob_bias固定为0，orderbook_bias权重已禁用）
         score, components = self.scorer.calculate_score(price, rsi, vwap, price_hist)
+        original_score = score  # 保存原始本地分
+
+        # ==========================================
+        # 🧠 Layer 1: Session Memory（先验偏差）
+        # ==========================================
+        # 在生成信号前，系统已经有了基于历史数据的"先验观点"
+        prior_bias = 0.0
+        if self.session_memory:
+            try:
+                market_features = {
+                    'price': price,
+                    'rsi': rsi,
+                    'oracle_score': oracle_score,
+                    'price_history': price_hist
+                }
+
+                current_features = self.session_memory.extract_session_features(market_features)
+                prior_bias, memory_analysis = self.session_memory.calculate_prior_bias(current_features)
+
+                # 每10次信号打印一次详细分析（避免日志刷屏）
+                if self.stats.get('signal_count', 0) % 10 == 0:
+                    self.session_memory.print_analysis(memory_analysis)
+                elif abs(prior_bias) > 0.3:  # 强偏差时也打印
+                    print(f"🧠 [MEMORY] 先验偏差: {prior_bias:+.2f} ({'倾向做多' if prior_bias > 0 else '倾向做空'})")
+
+                # 应用先验偏差到本地分数（权重2.0，可调整）
+                prior_adjustment = prior_bias * 2.0
+                score += prior_adjustment
+
+                if abs(prior_bias) > 0.2:
+                    print(f"       [MEMORY应用] 先知偏差{prior_bias:+.2f} × 2.0 = {prior_adjustment:+.2f} → 本地分调整至{score:.2f}")
+
+            except Exception as e:
+                print(f"[WARN] Session Memory计算失败: {e}")
 
         # ========== 双核融合：读取币安先知Oracle信号 ==========
         oracle = self._read_oracle_signal()

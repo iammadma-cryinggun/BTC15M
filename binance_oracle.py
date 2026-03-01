@@ -29,9 +29,11 @@ PROXY = os.getenv('HTTP_PROXY', os.getenv('HTTPS_PROXY', ''))
 SIGNAL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_signal.json')
 
 # CVD滚动窗口（秒）
-# 🎯 最佳版本配置：15分钟（900秒）- 匹配Polymarket周期，过滤短期噪音
-# 理由：2月21日数据证明此配置胜率58.3%，盈利+$15.14
-CVD_WINDOW_SEC = 900
+# 🎯 双窗口系统：1分钟（即时）+ 5分钟（趋势确认）
+# 理由：匹配专业平台配置，平衡速度和稳定性
+# 参考：图片平台显示CVD 1m: -$178.1K, CVD 5m: +$268.4K
+CVD_WINDOW_SHORT = 60   # 1分钟即时窗口（捕捉瞬时资金流）
+CVD_WINDOW_LONG = 300   # 5分钟趋势窗口（确认持续方向）
 
 # UT Bot + Hull 参数（默认值）- 硬编码默认值，可被 oracle_params.json 覆盖
 UT_BOT_KEY_VALUE = 1.5  # 🎯 保守稳健：需要明确趋势才触发（避免假信号）
@@ -106,11 +108,41 @@ class TechnicalIndicators:
         """计算指数移动平均线"""
         return series.ewm(span=period, adjust=False).mean()
 
+    @staticmethod
+    def calculate_macd(series: pd.Series, fast=12, slow=26, signal=9) -> tuple:
+        """
+        计算MACD指标
+        返回: (macd_line, signal_line, histogram)
+        """
+        ema_fast = series.ewm(span=fast, adjust=False).mean()
+        ema_slow = series.ewm(span=slow, adjust=False).mean()
+        macd_line = ema_fast - ema_slow
+        signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+        histogram = macd_line - signal_line
+        return macd_line, signal_line, histogram
+
+    @staticmethod
+    def calculate_z_score(series: pd.Series, period: int = 20) -> pd.Series:
+        """
+        计算滚动Z-Score（标准化偏离度）
+        用于识别异常资金流
+        """
+        rolling_mean = series.rolling(window=period).mean()
+        rolling_std = series.rolling(window=period).std()
+        return (series - rolling_mean) / rolling_std
+
 
 class BinanceOracle:
     def __init__(self):
-        self.cvd = 0.0                          # 累计主动买卖量差
-        self.cvd_window = deque(maxlen=10000)               # (timestamp, delta) 滚动窗口（限制最大长度防内存泄漏）
+        # 双CVD窗口系统
+        self.cvd_short = 0.0                    # 1分钟CVD（即时窗口）
+        self.cvd_long = 0.0                     # 5分钟CVD（趋势窗口）
+        self.cvd_window_short = deque(maxlen=10000)  # 短窗口数据
+        self.cvd_window_long = deque(maxlen=50000)   # 长窗口数据
+
+        # CVD历史（用于MACD和Z-Score计算）
+        self.cvd_history = deque(maxlen=100)    # 保存最近100个CVD数据点
+
         self.buy_wall = 0.0                     # 盘口买单墙（实时值）
         self.sell_wall = 0.0                    # 盘口卖单墙（实时值）
         self.buy_wall_history = deque(maxlen=10) # 买单墙历史（用于平滑）
@@ -191,25 +223,41 @@ class BinanceOracle:
             print(f"         Will wait for WebSocket to collect enough K-line data")
 
     def _trim_cvd_window(self):
-        """裁剪超出窗口的旧数据"""
-        cutoff = time.time() - CVD_WINDOW_SEC
-        while self.cvd_window and self.cvd_window[0][0] < cutoff:
-            _, delta = self.cvd_window.popleft()
-            self.cvd -= delta
+        """裁剪双窗口的旧数据"""
+        cutoff_short = time.time() - CVD_WINDOW_SHORT
+        cutoff_long = time.time() - CVD_WINDOW_LONG
+
+        # 裁剪短窗口（1分钟）
+        while self.cvd_window_short and self.cvd_window_short[0][0] < cutoff_short:
+            _, delta = self.cvd_window_short.popleft()
+            self.cvd_short -= delta
+
+        # 裁剪长窗口（5分钟）
+        while self.cvd_window_long and self.cvd_window_long[0][0] < cutoff_long:
+            _, delta = self.cvd_window_long.popleft()
+            self.cvd_long -= delta
 
     def _calc_signal_score(self) -> float:
         """
-        🎯 黄金分割版：量价配合的稳健评分
+        🎯 双窗口融合版：即时性 + 稳定性
 
-        核心理念：过滤假动作，要求真实资金流入确认
-        - 光挂单不成交没用（Spoofing假动作）
-        - 必须有真金白银砸进去（CVD）才能给高分
+        核心理念：
+        - 1分钟窗口：捕捉瞬时资金流变化（快速响应）
+        - 5分钟窗口：确认持续趋势方向（过滤噪音）
+        - 要求真实资金流入确认（光挂单不成交没用）
         """
         score = 0.0
 
-        # 1. 5分钟级别 CVD 权重（真实成交量）
-        # 假设 5 分钟内净流入 3 万美金算很强（300秒窗口）
-        cvd_score = max(-5.0, min(5.0, self.cvd / 30000.0))
+        # 1. 双CVD窗口融合评分
+        # 1分钟窗口：假设净流入5万美金算强（60秒窗口）
+        cvd_short_score = max(-3.0, min(3.0, self.cvd_short / 50000.0))
+
+        # 5分钟窗口：假设净流入15万美金算强（300秒窗口）
+        cvd_long_score = max(-5.0, min(5.0, self.cvd_long / 150000.0))
+
+        # 融合策略：长窗口权重70%，短窗口权重30%
+        # （趋势确认更重要，但短窗口提供抢跑能力）
+        cvd_score = cvd_long_score * 0.7 + cvd_short_score * 0.3
         score += cvd_score
 
         # 2. 盘口挂单权重（适当降低挂单的权重，防止被假单骗）
@@ -228,12 +276,12 @@ class BinanceOracle:
         # ==========================================
 
         # 绝杀：必须挂单极度倾斜，且真金白银已经开始吃货
-        # 光挂单不行，必须有成交确认（量价配合）
-        if imbalance > 0.85 and self.cvd > 50000:
-            print(f"       [🚀 NUCLEAR SIGNAL] 托盘如山+真金爆破 (imbalance={imbalance:.2f}, cvd={self.cvd/1000:.1f}K)，强制做多！")
+        # 使用5分钟窗口的CVD进行判断（更可靠）
+        if imbalance > 0.85 and self.cvd_long > 50000:
+            print(f"       [🚀 NUCLEAR SIGNAL] 托盘如山+真金爆破 (imbalance={imbalance:.2f}, cvd_5m={self.cvd_long/1000:.1f}K)，强制做多！")
             return 10.0
-        elif imbalance < -0.85 and self.cvd < -50000:
-            print(f"       [☄️ NUCLEAR SIGNAL] 压盘如山+真金砸盘 (imbalance={imbalance:.2f}, cvd={abs(self.cvd)/1000:.1f}K)，强制做空！")
+        elif imbalance < -0.85 and self.cvd_long < -50000:
+            print(f"       [☄️ NUCLEAR SIGNAL] 压盘如山+真金砸盘 (imbalance={imbalance:.2f}, cvd_5m={abs(self.cvd_long)/1000:.1f}K)，强制做空！")
             return -10.0
 
         return round(max(-10.0, min(10.0, score)), 3)
@@ -350,6 +398,29 @@ class BinanceOracle:
         else:
             return "SHORT"
 
+    def get_advanced_indicators(self) -> dict:
+        """
+        计算高级指标：MACD和Delta Z-Score
+        返回: {'macd_histogram': float, 'delta_z_score': float}
+        """
+        result = {'macd_histogram': 0.0, 'delta_z_score': 0.0}
+
+        # 1. 计算MACD Histogram（基于5分钟CVD）
+        if len(self.cvd_history) >= 26:
+            cvd_series = pd.Series(list(self.cvd_history))
+            macd_line, signal_line, histogram = TechnicalIndicators.calculate_macd(cvd_series)
+            if not pd.isna(histogram.iloc[-1]):
+                result['macd_histogram'] = round(float(histogram.iloc[-1]), 4)
+
+        # 2. 计算Delta Z-Score（标准化资金流异常）
+        if len(self.cvd_history) >= 20:
+            cvd_series = pd.Series(list(self.cvd_history))
+            z_scores = TechnicalIndicators.calculate_z_score(cvd_series, period=20)
+            if not pd.isna(z_scores.iloc[-1]):
+                result['delta_z_score'] = round(float(z_scores.iloc[-1]), 3)
+
+        return result
+
     def _write_signal(self):
         """每秒写一次信号文件供 V6 引擎读取"""
         now = time.time()
@@ -370,17 +441,24 @@ class BinanceOracle:
         # 计算1小时大趋势（战略级别）
         trend_1h = self.get_1h_trend()
 
+        # 计算高级指标（MACD和Z-Score）
+        advanced = self.get_advanced_indicators()
+
         signal = {
             'timestamp': datetime.utcnow().isoformat() + 'Z',
             'ts_unix': now,
             'signal_score': score,
             'direction': 'LONG' if score > 0 else 'SHORT',
-            'cvd_15m': round(self.cvd, 4),
+            'cvd_1m': round(self.cvd_short, 4),      # 1分钟即时CVD
+            'cvd_5m': round(self.cvd_long, 4),       # 5分钟趋势CVD
             'buy_wall': round(self.buy_wall, 2),
             'sell_wall': round(self.sell_wall, 2),
             'wall_imbalance': round(imbalance, 4),
             'last_price': self.last_price,
             'trade_count': self.trade_count,
+            # 高级指标
+            'macd_histogram': advanced['macd_histogram'],
+            'delta_z_score': advanced['delta_z_score'],
             # 趋势字段
             'ut_hull_trend': ut_hull_trend if ut_hull_trend else 'NEUTRAL',
             'trend_1h': trend_1h if trend_1h else 'NEUTRAL',  # 1小时大趋势
@@ -413,8 +491,18 @@ class BinanceOracle:
 
                         # CVD：主动买入+，主动卖出-（用成交额加权）
                         delta = (qty * price) if not is_buyer_maker else -(qty * price)
-                        self.cvd_window.append((time.time(), delta))
-                        self.cvd += delta
+                        ts = time.time()
+
+                        # 同时更新双窗口
+                        self.cvd_window_short.append((ts, delta))
+                        self.cvd_short += delta
+
+                        self.cvd_window_long.append((ts, delta))
+                        self.cvd_long += delta
+
+                        # 每10笔成交记录一次CVD历史（用于MACD和Z-Score计算）
+                        if self.trade_count % 10 == 0:
+                            self.cvd_history.append(self.cvd_long)
 
                         self._write_signal()
             except Exception as e:
@@ -506,6 +594,9 @@ class BinanceOracle:
             # UT Bot + Hull 趋势
             ut_hull = self.get_ut_bot_hull_trend()
 
+            # 获取高级指标
+            advanced = self.get_advanced_indicators()
+
             now = datetime.now().strftime("%H:%M:%S")
             color = "\033[92m" if score > 0 else "\033[91m"
             reset = "\033[0m"
@@ -513,7 +604,10 @@ class BinanceOracle:
             ut_hull_color = "\033[92m" if ut_hull == "LONG" else "\033[91m" if ut_hull == "SHORT" else "\033[93m"
 
             print(f"[{now}] ORACLE | Score: {color}{score:+.2f}{reset} | "
-                  f"CVD(15m): {color}{self.cvd:+.1f} USD{reset} | "
+                  f"CVD(1m): {color}{self.cvd_short:+.1f}{reset} | "
+                  f"CVD(5m): {color}{self.cvd_long:+.1f}{reset} | "
+                  f"MACD: {advanced['macd_histogram']:+.4f} | "
+                  f"Z-Score: {advanced['delta_z_score']:+.3f} | "
                   f"Imbalance: {imbalance*100:+.1f}% | "
                   f"UT+Hull: {ut_hull_color}{ut_hull or 'CALC'}{reset} | "
                   f"BTC: {self.last_price:.1f}")
