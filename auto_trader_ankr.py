@@ -86,6 +86,10 @@ CONFIG = {
         'max_stop_loss_pct': 0.80,      # 80%止损（仅极端情况保护，基本不触发）
         'take_profit_pct': 0.90,        # 90%止盈（基本不触发，持有到期）
         'enable_stop_loss': False,      #  禁用止盈止损：持有到期，赌结算结果
+        
+        # [止盈开关] 可以单独控制每种止盈机制
+        'enable_trailing_tp': False,    # 🔴 禁用追踪止盈（0.75激活，回撤5¢触发）
+        'enable_absolute_tp': False,    # 🔴 禁用绝对止盈（0.92强制平仓）
     },
 
     'signal': {
@@ -3825,30 +3829,64 @@ class AutoTraderV5:
                 TRAILING_ACTIVATION = 0.75  # 启动门槛：涨到75¢才激活追踪
                 TRAILING_DRAWDOWN = 0.05    # 容忍回撤：从最高点回撤5¢直接砸盘走人
 
-                # 读取数据库中的历史最高价
-                try:
-                    cursor.execute("SELECT highest_price FROM positions WHERE id = ?", (pos_id,))
-                    hp_row = cursor.fetchone()
-                    db_highest_price = float(hp_row[0]) if hp_row and hp_row[0] else float(entry_token_price)
-                except:
-                    db_highest_price = float(entry_token_price)
+                # 🔴 检查追踪止盈开关
+                if not CONFIG['risk'].get('enable_trailing_tp', True):
+                    # 追踪止盈已禁用，跳过
+                    trailing_triggered = False
+                else:
+                    # 读取数据库中的历史最高价
+                    try:
+                        cursor.execute("SELECT highest_price FROM positions WHERE id = ?", (pos_id,))
+                        hp_row = cursor.fetchone()
+                        db_highest_price = float(hp_row[0]) if hp_row and hp_row[0] else float(entry_token_price)
+                    except:
+                        db_highest_price = float(entry_token_price)
 
-                # 更新历史最高价
-                if pos_current_price > db_highest_price:
-                    db_highest_price = pos_current_price
-                    cursor.execute("UPDATE positions SET highest_price = ? WHERE id = ?", (db_highest_price, pos_id))
-                    conn.commit()
-                    # print(f"       [[UP] 追踪拔高] 历史最高价刷新: {db_highest_price:.4f}")
+                    # 更新历史最高价
+                    if pos_current_price > db_highest_price:
+                        db_highest_price = pos_current_price
+                        cursor.execute("UPDATE positions SET highest_price = ? WHERE id = ?", (db_highest_price, pos_id))
+                        conn.commit()
+                        # print(f"       [[UP] 追踪拔高] 历史最高价刷新: {db_highest_price:.4f}")
 
-                # 检查追踪止盈触发条件
-                trailing_triggered = False
-                if db_highest_price >= TRAILING_ACTIVATION:
-                    # 条件A：最高价已越过激活线（开始锁定利润）
-                    if pos_current_price <= (db_highest_price - TRAILING_DRAWDOWN):
-                        # 条件B：现价比最高价跌了超过5¢（动能衰竭，做市商开始反扑）
-                        print(f"       [[ROCKET] 吸星大法] 追踪止盈触发！最高{db_highest_price:.2f}→现价{pos_current_price:.2f}，回撤达5¢，锁定暴利平仓！")
+                    # 检查追踪止盈触发条件
+                    trailing_triggered = False
+                    if db_highest_price >= TRAILING_ACTIVATION:
+                        # 条件A：最高价已越过激活线（开始锁定利润）
+                        if pos_current_price <= (db_highest_price - TRAILING_DRAWDOWN):
+                            # 条件B：现价比最高价跌了超过5¢（动能衰竭，做市商开始反扑）
+                            print(f"       [[ROCKET] 吸星大法] 追踪止盈触发！最高{db_highest_price:.2f}→现价{pos_current_price:.2f}，回撤达5¢，锁定暴利平仓！")
+                            trailing_triggered = True
+                            exit_reason = 'TRAILING_TAKE_PROFIT'
+                            actual_exit_price = pos_current_price
+
+                            # 立即市价平仓
+                            try:
+                                from py_clob_client.clob_types import OrderArgs
+                                close_order_args = OrderArgs(
+                                    token_id=token_id,
+                                    price=max(0.01, min(0.99, pos_current_price)),
+                                    size=float(size),
+                                    side=SELL
+                                )
+                                close_response = self.client.create_and_post_order(close_order_args)
+                                if close_response and 'orderID' in close_response:
+                                    triggered_order_id = close_response['orderID']
+                                    print(f"       [[ROCKET] 吸星大法]  追踪止盈平仓单已发送: {triggered_order_id[-8:]}")
+                                else:
+                                    print(f"       [[ROCKET] 吸星大法] ⚠ 平仓单发送失败，继续监控")
+                                    trailing_triggered = False
+                            except Exception as e:
+                                print(f"       [[ROCKET] 吸星大法] [X] 平仓异常: {e}")
+                                trailing_triggered = False
+
+                # 超高位强制结算保护（防止最后1秒画门）
+                # 🔴 检查绝对止盈开关
+                if not trailing_triggered and CONFIG['risk'].get('enable_absolute_tp', True):
+                    if pos_current_price >= 0.92:
+                        print(f"       [[TARGET] 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
                         trailing_triggered = True
-                        exit_reason = 'TRAILING_TAKE_PROFIT'
+                        exit_reason = 'ABSOLUTE_TAKE_PROFIT'
                         actual_exit_price = pos_current_price
 
                         # 立即市价平仓
@@ -3863,37 +3901,10 @@ class AutoTraderV5:
                             close_response = self.client.create_and_post_order(close_order_args)
                             if close_response and 'orderID' in close_response:
                                 triggered_order_id = close_response['orderID']
-                                print(f"       [[ROCKET] 吸星大法]  追踪止盈平仓单已发送: {triggered_order_id[-8:]}")
-                            else:
-                                print(f"       [[ROCKET] 吸星大法] ⚠ 平仓单发送失败，继续监控")
-                                trailing_triggered = False
+                                print(f"       [[TARGET] 绝对止盈]  平仓单已发送: {triggered_order_id[-8:]}")
                         except Exception as e:
-                            print(f"       [[ROCKET] 吸星大法] [X] 平仓异常: {e}")
+                            print(f"       [[TARGET] 绝对止盈] [X] 平仓异常: {e}")
                             trailing_triggered = False
-
-                # 超高位强制结算保护（防止最后1秒画门）
-                if not trailing_triggered and pos_current_price >= 0.92:
-                    print(f"       [[TARGET] 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
-                    trailing_triggered = True
-                    exit_reason = 'ABSOLUTE_TAKE_PROFIT'
-                    actual_exit_price = pos_current_price
-
-                    # 立即市价平仓
-                    try:
-                        from py_clob_client.clob_types import OrderArgs
-                        close_order_args = OrderArgs(
-                            token_id=token_id,
-                            price=max(0.01, min(0.99, pos_current_price)),
-                            size=float(size),
-                            side=SELL
-                        )
-                        close_response = self.client.create_and_post_order(close_order_args)
-                        if close_response and 'orderID' in close_response:
-                            triggered_order_id = close_response['orderID']
-                            print(f"       [[TARGET] 绝对止盈]  平仓单已发送: {triggered_order_id[-8:]}")
-                    except Exception as e:
-                        print(f"       [[TARGET] 绝对止盈] [X] 平仓异常: {e}")
-                        trailing_triggered = False
 
                 # 如果追踪止盈已触发，跳过后续的止盈单检查
                 if trailing_triggered:
