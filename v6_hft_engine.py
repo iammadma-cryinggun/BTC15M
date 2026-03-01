@@ -145,7 +145,7 @@ class V6HFTEngine:
 
             # 后台任务完成，记录结果
             self.completed_tasks += 1
-            print(f"       [后台捷报] ✅ {task_name}执行成功")
+            print(f"       [后台捷报] [OK] {task_name}执行成功")
             return result
         except Exception as e:
             print(f"       [后台警报] ❌ {task_name}执行失败: {str(e)[:100]}")
@@ -176,7 +176,7 @@ class V6HFTEngine:
                     self.v5.record_trade,
                     market, signal, order_result, False
                 )
-                print(f"       [后台捷报] ✅ 交易记录已保存")
+                print(f"       [后台捷报] [OK] 交易记录已保存")
             else:
                 print(f"       [后台警报] ⚠️  {task_name}失败: 返回空结果")
 
@@ -476,7 +476,7 @@ class V6HFTEngine:
                     self.v5.last_traded_market = self.current_market.get('slug', '')
                     self.last_trade_time = time.time()
 
-                    print(f"[TRADE] ✅ 下单任务已发射，WebSocket继续监听（0阻塞）")
+                    print(f"[TRADE] [OK] 下单任务已发射，WebSocket继续监听（0阻塞）")
 
             else:
                 print(f"[BLOCK] 风控拦截: {reason}")
