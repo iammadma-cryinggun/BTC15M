@@ -676,6 +676,14 @@ class AutoTraderV5:
         # 🔍 启动时打印最近的交易记录（用于调试）
         self.print_recent_trades()
 
+        # ==========================================
+        # 🛡️ 智能防御层 (Sentinel) 状态记忆
+        # ==========================================
+        self.session_cross_count = 0
+        self.last_cross_state = None
+        self.last_session_id = -1
+        print("[🛡️ 智能防御层] 混沌监测系统已启动")
+
     def cleanup_stale_positions(self):
         """启动时清理过期持仓（超过20分钟的open持仓自动平仓）
 
@@ -1579,6 +1587,97 @@ class AutoTraderV5:
         except Exception:
             return None
 
+    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float) -> float:
+        """
+        🛡️ 核心防御层 (Sentinel Dampening) - 灵感来自 @jtrevorchapman 的系统
+
+        评估各项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
+
+        五大防御因子：
+        1. 黄金6分钟法则 - session剩余时间
+        2. 混沌过滤器 - 预言机报价反复穿越基准价格次数
+        3. 利润空间防御 - 高价位压缩仓位
+        4. CVD一致性检查 - Oracle与本地信号背离惩罚
+        5. 距离基准价格风险 - 价格咬合度检查
+        """
+        from datetime import datetime
+        now = datetime.now()
+        current_session = now.minute // 15  # 划分 00, 15, 30, 45 的 Session
+
+        # ========== 1. 重置混沌震荡计数器 ==========
+        if current_session != self.last_session_id:
+            self.session_cross_count = 0
+            self.last_cross_state = None
+            self.last_session_id = current_session
+            print(f"🛡️ [防御层] 新Session开始，混沌计数器重置")
+
+        # ========== 2. 记录 0.50 基准线穿越 ==========
+        current_state = 'UP' if current_price > 0.50 else 'DOWN'
+        if self.last_cross_state and current_state != self.last_cross_state:
+            self.session_cross_count += 1
+            print(f"⚠️ [混沌监测] 价格穿越基准线！当前Session穿越次数: {self.session_cross_count}")
+        self.last_cross_state = current_state
+
+        # ================= 开始计算防御系数 =================
+        multiplier = 1.0
+        defense_reasons = []
+
+        # ========== 因子A: 黄金6分钟法则 (Time left to expiry) ==========
+        # @jtrevorchapman 发现：session剩余6分钟后指标才开始可靠
+        minutes_to_expiry = 15 - (now.minute % 15)
+        if minutes_to_expiry > 6:
+            print(f"🛡️ [防御层-A] 拦截: 剩余{minutes_to_expiry}分钟(>6分钟)，处于无序震荡期")
+            return 0.0
+
+        # ========== 因子B: 混沌过滤器 (Choppiness Filter) ==========
+        # 反复穿越5次以上说明市场极度混乱，信号不可靠
+        if self.session_cross_count >= 5:
+            print(f"🛡️ [防御层-B] 拦截: 盘面反复穿越已达{self.session_cross_count}次，市场极度混乱")
+            return 0.0
+        elif self.session_cross_count >= 3:
+            multiplier *= 0.5
+            defense_reasons.append(f"混沌x{self.session_cross_count}")
+
+        # ========== 因子C: 利润空间与巨鲸背离防御 ==========
+        # 高价位入场风险大，需要更强的信号
+        if current_price >= 0.90:
+            if abs(oracle_score) < 8.0:
+                print(f"🛡️ [防御层-C] 拦截: 入场价{current_price:.2f}太高，且无核弹级信号(<8.0)")
+                return 0.0
+            else:
+                multiplier *= 0.3  # 极度危险区，只给30%仓位
+                defense_reasons.append(f"高价区{current_price:.2f}")
+        elif current_price >= 0.80:
+            multiplier *= 0.5  # 盈亏比一般，给50%仓位
+            defense_reasons.append(f"中高价区{current_price:.2f}")
+        elif current_price >= 0.70:
+            multiplier *= 0.7  # 稍微压缩
+            defense_reasons.append(f"偏高价区{current_price:.2f}")
+
+        # ========== 因子D: CVD一致性检查 ==========
+        # 如果Oracle（代表CVD方向）与本地信号背离，降半仓
+        if oracle_score * score < 0:
+            multiplier *= 0.5
+            defense_reasons.append(f"背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
+
+        # ========== 因子E: 距离基准价格风险 ==========
+        # 价格越接近0.50，翻转风险越大
+        distance_from_baseline = abs(current_price - 0.50)
+        if distance_from_baseline < 0.05:
+            multiplier *= 0.6
+            defense_reasons.append(f"接近基准({current_price:.2f})")
+        elif distance_from_baseline < 0.10:
+            multiplier *= 0.8
+            defense_reasons.append(f"较近基准({current_price:.2f})")
+
+        # 打印防御层决策
+        if multiplier < 1.0:
+            print(f"🛡️ [防御层] 最终乘数: {multiplier:.2f} | 原因: {', '.join(defense_reasons)}")
+        else:
+            print(f"✅ [防御层] 全仓通过 (乘数1.0)")
+
+        return max(0.0, min(1.0, multiplier))
+
     def generate_signal(self, market: Dict, price: float, no_price: float = None) -> Optional[Dict]:
         # 注意：V5主循环在调用generate_signal前已调用update_indicators
         # V6的update_price_from_ws每秒也会调用update_indicators
@@ -1662,6 +1761,7 @@ class AutoTraderV5:
                     'oracle_score': oracle_score,
                     'oracle_1h_trend': trend_1h,
                     'oracle_15m_trend': ut_hull_trend,
+                    'defense_multiplier': 1.0,  # 🛡️ 巨鲸狙击模式：全仓通过
                 }
             else:
                 print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
@@ -1683,6 +1783,7 @@ class AutoTraderV5:
                     'oracle_score': oracle_score,
                     'oracle_1h_trend': trend_1h,
                     'oracle_15m_trend': ut_hull_trend,
+                    'defense_multiplier': 1.0,  # 🛡️ 巨鲸狙击模式：全仓通过
                 }
             else:
                 print(f"⚠️  [巨鲸信号被拒] oracle={oracle_score:.1f}但 price={price:.2f}或RSI={rsi:.1f}不满足条件")
@@ -1789,8 +1890,18 @@ class AutoTraderV5:
             else:
                 print(f"🚀 [核弹豁免] 15m趋势({ut_hull_trend})被Oracle={oracle_score:+.2f}覆盖，跟随巨鲸！")
 
-            # 所有风控通过，返回常规信号
-            print(f"✅ [🛡️常规模式] {direction} 信号确认（趋势共振，严格防守）")
+            # ==========================================
+            # 🛡️ 智能防御层评估 (@jtrevorchapman 三层防御系统)
+            # ==========================================
+            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, original_score)
+
+            # 如果防御层返回0，直接拦截
+            if defense_multiplier <= 0:
+                print(f"🛑 [防御层] 一票否决！信号被防御层拦截，放弃开单")
+                return None
+
+            # 所有风控通过，返回常规信号（带上防御层乘数）
+            print(f"✅ [🛡️常规模式] {direction} 信号确认（趋势共振+防御层通过）")
             return {
                 'direction': direction,
                 'strategy': 'TREND_FOLLOWING',
@@ -1803,6 +1914,7 @@ class AutoTraderV5:
                 'oracle_score': oracle_score,
                 'oracle_1h_trend': trend_1h,
                 'oracle_15m_trend': ut_hull_trend,
+                'defense_multiplier': defense_multiplier,  # 🆕 防御层乘数
             }
 
         return None
@@ -3022,8 +3134,16 @@ class AutoTraderV5:
                 print(f"       [RISK] 余额查询失败或余额为0，拒绝开仓（安全保护）")
                 return None
             self.position_mgr.balance = fresh_usdc
+
             # 🎯 智能动态仓位：根据信号强度自动调整（15%-30%）
-            position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
+            base_position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
+
+            # 🛡️ 应用防御层乘数 (@jtrevorchapman 三层防御系统)
+            defense_multiplier = signal.get('defense_multiplier', 1.0)
+            position_value = base_position_value * defense_multiplier
+
+            if defense_multiplier < 1.0:
+                print(f"       [🛡️防御层] 基础仓位${base_position_value:.2f} × {defense_multiplier:.2f} = ${position_value:.2f}")
 
             if not self.position_mgr.can_afford(position_value):
                 print(f"       [RISK] Cannot afford {position_value:.2f}")
