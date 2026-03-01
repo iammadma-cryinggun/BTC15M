@@ -1780,53 +1780,13 @@ class AutoTraderV5:
             multiplier *= 0.5
             defense_reasons.append(f"混沌x{self.session_cross_count}")
 
-        # ========== 因子C: 利润空间防御（基于175笔实盘数据优化）==========
-        #  数据证明：入场价格≥0.50的胜率<5%，几乎全部MARKET_SETTLED
-        # [TARGET] 黄金区间：0.28-0.43，胜率100%（在小样本中）
-
-        if current_price >= 0.50:
-            # [BLOCK] 死亡区间：0.50+几乎全部被套牢
-            if abs(oracle_score) < 10.0:
-                print(f" [防御层-C] 拦截: 入场价{current_price:.2f}处于死亡区间(≥0.50)，需Oracle≥10.0才可开单")
-                return 0.0
-            else:
-                # 即使有极端核弹信号，也只给最小仓位
-                multiplier *= 0.15  # 只给15%仓位
-                defense_reasons.append(f"⚠死亡区间{current_price:.2f}(仅核弹)")
-
-        elif current_price >= 0.45:
-            #  高风险区间：胜率大幅下降
-            multiplier *= 0.3  # 压缩到30%
-            defense_reasons.append(f"高风险区{current_price:.2f}")
-
-        elif current_price >= 0.43:
-            #  中等风险区间：边界地带
-            multiplier *= 0.7  # 轻微压缩
-            defense_reasons.append(f"中风险区{current_price:.2f}")
-
-        elif current_price < 0.28:
-            #  过低区间：虽然便宜但说明市场一边倒
-            if abs(oracle_score) < 5.0:
-                print(f" [防御层-C] 拦截: 入场价{current_price:.2f}过低，市场一边倒，需Oracle≥5.0")
-                return 0.0
-
-        # ========== 因子D: CVD一致性检查（强化版）==========
+        # ========== 因子C: CVD一致性检查（强化版）==========
         # [CVD强化] 参考 @jtrevorchapman: CVD是最强指标，背离时严厉惩罚
         # 如果Oracle（代表CVD方向）与本地信号背离，大幅压缩仓位
         if oracle_score * score < 0:
             multiplier *= 0.2  # 从0.5改为0.2（更严厉的惩罚）
             defense_reasons.append(f"CVD背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
             print(f"[CVD一致性] Oracle({oracle_score:+.1f})与本地({score:+.1f})背离，仓位压缩至20%")
-
-        # ========== 因子E: 距离基准价格风险 ==========
-        # 价格越接近0.50，翻转风险越大
-        distance_from_baseline = abs(current_price - 0.50)
-        if distance_from_baseline < 0.05:
-            multiplier *= 0.6
-            defense_reasons.append(f"接近基准({current_price:.2f})")
-        elif distance_from_baseline < 0.10:
-            multiplier *= 0.8
-            defense_reasons.append(f"较近基准({current_price:.2f})")
 
         # 打印防御层决策
         if multiplier < 1.0:
