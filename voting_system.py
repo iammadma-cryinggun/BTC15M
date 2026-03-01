@@ -673,15 +673,48 @@ class BidWallsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('Bid Walls', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         检测买墙（大单支撑）
-
-        [占位规则] 需要Polymarket订单簿数据，暂时不投票
+        
+        买墙：在当前价格下方有大量买单堆积
+        意义：强支撑，价格不易下跌
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现买墙检测逻辑
-        # 需要订单簿数据： bids at different price levels
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        if not bids or len(bids) < 5:
+            return None
+        
+        # 计算买单总量
+        total_bid_size = sum(size for _, size in bids)
+        if total_bid_size == 0:
+            return None
+        
+        # 检测买墙：前5档买单中是否有单档占比超过30%
+        top_5_bids = bids[:5]
+        max_bid_size = max(size for _, size in top_5_bids)
+        max_bid_ratio = max_bid_size / total_bid_size
+        
+        # 买墙阈值：单档占比 > 30%
+        if max_bid_ratio < 0.30:
+            return None
+        
+        # 买墙存在 → 支撑强 → 做多
+        confidence = min(max_bid_ratio / 0.5, 0.99)  # 30%→60%, 50%→100%
+        reason = f'买墙{max_bid_ratio:.0%}（强支撑）'
+        
+        return {
+            'direction': 'LONG',
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': max_bid_ratio
+        }
 
 
 class AskWallsRule(VotingRule):
@@ -690,15 +723,48 @@ class AskWallsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('Ask Walls', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         检测卖墙（大单阻力）
-
-        [占位规则] 需要Polymarket订单簿数据，暂时不投票
+        
+        卖墙：在当前价格上方有大量卖单堆积
+        意义：强阻力，价格不易上涨
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现卖墙检测逻辑
-        # 需要订单簿数据： asks at different price levels
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        asks = orderbook.get('asks', [])
+        if not asks or len(asks) < 5:
+            return None
+        
+        # 计算卖单总量
+        total_ask_size = sum(size for _, size in asks)
+        if total_ask_size == 0:
+            return None
+        
+        # 检测卖墙：前5档卖单中是否有单档占比超过30%
+        top_5_asks = asks[:5]
+        max_ask_size = max(size for _, size in top_5_asks)
+        max_ask_ratio = max_ask_size / total_ask_size
+        
+        # 卖墙阈值：单档占比 > 30%
+        if max_ask_ratio < 0.30:
+            return None
+        
+        # 卖墙存在 → 阻力强 → 做空
+        confidence = min(max_ask_ratio / 0.5, 0.99)  # 30%→60%, 50%→100%
+        reason = f'卖墙{max_ask_ratio:.0%}（强阻力）'
+        
+        return {
+            'direction': 'SHORT',
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': max_ask_ratio
+        }
 
 
 class OBIRule(VotingRule):
@@ -707,16 +773,54 @@ class OBIRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('Orderbook Imbalance', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, **kwargs) -> Optional[Dict]:
         """
         计算订单簿失衡（OBI）
 
         OBI = (买量 - 卖量) / (买量 + 卖量)
-
-        [占位规则] 需要Polymarket订单簿数据，暂时不投票
+        
+        OBI > 0.3: 买盘强势，做多
+        OBI < -0.3: 卖盘强势，做空
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
         """
-        # TODO: 实现OBI计算逻辑
-        return None  # 不投票（占位）
+        if not orderbook:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 计算前10档的买卖量
+        top_bids = bids[:10] if len(bids) >= 10 else bids
+        top_asks = asks[:10] if len(asks) >= 10 else asks
+        
+        total_bid_size = sum(size for _, size in top_bids)
+        total_ask_size = sum(size for _, size in top_asks)
+        
+        if total_bid_size + total_ask_size == 0:
+            return None
+        
+        # 计算OBI
+        obi = (total_bid_size - total_ask_size) / (total_bid_size + total_ask_size)
+        
+        # OBI阈值：±0.3
+        if abs(obi) < 0.3:
+            return None
+        
+        direction = 'LONG' if obi > 0 else 'SHORT'
+        confidence = min(abs(obi) / 0.6, 0.99)  # 0.3→50%, 0.6→100%
+        reason = f'OBI{obi:+.2f}（{"买盘" if obi > 0 else "卖盘"}强势）'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': obi
+        }
 
 
 class PMSpreadRule(VotingRule):
@@ -748,16 +852,60 @@ class PMSentimentRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('PM Sentiment', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, price: float = None, price_history: List[float] = None, **kwargs) -> Optional[Dict]:
         """
         分析Polymarket市场情绪
-
-        基于交易量、持仓量、价格变化等
-
-        [占位规则] 需要Polymarket历史数据，暂时不投票
+        
+        基于价格变化速度和方向判断市场情绪
+        快速上涨 → 乐观情绪 → 做多
+        快速下跌 → 悲观情绪 → 做空
+        
+        Args:
+            price: 当前价格
+            price_history: 价格历史（最近20个数据点）
         """
-        # TODO: 实现情绪分析逻辑
-        return None  # 不投票（占位）
+        if not price or not price_history or len(price_history) < 10:
+            return None
+        
+        # 计算最近10个周期的价格变化
+        recent = price_history[-10:]
+        
+        # 计算价格变化速度（每周期平均变化）
+        price_changes = []
+        for i in range(1, len(recent)):
+            change_pct = (recent[i] - recent[i-1]) / recent[i-1] * 100
+            price_changes.append(change_pct)
+        
+        if not price_changes:
+            return None
+        
+        # 平均变化率
+        avg_change = sum(price_changes) / len(price_changes)
+        
+        # 变化率标准差（波动性）
+        variance = sum((c - avg_change) ** 2 for c in price_changes) / len(price_changes)
+        volatility = variance ** 0.5
+        
+        # 情绪强度 = 平均变化率 × 一致性（低波动 = 高一致性）
+        consistency = max(0, 1.0 - volatility / 2.0)  # 波动越小，一致性越高
+        sentiment_strength = abs(avg_change) * consistency
+        
+        # 情绪阈值：0.5%
+        if sentiment_strength < 0.5:
+            return None
+        
+        direction = 'LONG' if avg_change > 0 else 'SHORT'
+        confidence = min(sentiment_strength / 2.0, 0.99)  # 0.5%→25%, 2.0%→100%
+        
+        sentiment_label = "乐观" if avg_change > 0 else "悲观"
+        reason = f'市场{sentiment_label}（{avg_change:+.2f}%/周期）'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': sentiment_strength
+        }
 
 
 class CLDataAgeRule(VotingRule):
@@ -967,16 +1115,68 @@ class NaturalPriceRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('NATURAL', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         计算自然价格（远离大单的价格）
-
-        [占位规则] 需要订单簿数据
+        
+        自然价格：排除异常大单后的加权平均价格
+        如果当前价格偏离自然价格，可能是大单操纵
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现自然价格计算
-        # 需要订单簿数据：bids/asks at different levels
-        # 自然价格 = 排除大单后的加权平均价格
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 计算买卖单的加权平均价格（排除前2档大单）
+        filtered_bids = bids[2:12] if len(bids) > 2 else bids
+        filtered_asks = asks[2:12] if len(asks) > 2 else asks
+        
+        if not filtered_bids or not filtered_asks:
+            return None
+        
+        # 加权平均价格
+        bid_weighted_sum = sum(p * s for p, s in filtered_bids)
+        bid_total_size = sum(s for _, s in filtered_bids)
+        
+        ask_weighted_sum = sum(p * s for p, s in filtered_asks)
+        ask_total_size = sum(s for _, s in filtered_asks)
+        
+        if bid_total_size == 0 or ask_total_size == 0:
+            return None
+        
+        avg_bid = bid_weighted_sum / bid_total_size
+        avg_ask = ask_weighted_sum / ask_total_size
+        
+        # 自然价格 = 买卖加权平均的中点
+        natural_price = (avg_bid + avg_ask) / 2.0
+        
+        # 计算偏离度
+        deviation_pct = ((price - natural_price) / natural_price) * 100
+        
+        # 偏离阈值：±1%
+        if abs(deviation_pct) < 1.0:
+            return None
+        
+        # 当前价格 > 自然价格：被拉高，做空
+        # 当前价格 < 自然价格：被压低，做多
+        direction = 'SHORT' if deviation_pct > 0 else 'LONG'
+        confidence = min(abs(deviation_pct) / 3.0, 0.99)  # 1%→33%, 3%→100%
+        reason = f'偏离自然价{deviation_pct:+.2f}%'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': deviation_pct
+        }
 
 
 class NaturalAbsRule(VotingRule):
@@ -985,14 +1185,70 @@ class NaturalAbsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('NAT ABS', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, **kwargs) -> Optional[Dict]:
         """
-        自然价格的绝对值
-
-        [占位规则] 需要订单簿数据
+        自然价格的绝对值判断
+        
+        基于自然价格本身的高低判断市场情绪
+        自然价格 > 0.60: 市场看涨
+        自然价格 < 0.40: 市场看跌
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
         """
-        # TODO: 实现自然价格绝对值计算
-        return None  # 不投票（占位）
+        if not orderbook:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 计算自然价格（同NaturalPriceRule）
+        filtered_bids = bids[2:12] if len(bids) > 2 else bids
+        filtered_asks = asks[2:12] if len(asks) > 2 else asks
+        
+        if not filtered_bids or not filtered_asks:
+            return None
+        
+        bid_weighted_sum = sum(p * s for p, s in filtered_bids)
+        bid_total_size = sum(s for _, s in filtered_bids)
+        
+        ask_weighted_sum = sum(p * s for p, s in filtered_asks)
+        ask_total_size = sum(s for _, s in filtered_asks)
+        
+        if bid_total_size == 0 or ask_total_size == 0:
+            return None
+        
+        avg_bid = bid_weighted_sum / bid_total_size
+        avg_ask = ask_weighted_sum / ask_total_size
+        natural_price = (avg_bid + avg_ask) / 2.0
+        
+        # 基于自然价格绝对值判断
+        if natural_price > 0.60:
+            # 自然价格高 → 市场看涨 → 跟随做多
+            confidence = (natural_price - 0.60) / 0.40  # 0.60→0%, 1.00→100%
+            confidence = min(confidence, 0.99)
+            return {
+                'direction': 'LONG',
+                'confidence': confidence,
+                'reason': f'自然价{natural_price:.2f}（看涨）',
+                'raw_value': natural_price
+            }
+        elif natural_price < 0.40:
+            # 自然价格低 → 市场看跌 → 跟随做空
+            confidence = (0.40 - natural_price) / 0.40  # 0.40→0%, 0.00→100%
+            confidence = min(confidence, 0.99)
+            return {
+                'direction': 'SHORT',
+                'confidence': confidence,
+                'reason': f'自然价{natural_price:.2f}（看跌）',
+                'raw_value': natural_price
+            }
+        
+        # 自然价格在中性区间（0.40-0.60），不投票
+        return None
 
 
 class BufferTicketsRule(VotingRule):
@@ -1001,15 +1257,65 @@ class BufferTicketsRule(VotingRule):
     def __init__(self, weight: float = 1.0):
         super().__init__('BUFFER TICKETS', weight)
 
-    def evaluate(self, **kwargs) -> Optional[Dict]:
+    def evaluate(self, orderbook: Dict = None, price: float = None, **kwargs) -> Optional[Dict]:
         """
         统计缓冲区订单数量
-
-        [占位规则] 需要订单簿数据
+        
+        缓冲订单：接近当前价格（±2%）的未成交订单
+        缓冲订单多 → 流动性好 → 价格稳定
+        
+        Args:
+            orderbook: {'bids': [(price, size), ...], 'asks': [(price, size), ...]}
+            price: 当前价格
         """
-        # TODO: 实现缓冲订单统计
-        # 缓冲订单：接近当前价格的未成交订单
-        return None  # 不投票（占位）
+        if not orderbook or not price:
+            return None
+        
+        bids = orderbook.get('bids', [])
+        asks = orderbook.get('asks', [])
+        
+        if not bids or not asks:
+            return None
+        
+        # 定义缓冲区：当前价格 ±2%
+        buffer_range = price * 0.02
+        lower_bound = price - buffer_range
+        upper_bound = price + buffer_range
+        
+        # 统计缓冲区内的订单数量
+        buffer_bids = [s for p, s in bids if lower_bound <= p <= price]
+        buffer_asks = [s for p, s in asks if price <= p <= upper_bound]
+        
+        buffer_bid_count = len(buffer_bids)
+        buffer_ask_count = len(buffer_asks)
+        total_buffer_count = buffer_bid_count + buffer_ask_count
+        
+        # 缓冲订单阈值：至少5个订单
+        if total_buffer_count < 5:
+            return None
+        
+        # 计算买卖缓冲订单的不平衡
+        if buffer_bid_count + buffer_ask_count == 0:
+            return None
+        
+        buffer_imbalance = (buffer_bid_count - buffer_ask_count) / (buffer_bid_count + buffer_ask_count)
+        
+        # 不平衡阈值：±0.4
+        if abs(buffer_imbalance) < 0.4:
+            return None
+        
+        # 买单多 → 支撑强 → 做多
+        # 卖单多 → 阻力强 → 做空
+        direction = 'LONG' if buffer_imbalance > 0 else 'SHORT'
+        confidence = min(abs(buffer_imbalance) / 0.6, 0.99)  # 0.4→67%, 0.6→100%
+        reason = f'缓冲订单{total_buffer_count}个（{"买" if buffer_imbalance > 0 else "卖"}盘多）'
+        
+        return {
+            'direction': direction,
+            'confidence': confidence,
+            'reason': reason,
+            'raw_value': buffer_imbalance
+        }
 
 
 class PositionsRule(VotingRule):
@@ -1322,3 +1628,4 @@ if __name__ == "__main__":
         print(f"\n✅ 最终决策: {result['direction']} | 置信度: {result['confidence']:.0%}")
     else:
         print(f"\n❌ 无明确信号")
+
