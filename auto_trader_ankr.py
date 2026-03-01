@@ -1855,6 +1855,21 @@ class AutoTraderV5:
                 return None
 
             # ==========================================
+            # 📊 UT Bot趋势过滤（双重确认机制）
+            # ==========================================
+            if ut_hull_trend and ut_hull_trend != 'NEUTRAL':
+                if direction == 'LONG' and ut_hull_trend == 'SHORT':
+                    print(f"🛑 [UT Bot趋势锁] 拒绝做多！15m趋势=SHORT与方向不符")
+                    return None
+                elif direction == 'SHORT' and ut_hull_trend == 'LONG':
+                    print(f"🛑 [UT Bot趋势锁] 拒绝做空！15m趋势=LONG与方向不符")
+                    return None
+                else:
+                    print(f"✅ [UT Bot趋势确认] 趋势={ut_hull_trend}，与方向({direction})一致")
+            else:
+                print(f"⏸ [UT Bot趋势中性] 15m趋势={ut_hull_trend}，继续判断")
+
+            # ==========================================
             # 🛡️ 智能防御层评估 (@jtrevorchapman 三层防御系统)
             # ==========================================
             # 防御层包含：时间锁、混沌过滤、利润空间、核弹穿透
