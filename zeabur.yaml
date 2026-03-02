@@ -3,7 +3,7 @@ services:
   - name: btc-15min-trader
     type: worker
     buildCommand: pip install -r requirements.txt
-    startCommand: python start.py
+    startCommand: python start.py v6
     env:
       - PYTHON_VERSION=3.10
 # Mon Mar  2 20:56:21     2026
