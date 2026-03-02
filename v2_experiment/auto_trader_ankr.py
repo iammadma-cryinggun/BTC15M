@@ -1564,19 +1564,138 @@ class AutoTraderV5:
         self.price_history.append(price)
 
     def _read_oracle_signal(self) -> Optional[Dict]:
-        """读取 binance_oracle.py 输出的信号文件，超过10秒视为过期"""
+        """
+        读取 binance_oracle.py 输出的信号文件，带健康检查
+
+        健康检查：
+        1. 文件是否存在
+        2. 文件修改时间（超过60秒视为过期）
+        3. 数据格式是否正确
+        4. CVD数据是否有效
+
+        返回：
+        {
+            'cvd_1m': float,      # 1分钟CVD
+            'cvd_5m': float,      # 5分钟CVD
+            'signal_score': float,  # Oracle综合分数
+            'ut_hull_trend': str,   # UT Bot趋势（LONG/SHORT/NEUTRAL）
+            'momentum_30s': float,  # 30秒动量
+            'momentum_60s': float,  # 60秒动量
+            'momentum_120s': float, # 120秒动量
+            'timestamp': float      # 时间戳
+        }
+        """
         try:
-            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_signal.json')
+            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'oracle_signal.json')
+
+            # 检查1: 文件是否存在
             if not os.path.exists(oracle_path):
+                # 只在首次运行时打印警告，避免日志污染
+                if not hasattr(self, '_oracle_warned'):
+                    print(f"       [ORACLE HEALTH] ⚠️ 文件不存在: oracle_signal.json")
+                    print(f"       [ORACLE HEALTH] 💡 解决方案: 在另一个终端运行 'python binance_oracle.py'")
+                    print(f"       [ORACLE HEALTH] 📁 文件路径: {oracle_path}")
+                    self._oracle_warned = True
                 return None
-            with open(oracle_path, 'r') as f:
+
+            # 检查2: 文件修改时间（超过60秒视为过期）
+            file_mtime = os.path.getmtime(oracle_path)
+            file_age = time.time() - file_mtime
+
+            if file_age > 120:  # 2分钟没更新
+                if not hasattr(self, '_oracle_stale_warned'):
+                    print(f"       [ORACLE HEALTH] 🔴 数据严重过期: {file_age:.0f}秒前（binance_oracle.py 可能崩溃）")
+                    print(f"       [ORACLE HEALTH] 💡 解决方案: 重启 binance_oracle.py")
+                    self._oracle_stale_warned = True
+                return None
+            elif file_age > 60:  # 1分钟没更新
+                print(f"       [ORACLE HEALTH] ⚠️ 数据过期: {file_age:.0f}秒前")
+                return None
+
+            # 读取文件
+            with open(oracle_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            # 超过10秒的数据视为过期
-            if time.time() - data.get('ts_unix', 0) > 10:
-                return None
+
+            # 检查3: 数据格式
+            required_fields = ['cvd_1m', 'cvd_5m']
+            for field in required_fields:
+                if field not in data:
+                    print(f"       [ORACLE HEALTH] ❌ 缺少字段: {field}")
+                    return None
+
+            # 检查4: CVD数据有效性
+            cvd_1m = data.get('cvd_1m', 0.0)
+            cvd_5m = data.get('cvd_5m', 0.0)
+
+            # 只在CVD数据有效时打印（避免日志污染）
+            if abs(cvd_1m) > 1000 or abs(cvd_5m) > 1000:
+                if not hasattr(self, '_oracle_data_shown'):
+                    print(f"       [ORACLE] ✅ CVD数据正常: 1m={cvd_1m:+.0f}, 5m={cvd_5m:+.0f}")
+                    self._oracle_data_shown = True
+
             return data
-        except Exception:
+
+        except json.JSONDecodeError as e:
+            print(f"       [ORACLE HEALTH] ❌ JSON解析失败: {e}")
             return None
+        except Exception as e:
+            print(f"       [ORACLE HEALTH] ❌ 读取失败: {e}")
+            return None
+
+    def check_oracle_health(self) -> Dict:
+        """
+        检查Oracle系统健康状态（用于监控）
+
+        返回：
+        {
+            'status': 'healthy' | 'stale' | 'down',
+            'file_age': float,  # 文件年龄（秒）
+            'cvd_1m': float,
+            'cvd_5m': float,
+            'message': str
+        }
+        """
+        result = {
+            'status': 'unknown',
+            'file_age': 0.0,
+            'cvd_1m': 0.0,
+            'cvd_5m': 0.0,
+            'message': ''
+        }
+
+        try:
+            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'oracle_signal.json')
+
+            if not os.path.exists(oracle_path):
+                result['status'] = 'down'
+                result['message'] = 'oracle_signal.json 文件不存在'
+                return result
+
+            # 检查文件年龄
+            file_age = time.time() - os.path.getmtime(oracle_path)
+            result['file_age'] = file_age
+
+            if file_age > 120:
+                result['status'] = 'down'
+                result['message'] = f'数据过期 {file_age:.0f}秒（Oracle可能崩溃）'
+            elif file_age > 60:
+                result['status'] = 'stale'
+                result['message'] = f'数据过期 {file_age:.0f}秒'
+            else:
+                result['status'] = 'healthy'
+                result['message'] = f'数据正常 ({file_age:.0f}秒前)'
+
+            # 尝试读取CVD数据
+            with open(oracle_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                result['cvd_1m'] = data.get('cvd_1m', 0.0)
+                result['cvd_5m'] = data.get('cvd_5m', 0.0)
+
+        except Exception as e:
+            result['status'] = 'error'
+            result['message'] = f'检查失败: {str(e)}'
+
+        return result
 
     def calculate_defense_multiplier(self, current_price: float, direction: str, oracle: Dict = None) -> float:
         """
@@ -4590,10 +4709,26 @@ class AutoTraderV5:
                     print()
                     self.print_trading_analysis()
 
-                #  每30次迭代导出一次（约7.5分钟），确保能看到最新数据
+                # 每30次迭代导出一次（约7.5分钟），确保能看到最新数据
                 if i % 30 == 0 and i > 0:
                     print()
                     self.print_trading_analysis()
+
+                # 每120次迭代检查Oracle健康状态（约30分钟）
+                if i % 120 == 0 and i > 0:
+                    print()
+                    print("=" * 70)
+                    print("[HEALTH CHECK] Oracle系统健康检查")
+                    print("=" * 70)
+                    health = self.check_oracle_health()
+                    status_icon = "✅" if health['status'] == 'healthy' else "⚠️" if health['status'] == 'stale' else "❌"
+                    print(f"  状态: {status_icon} {health['status'].upper()}")
+                    print(f"  消息: {health['message']}")
+                    if health['status'] != 'healthy':
+                        print(f"  CVD: 1m={health['cvd_1m']:+.0f}, 5m={health['cvd_5m']:+.0f}")
+                        print(f"  建议: 检查 binance_oracle.py 是否运行")
+                    print("=" * 70)
+                    print()
 
                 time.sleep(interval)
                 i += 1
