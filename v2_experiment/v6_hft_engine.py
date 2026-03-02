@@ -651,12 +651,8 @@ class V6HFTEngine:
                     last_trade_check = time.time()
                     last_adjust_check = time.time()
                     last_cleanup_check = time.time()
-                    last_analysis_check = 0  #  启动时立即触发一次交易分析
 
-                    #  启动时立即输出交易分析
-                    print("[ANALYSIS] 启动时输出交易分析...")
-                    await self.print_trading_analysis()
-                    last_analysis_check = time.time()
+                    # 📊 交易分析已移除自动输出（数据已保存数据库，可随时查询）
 
                     while True:
                         # 接收WebSocket消息（带超时）
@@ -702,12 +698,15 @@ class V6HFTEngine:
                             await self.auto_adjust()
                             last_adjust_check = now
 
-                        # 每15分钟输出交易分析（新增）
-                        if now - last_analysis_check >= 900:
-                            elapsed = now - last_analysis_check
-                            print(f"[ANALYSIS] 触发交易分析 (距上次{elapsed:.0f}秒)")
-                            await self.print_trading_analysis()
-                            last_analysis_check = now
+                        # 📊 交易分析已移除自动输出（数据已保存数据库，可随时查询）
+                        # 如需查看分析，请手动调用 print_trading_analysis() 或查询数据库
+                        #
+                        # # 每15分钟输出交易分析
+                        # if now - last_analysis_check >= 900:
+                        #     elapsed = now - last_analysis_check
+                        #     print(f"[ANALYSIS] 触发交易分析 (距上次{elapsed:.0f}秒)")
+                        #     await self.print_trading_analysis()
+                        #     last_analysis_check = now
 
                         # 每5分钟清理过期持仓
                         if now - last_cleanup_check >= 300:
