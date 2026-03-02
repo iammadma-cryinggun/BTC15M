@@ -2649,7 +2649,8 @@ class AutoTraderV5:
             # 确认token授权
             # 检查token授权
             print(f"       [STOP ORDERS] 检查token授权...")
-            self.ensure_allowance(token_id, expected_size=stop_size)
+            from py_clob_client.clob_types import AssetType
+            self.update_allowance_fixed(AssetType.CONDITIONAL, token_id)
 
             # ==========================================
             # [ROCKET] 强制止盈挂单（带动态退避与重试机制）
@@ -3493,6 +3494,7 @@ class AutoTraderV5:
         """
         try:
             import time
+            import json
             token_ids = market.get('clobTokens', [])
             if isinstance(token_ids, str):
                 token_ids = json.loads(token_ids)
