@@ -1788,6 +1788,17 @@ class AutoTraderV5:
             # 计算CVD强度（绝对值）
             cvd_strength = abs(cvd_combined)
 
+            # ========== CVD 极端背离一票否决（高频次影响最小） ==========
+            # 只在极端情况下拒绝，几乎不影响正常交易
+            CVD_EXTREME_THRESHOLD = 180000  # 极高阈值，只拦截极端异常
+            if cvd_strength > CVD_EXTREME_THRESHOLD:
+                # 检查方向是否背离
+                if (direction == 'LONG' and cvd_direction == 'SHORT') or \
+                   (direction == 'SHORT' and cvd_direction == 'LONG'):
+                    print(f" [🚨 CVD一票否决] CVD{cvd_direction}强度{cvd_combined:+.0f}超过{CVD_EXTREME_THRESHOLD}，极端背离 → 拒绝开仓")
+                    print(f"     理由：{direction}信号与CVD{cvd_direction}方向相反，强度{cvd_strength:.0f}超过安全阈值")
+                    return 0.0  # 直接拒绝
+
             # CVD一致性检查
             if direction == 'LONG':
                 if cvd_direction == 'SHORT':
