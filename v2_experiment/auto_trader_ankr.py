@@ -1866,13 +1866,25 @@ class AutoTraderV5:
 
         # ========== 因子4: 混沌过滤器 ==========
         # [逻辑] 价格反复穿越基准线 → 市场无明确方向 → 压缩仓位
-        # 混乱市场 + CVD背离 = 一票否决
+        # 混乱市场 + CVD背离 = 一票否决（热心哥核心逻辑）
         if self.session_cross_count >= 5:
             # 极度混乱，直接拒绝
             print(f" [因子4-混沌] 价格穿越{self.session_cross_count}次，极度混乱 → 拒绝开仓")
             return 0.0
         elif self.session_cross_count >= 3:
-            # 中度混乱
+            # 中度混乱：检查是否与CVD背离组合
+            # 如果混乱市场 + CVD背离 → 一票否决（热心哥策略）
+            cvd_opposite = (
+                (direction == 'LONG' and cvd_direction == 'SHORT') or
+                (direction == 'SHORT' and cvd_direction == 'LONG')
+            )
+
+            if cvd_opposite and cvd_strength > 50000:  # 混乱+CVD背离（中等以上）
+                print(f" [🚨 因子4+CVD一票否决] 价格穿越{self.session_cross_count}次(混乱) + CVD{cvd_direction}({cvd_combined:+.0f}) → 拒绝开仓")
+                print(f"     理由：混沌市场与CVD背离双重风险，避免大概率亏损")
+                return 0.0
+
+            # 混乱但不与CVD背离（或CVD弱），正常压缩
             chaos_multiplier = 0.3 if self.session_cross_count >= 4 else 0.5
             multiplier *= chaos_multiplier
             defense_reasons.append(f"混沌x{self.session_cross_count}")
