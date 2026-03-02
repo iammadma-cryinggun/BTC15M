@@ -82,7 +82,7 @@ CONFIG = {
 
         # [策略调整] 恢复止盈止损功能
         # 理由：允许全时段入场后，需要止盈止损保护
-        'max_stop_loss_pct': 0.50,      # 🔴 50%止损（确认）
+        'max_stop_loss_pct': 0.70,      # 🔴 70%止损（扩大，给更多容忍空间）
         'take_profit_pct': 0.30,        # 30%止盈（提高，给更多利润空间）
         'enable_stop_loss': True,       # ✅ 启用止盈止损
 
