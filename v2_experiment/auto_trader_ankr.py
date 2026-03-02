@@ -1747,9 +1747,9 @@ class AutoTraderV5:
             multiplier *= 1.0  # 全仓（仍可交易）
             print(f" [防御层-A] 中期窗口: {minutes_to_expiry}分钟剩余，仓位100%")
         else:  # < 2 分钟
-            multiplier *= 0.5  # 大幅压缩（快到期，风险陡增）
-            defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
+            # [安全修复] 晚期窗口直接拒绝，避免结算前剧烈波动无法止损
+            print(f"[防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，拒绝开仓（结算前风险太大）")
+            return 0.0
 
         # ========== 因子B: 混沌过滤器（纯数学逻辑）==========
         # [逻辑] 价格反复穿越基准线 → 市场无明确方向 → 惩罚仓位
@@ -1800,6 +1800,11 @@ class AutoTraderV5:
             print(f" [防御层] 最终乘数: {multiplier:.2f} | 原因: {', '.join(defense_reasons)}")
         else:
             print(f" [防御层] 全仓通过 (乘数1.0)")
+
+        # [安全修复] 多风险叠加直接拒绝（乘数<0.2说明风险太高）
+        if multiplier < 0.2:
+            print(f"[防御层-拦截] 多重风险叠加(乘数{multiplier:.2f}<0.2)，拒绝开仓")
+            return 0.0
 
         return max(0.0, min(1.0, multiplier))
 
@@ -2623,7 +2628,9 @@ class AutoTraderV5:
                                 sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                 sl_by_pct = actual_entry_price * (1 - sl_pct_max)
                                 sl_original = (value_usdc - 1.0) / max(size, 1)
-                                sl_target_price = max(sl_original, sl_by_pct)
+                                # [BUG修复] 应该取更严格的止损(min)，而不是更宽松的(max)
+                                # max会选择亏更多的价格，min会选择亏更少的价格
+                                sl_target_price = min(sl_original, sl_by_pct)
                                 tp_target_price = align_price(tp_target_price)
                                 sl_target_price = align_price(sl_target_price)
                                 print(f"       [STOP ORDERS] 止盈止损确认: entry={actual_entry_price:.4f}, tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
@@ -2674,7 +2681,8 @@ class AutoTraderV5:
                                     sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                     sl_by_pct = actual_entry_price * (1 - sl_pct_max)
                                     sl_original = (value_usdc - 1.0) / max(size, 1)
-                                    sl_target_price = max(sl_original, sl_by_pct)
+                                    # [BUG修复] 应该取更严格的止损(min)，而不是更宽松的(max)
+                                    sl_target_price = min(sl_original, sl_by_pct)
                                     tp_target_price = align_price(tp_target_price)
                                     sl_target_price = align_price(sl_target_price)
                                     print(f"       [STOP ORDERS] 重新计算止盈止损: tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
