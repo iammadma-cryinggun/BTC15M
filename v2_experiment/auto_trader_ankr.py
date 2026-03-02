@@ -11,7 +11,6 @@ import os
 import sqlite3
 import requests
 import math
-import statistics
 from datetime import datetime, timedelta, timezone
 from collections import deque
 from typing import Optional, Dict, Tuple
@@ -187,14 +186,6 @@ class TelegramNotifier:
 [BLOCK] 止损: {sl_price:.4f}"""
 
         return self.send(message, parse_mode='HTML')
-
-    def send_stop_order_failed(self, side: str, size: float, tp_price: float, sl_price: float, token_id: str, error: str):
-        """（已弃用）"""
-        return False
-
-    def send_position_closed(self, side: str, entry_price: float, exit_price: float, pnl_usd: float, reason: str):
-        """（已弃用）"""
-        return False
 
 class RealBalanceDetector:
     """Get REAL balance using Polygon RPC (with dual-node fallback)"""
@@ -486,91 +477,6 @@ class StandardVWAP:
         return self.current_vwap
 
 
-
-
-
-class V5SignalScorer:
-    def __init__(self):
-        self.weights = {
-            'price_momentum': 0.26,
-            'volatility': 0.16,
-            'vwap_status': 0.18,
-            'rsi_status': 0.14,
-            'trend_strength': 0.14,
-            'orderbook_bias': 0.00,  # 已禁用
-        }
-
-    def calculate_score(self, price: float, rsi: float, vwap: float,
-                       price_history: list) -> Tuple[float, Dict]:
-        score = 0
-        components = {}
-
-        if len(price_history) >= 10:
-            recent = price_history[-10:]
-            momentum = (recent[-1] - recent[0]) / recent[0] * 100 if recent[0] > 0 else 0
-            momentum_score = max(-10, min(10, momentum * 2))
-            components['price_momentum'] = momentum_score
-            score += momentum_score * self.weights['price_momentum']
-        else:
-            components['price_momentum'] = 0
-
-        if len(price_history) >= 5:
-            volatility = statistics.stdev(price_history[-5:])
-            norm_vol = min(volatility / 0.1, 1.0)
-            # 波动率只影响置信度倍数，不贡献方向分
-            # 高波动时信号更可信（有趋势），低波动时信号弱（横盘）
-            vol_multiplier = 0.5 + norm_vol * 0.5  # 0.5~1.0
-            components['volatility'] = norm_vol
-        else:
-            vol_multiplier = 0.75
-            components['volatility'] = 0
-
-        if vwap > 0:
-            vwap_dist = ((price - vwap) / vwap * 100)
-            if vwap_dist > 0.5:
-                components['vwap_status'] = 1
-            elif vwap_dist < -0.5:
-                components['vwap_status'] = -1
-            else:
-                components['vwap_status'] = 0
-            score += components['vwap_status'] * self.weights['vwap_status'] * 5
-        else:
-            components['vwap_status'] = 0
-
-        # 放宽RSI阈值：从70/30改为60/40（15分钟合约需要更敏感）
-        is_extreme = rsi > 60 or rsi < 40
-        if rsi > 60:
-            components['rsi_status'] = -1
-        elif rsi < 40:
-            components['rsi_status'] = 1
-        else:
-            components['rsi_status'] = 0
-        score += components['rsi_status'] * self.weights['rsi_status'] * 5
-
-        if len(price_history) >= 3:
-            short_trend = (price_history[-1] - price_history[-3]) / price_history[-3] * 100 if price_history[-3] > 0 else 0
-            trend_score = max(-5, min(5, short_trend * 3))
-            components['trend_strength'] = trend_score
-            score += trend_score * self.weights['trend_strength']
-        else:
-            components['trend_strength'] = 0
-
-        score = max(-10, min(10, score))
-        # 波动率作为置信度倍数：高波动增强信号，低波动削弱信号
-        score = score * vol_multiplier
-        score = max(-10, min(10, score))
-        return score, components
-
-    def calculate_score_with_orderbook(self, price: float, rsi: float, vwap: float,
-                                        price_history: list, ob_bias: float) -> Tuple[float, Dict]:
-        """带订单簿偏向的评分（ob_bias: -1.0~+1.0）"""
-        score, components = self.calculate_score(price, rsi, vwap, price_history)
-        ob_score = ob_bias * 2.0
-        components['orderbook_bias'] = ob_score
-        score += ob_score * self.weights['orderbook_bias'] * 10
-        score = max(-10, min(10, score))
-        return score, components
-
 class AutoTraderV5:
     def __init__(self):
         # --- 强制使用网页版代理钱包 ---
@@ -610,7 +516,6 @@ class AutoTraderV5:
         # Indicators
         self.rsi = StandardRSI(period=14)
         self.vwap = StandardVWAP()
-        self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
 
         # [MEMORY] Layer 1: Session Memory System
@@ -2304,207 +2209,7 @@ class AutoTraderV5:
 
         return True, "OK"
 
-    def get_positions(self) -> Dict[str, float]:
-        """查询当前持仓（从 positions 表）"""
-        positions = {}  # {side: size}
-        try:
-            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
-            #  激活WAL模式：多线程并发读写（防止database is locked）
-            conn.execute('PRAGMA journal_mode=WAL;')
-            cursor = conn.cursor()
-
-            # 从 positions 表获取当前持仓
-            #  修复：也包括'closing'状态的持仓（它们实际上还在持仓中）
-            cursor.execute("""
-                SELECT side, size
-                FROM positions
-                WHERE status IN ('open', 'closing')
-            """)
-
-            for row in cursor.fetchall():
-                side, size = row
-                if side in positions:
-                    positions[side] += size
-                else:
-                    positions[side] = size
-
-            conn.close()
-        except Exception as e:
-            print(f"       [POS CHECK ERROR] {e}")
-
-        return positions
-
-    def get_real_positions(self) -> Dict[str, float]:
-        """获取实时持仓（从 Polymarket API）"""
-        try:
-            from py_clob_client.headers.headers import create_level_2_headers
-            from py_clob_client.clob_types import RequestArgs
-
-            url = f"{CONFIG['clob_host']}/positions"
-            request_args = RequestArgs(method="GET", request_path="/positions")
-            headers = create_level_2_headers(self.client.signer, self.client.creds, request_args)
-            # [ROCKET] 使用Session复用TCP连接（提速持仓查询）
-            resp = self.http_session.get(url, headers=headers, proxies=CONFIG['proxy'], timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                positions = {}
-                for pos in data:
-                    asset_id = pos.get('asset_id', '')
-                    side = pos.get('side', '')  # 'BUY' or 'SELL'
-                    size = pos.get('size', 0)
-                    if isinstance(size, str):
-                        size = float(size)
-                    if asset_id:
-                        positions[side] = positions.get(side, 0) + size
-                return positions
-        except Exception as e:
-            print(f"       [POS CHECK ERROR] {e}")
-        return {}
-
-    def cancel_order(self, order_id: str) -> bool:
-        """取消订单"""
-        try:
-            response = self.client.cancel(order_id)
-            # 修复判断逻辑：检查 canceled 数组是否包含订单ID
-            if response:
-                canceled_list = response.get('canceled', [])
-                if canceled_list and order_id in canceled_list:
-                    print(f"       [CANCEL]  订单已取消: {order_id[-8:]}")
-                    return True
-                else:
-                    #  canceled=[] 时，查询订单状态确认（可能是已成交/已取消）
-                    try:
-                        order_info = self.client.get_order(order_id)
-                        if order_info:
-                            status = order_info.get('status', '').upper()
-                            if status in ('FILLED', 'MATCHED', 'CANCELED', 'TRIGGERED'):
-                                print(f"       [CANCEL] ℹ 订单已{status}，无需撤销: {order_id[-8:]}")
-                                return True
-                    except:
-                        pass  # 查询失败，继续报错
-                    # success 字段可能不准确，主要看 canceled 数组
-                    print(f"       [CANCEL FAIL] {order_id[-8:]}: canceled={canceled_list}")
-                    return False
-            else:
-                print(f"       [CANCEL FAIL] {order_id[-8:]}: 无响应")
-                return False
-        except Exception as e:
-            print(f"       [CANCEL ERROR] {order_id[-8:]}: {e}")
-            return False
-
-    def cancel_pair_orders(self, take_profit_order_id: str, stop_loss_order_id: str, triggered_order: str):
-        """止盈成交时取消止损（现在止损是本地轮询，无需取消）"""
-        if triggered_order == 'TAKE_PROFIT':
-            # 止盈成交，无需操作（止损是本地轮询，没有挂单）
-            pass
-        elif triggered_order == 'STOP_LOSS':
-            # 止损已在check_positions里撤止盈单了，这里无需重复
-            pass
-
-    def update_allowance_fixed(self, asset_type, token_id=None):
-        """修复版授权：正确传入 funder 地址（绕过 SDK bug）"""
-        from py_clob_client.headers.headers import create_level_2_headers
-        from py_clob_client.http_helpers.helpers import get
-        from py_clob_client.clob_types import RequestArgs
-        UPDATE_BALANCE_ALLOWANCE = "/balance-allowance/update"
-        request_args = RequestArgs(method="GET", request_path=UPDATE_BALANCE_ALLOWANCE)
-        headers = create_level_2_headers(self.client.signer, self.client.creds, request_args)
-        url = "{}{}?asset_type={}&signature_type=2".format(
-            self.client.host, UPDATE_BALANCE_ALLOWANCE, asset_type
-        )
-        if token_id:
-            url += "&token_id={}".format(token_id)
-        return get(url, headers=headers)
-
-    def ensure_allowance(self, token_id: str, expected_size: float) -> bool:
-        """确保已授权指定token（用于SELL操作），并等待token到账
-
-        返回: True=已授权且有余额, False=授权失败或余额不足
-        """
-        import time
-        max_wait = 15  # 最多等待15秒
-
-        try:
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.CONDITIONAL,  # 条件token（YES/NO）
-                token_id=token_id,
-                signature_type=2
-            )
-
-            # 等待token到账并检查授权
-            for wait_i in range(max_wait):
-                try:
-                    result = self.client.get_balance_allowance(params)
-                    if result:
-                        balance = float(result.get('balance', 0))
-                        allowance = float(result.get('allowance', 0))
-
-                        print(f"       [ALLOWANCE] token={token_id[-8:]}, balance={balance:.2f}, allowance={allowance:.2f}")
-
-                        if balance >= expected_size:
-                            # 余额足够，检查授权
-                            if allowance > 0:
-                                print(f"       [ALLOWANCE]  余额和授权都足够")
-                                return True
-                            else:
-                                # 尝试授权
-                                print(f"       [ALLOWANCE] 授权中...")
-                                self.update_allowance_fixed(AssetType.CONDITIONAL, token_id)
-                                print(f"       [ALLOWANCE]  授权请求已发送，等待链上确认...")
-                                # 等待授权在链上生效（增加等待时间）
-                                import time
-                                for auth_wait in range(10):
-                                    time.sleep(1)
-                                    try:
-                                        result2 = self.client.get_balance_allowance(params)
-                                        if result2:
-                                            allowance2 = float(result2.get('allowance', 0))
-                                            if allowance2 > 0:
-                                                print(f"       [ALLOWANCE]  授权已生效: allowance={allowance2:.2f} (等待{auth_wait+1}秒)")
-                                                break
-                                        elif auth_wait < 9:
-                                            print(f"       [ALLOWANCE] 等待授权生效... ({auth_wait+1}/10)")
-                                    except:
-                                        if auth_wait < 9:
-                                            print(f"       [ALLOWANCE] 查询授权状态... ({auth_wait+1}/10)")
-                                        time.sleep(1)
-                                else:
-                                    print(f"       [ALLOWANCE] ⚠  授权可能仍未生效，继续尝试挂单")
-                                return True
-                        else:
-                            if wait_i < max_wait - 1:
-                                print(f"       [ALLOWANCE] 等待token到账... ({wait_i+1}/{max_wait})")
-                                time.sleep(1)
-
-                except Exception as e:
-                    err_str = str(e)
-                    # 401 说明 API key 权限不足，无法查询授权，直接跳过等待挂单
-                    if '401' in err_str or 'Unauthorized' in err_str:
-                        print(f"       [ALLOWANCE] API key 权限不足，尝试直接授权token={token_id[-8:]}...")
-                        try:
-                            self.update_allowance_fixed(AssetType.CONDITIONAL, token_id)
-                            print(f"       [ALLOWANCE]  授权请求已发送，等待链上确认...")
-                            # 等待授权在链上生效（增加等待时间）
-                            import time
-                            for auth_wait in range(10):
-                                time.sleep(1)
-                            return True
-                        except Exception as e2:
-                            print(f"       [ALLOWANCE] 直接授权失败: {e2}，等待12秒后继续尝试挂单")
-                            time.sleep(12)
-                            return True
-                    if wait_i < max_wait - 1:
-                        print(f"       [ALLOWANCE] 查询失败，重试中... ({wait_i+1}/{max_wait}): {e}")
-                        time.sleep(1)
-
-            print(f"       [ALLOWANCE] [X] 等待超时，但仍尝试挂单")
-            return True  # 返回True让程序继续尝试
-
-        except Exception as e:
-            print(f"       [ALLOWANCE ERROR] {e}")
-            import traceback
-            traceback.print_exc()
-            return True  # 即使失败也继续尝试
+    def place_stop_orders(self, market: Dict, side: str, size: float, entry_price: float, value_usdc: float, entry_order_id: str = None) -> tuple:
 
     def place_stop_orders(self, market: Dict, side: str, size: float, entry_price: float, value_usdc: float, entry_order_id: str = None) -> tuple:
         """开仓后同时挂止盈止损单（带重试机制）
