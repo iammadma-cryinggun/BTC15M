@@ -11,8 +11,7 @@ import json
 import time
 import threading
 from collections import deque
-from typing import Dict, Optional
-import requests
+from typing import Dict
 
 
 class BinanceWebSocket:
@@ -31,8 +30,6 @@ class BinanceWebSocket:
             'buy_wall': 0.0,
             'sell_wall': 0.0,
             'last_price': 0.0,
-            'macd_histogram': 0.0,
-            'delta_z_score': 0.0,
             'momentum_30s': 0.0,
             'momentum_60s': 0.0,
             'momentum_120s': 0.0,
@@ -218,46 +215,10 @@ class BinanceWebSocket:
 
         return momentum_30s, momentum_60s, momentum_120s
 
-    def _calc_macd(self) -> float:
-        """计算CVD的MACD柱状图"""
-        if len(self.cvd_history) < 26:
-            return 0.0
-
-        import pandas as pd
-        series = pd.Series(list(self.cvd_history))
-
-        # MACD参数：快12，慢26，信号9
-        ema_fast = series.ewm(span=12, adjust=False).mean()
-        ema_slow = series.ewm(span=26, adjust=False).mean()
-        macd_line = ema_fast - ema_slow
-        signal_line = macd_line.ewm(span=9, adjust=False).mean()
-        histogram = macd_line - signal_line
-
-        return float(histogram.iloc[-1]) if len(histogram) > 0 else 0.0
-
-    def _calc_z_score(self) -> float:
-        """计算CVD的Z-Score（偏离度）"""
-        if len(self.cvd_history) < 20:
-            return 0.0
-
-        import pandas as pd
-        import numpy as np
-        series = pd.Series(list(self.cvd_history))
-
-        rolling_mean = series.rolling(window=20).mean()
-        rolling_std = series.rolling(window=20).std()
-
-        z_score = (series - rolling_mean) / rolling_std
-        return float(z_score.iloc[-1]) if len(z_score) > 0 else 0.0
-
     def _calc_signal(self):
-        """计算综合信号分数和所有指标"""
+        """计算综合信号分数"""
         # 超短动量
         mom_30s, mom_60s, mom_120s = self._calc_momentum()
-
-        # MACD和Z-Score
-        macd_histogram = self._calc_macd()
-        delta_z_score = self._calc_z_score()
 
         # CVD评分
         cvd_short_score = max(-3.0, min(3.0, self.cvd_short / 50000.0))
@@ -277,8 +238,6 @@ class BinanceWebSocket:
         self.data['momentum_30s'] = mom_30s
         self.data['momentum_60s'] = mom_60s
         self.data['momentum_120s'] = mom_120s
-        self.data['macd_histogram'] = macd_histogram
-        self.data['delta_z_score'] = delta_z_score
         self.data['signal_score'] = score
         self.data['direction'] = 'LONG' if score > 0 else 'SHORT'
 
