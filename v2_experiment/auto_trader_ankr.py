@@ -1164,6 +1164,7 @@ class AutoTraderV5:
             ("cvd_1m", "ALTER TABLE positions ADD COLUMN cvd_1m REAL DEFAULT 0.0"),
             ("prior_bias", "ALTER TABLE positions ADD COLUMN prior_bias REAL DEFAULT 0.0"),
             ("defense_multiplier", "ALTER TABLE positions ADD COLUMN defense_multiplier REAL DEFAULT 1.0"),
+            ("minutes_to_expiry", "ALTER TABLE positions ADD COLUMN minutes_to_expiry INTEGER DEFAULT 0"),  # ← 新增：入场时剩余时间（用于Session Memory加权）
         ]
 
         for column_name, alter_sql in indicator_migrations:
@@ -3452,7 +3453,8 @@ class AutoTraderV5:
                         take_profit_order_id, stop_loss_order_id, token_id, status,
                         score, oracle_1h_trend, oracle_15m_trend,
                         merged_from, strategy, highest_price, vote_details,
-                        rsi, vwap, cvd_5m, cvd_1m, prior_bias, defense_multiplier
+                        rsi, vwap, cvd_5m, cvd_1m, prior_bias, defense_multiplier,
+                        minutes_to_expiry
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
@@ -3484,6 +3486,8 @@ class AutoTraderV5:
                     signal.get('vote_details', {}).get('oracle', {}).get('cvd_1m', 0.0),  # 1分钟CVD
                     signal.get('prior_bias', 0.0),  # Layer 1先验偏差
                     signal.get('defense_multiplier', 1.0),  # Layer 3防御乘数
+                    # 计算并记录剩余时间（用于Session Memory：最后6分钟加权）
+                    (15 - (datetime.now().minute % 15)) % 15,  # Session剩余分钟数（0-14）
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 

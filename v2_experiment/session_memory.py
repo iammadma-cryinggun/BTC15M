@@ -187,7 +187,8 @@ class SessionMemory:
                 cvd_5m,
                 cvd_1m,
                 prior_bias,
-                defense_multiplier
+                defense_multiplier,
+                minutes_to_expiry
             FROM positions
             WHERE status = 'closed'
             ORDER BY entry_time DESC
@@ -221,6 +222,7 @@ class SessionMemory:
                     'vwap': row['vwap'] or 0.0,  # 真实VWAP数据
                     'prior_bias': row['prior_bias'] or 0.0,  # 真实先验偏差
                     'defense_multiplier': row['defense_multiplier'] or 1.0,  # 真实防御乘数
+                    'minutes_to_expiry': row['minutes_to_expiry'] or 0,  # Session剩余分钟数
                 }
                 sessions.append(session)
 
@@ -289,21 +291,42 @@ class SessionMemory:
         sessions_with_similarity.sort(key=lambda x: x['similarity'], reverse=True)
         top_sessions = sessions_with_similarity[:min_sessions]
 
-        # 统计YES/LONG的胜率
-        long_sessions = [s for s in top_sessions if s['session']['is_long']]
-        long_wins = sum(1 for s in long_sessions if s['session']['is_win'])
-        long_total = len(long_sessions)
+        # 🕐 Layer 1优化：最后6分钟加权优先
+        # 回测数据显示：session最后6分钟指标最可靠，给予更高权重
+        def get_time_weight(minutes_to_expiry: int) -> float:
+            """根据session剩余时间返回权重（最后6分钟优先）"""
+            if minutes_to_expiry <= 6:
+                return 2.0  # 黄金6分钟：最高权重
+            elif minutes_to_expiry <= 9:
+                return 1.5  # 7-9分钟：中等权重
+            else:
+                return 1.0  # 10-14分钟：正常权重
 
-        short_sessions = [s for s in top_sessions if not s['session']['is_long']]
-        short_wins = sum(1 for s in short_sessions if s['session']['is_win'])
-        short_total = len(short_sessions)
+        # 统计LONG/SHORT的加权胜率
+        long_weighted_wins = 0.0
+        long_total_weight = 0.0
+        short_weighted_wins = 0.0
+        short_total_weight = 0.0
 
-        # 计算方向性胜率
+        for item in top_sessions:
+            session = item['session']
+            weight = get_time_weight(session.get('minutes_to_expiry', 0))
+
+            if session['is_long']:
+                long_total_weight += weight
+                if session['is_win']:
+                    long_weighted_wins += weight
+            else:
+                short_total_weight += weight
+                if session['is_win']:
+                    short_weighted_wins += weight
+
+        # 计算加权方向性胜率
         # 如果LONG胜率高 → 倾向做多（prior_bias > 0）
         # 如果SHORT胜率高 → 倾向做空（prior_bias < 0）
-        if long_total >= 5 and short_total >= 5:
-            long_win_rate = long_wins / long_total
-            short_win_rate = short_wins / short_total
+        if long_total_weight >= 5.0 and short_total_weight >= 5.0:
+            long_win_rate = long_weighted_wins / long_total_weight
+            short_win_rate = short_weighted_wins / short_total_weight
 
             # 方向偏差：LONG胜率 - SHORT胜率
             direction_bias = long_win_rate - short_win_rate
@@ -311,25 +334,35 @@ class SessionMemory:
             # 转换为先验分数（-1到+1）
             prior_bias = max(-1.0, min(1.0, direction_bias * 2))  # 放大效果
         else:
-            # 某个方向数据不足，使用总体胜率
-            total_wins = sum(1 for s in top_sessions if s['session']['is_win'])
-            total_win_rate = total_wins / len(top_sessions)
+            # 某个方向数据不足，使用总体加权胜率
+            total_weighted_wins = long_weighted_wins + short_weighted_wins
+            total_weight = long_total_weight + short_total_weight
+            total_win_rate = total_weighted_wins / total_weight if total_weight > 0 else 0.5
             # 如果总体胜率>50%，使用LONG偏倚（保守策略）
             prior_bias = (total_win_rate - 0.5) * 0.5  # 缩小效果，更保守
+
+        # 统计原始数量（用于显示）
+        long_count = sum(1 for s in top_sessions if s['session']['is_long'])
+        short_count = sum(1 for s in top_sessions if not s['session']['is_long'])
+
+        # 统计最后6分钟的交易数量
+        last_6min_sessions = [s for s in top_sessions if s['session'].get('minutes_to_expiry', 0) <= 6]
+        last_6min_count = len(last_6min_sessions)
 
         # 构建分析报告
         analysis = {
             'status': 'success',
             'total_sessions_analyzed': len(historical_sessions),
             'similar_sessions': min_sessions,
-            'long_sessions': long_total,
-            'long_wins': long_wins,
-            'long_win_rate': long_wins / long_total if long_total > 0 else 0,
-            'short_sessions': short_total,
-            'short_wins': short_wins,
-            'short_win_rate': short_wins / short_total if short_total > 0 else 0,
+            'long_sessions': long_count,
+            'long_wins': sum(1 for s in top_sessions if s['session']['is_long'] and s['session']['is_win']),
+            'long_win_rate': long_weighted_wins / long_total_weight if long_total_weight > 0 else 0,
+            'short_sessions': short_count,
+            'short_wins': sum(1 for s in top_sessions if not s['session']['is_long'] and s['session']['is_win']),
+            'short_win_rate': short_weighted_wins / short_total_weight if short_total_weight > 0 else 0,
             'prior_bias': prior_bias,
             'avg_similarity': sum(s['similarity'] for s in top_sessions) / len(top_sessions),
+            'last_6min_count': last_6min_count,  # 最后6分钟的交易数量
             'top_sessions': top_sessions[:5]  # 最相似的5个会话
         }
 
@@ -418,9 +451,11 @@ class SessionMemory:
         long_wr = analysis.get('long_win_rate', 0.0)
         short_wr = analysis.get('short_win_rate', 0.0)
         similar = analysis.get('similar_sessions', 0)
+        last_6min = analysis.get('last_6min_count', 0)
 
         print(f"{emoji} [MEMORY-L1] Session预加载完成")
-        print(f"     基于过去{similar}个相似session: LONG={long_wr:.1%} SHORT={short_wr:.1%}")
+        print(f"     基于过去{similar}个相似session(含{last_6min}个黄金6分钟)")
+        print(f"     加权胜率: LONG={long_wr:.1%} SHORT={short_wr:.1%} (最后6分钟权重2x)")
         print(f"     先验bias: {bias:+.2f} {'(倾向做多)' if bias > 0.2 else '(倾向做空)' if bias < -0.2 else '(中立)'}")
 
     def print_analysis(self, analysis: dict):
@@ -434,8 +469,9 @@ class SessionMemory:
         print(f"\n{status} [MEMORY] 先验记忆分析（Layer 1）")
         print("=" * 70)
         print(f"  分析样本: {analysis['similar_sessions']}个相似会话（平均相似度{analysis['avg_similarity']:.2%}）")
-        print(f"  LONG: {analysis['long_wins']}/{analysis['long_sessions']} ({analysis['long_win_rate']:.1%})")
-        print(f"  SHORT: {analysis['short_wins']}/{analysis['short_sessions']} ({analysis['short_win_rate']:.1%})")
+        print(f"  🕐 时间加权: {analysis['last_6min_count']}个黄金6分钟会话(权重2x) + {analysis['similar_sessions'] - analysis['last_6min_count']}个其他会话")
+        print(f"  LONG: {analysis['long_wins']}/{analysis['long_sessions']} ({analysis['long_win_rate']:.1%} 加权)")
+        print(f"  SHORT: {analysis['short_wins']}/{analysis['short_sessions']} ({analysis['short_win_rate']:.1%} 加权)")
         print(f"  先验偏差: {analysis['prior_bias']:+.2f} ", end="")
 
         if analysis['prior_bias'] > 0.2:
@@ -450,7 +486,9 @@ class SessionMemory:
             sess = item['session']
             sim = item['similarity']
             result = "✅盈利" if sess['is_win'] else "❌亏损"
-            print(f"    #{i} {sess['entry_time']} | {sess['side']} @ {sess['entry_price']:.2f} | {result} ${sess['pnl']:+.2f} | 相似度{sim:.2%}")
+            minutes = sess.get('minutes_to_expiry', 0)
+            weight_icon = "⭐" if minutes <= 6 else ""
+            print(f"    #{i} {sess['entry_time']} | {sess['side']} @ {sess['entry_price']:.2f} | {result} ${sess['pnl']:+.2f} | 相似度{sim:.2%} {weight_icon}")
 
         print("=" * 70)
 
