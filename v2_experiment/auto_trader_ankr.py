@@ -35,6 +35,14 @@ try:
 except ImportError:
     CLOB_AVAILABLE = False
 
+# 导入Binance WebSocket（CVD数据源）
+try:
+    from binance_websocket import get_binance_ws
+    BINANCE_WS_AVAILABLE = True
+except ImportError:
+    BINANCE_WS_AVAILABLE = False
+    print("[WARN] Binance WebSocket module not found")
+
 # 导入Session Memory系统（Layer 1）
 try:
     from session_memory import SessionMemory
@@ -564,6 +572,19 @@ class AutoTraderV5:
             print(f"[WARN] 投票系统初始化失败: {e}")
             self.voting_system = None
             self.use_voting_system = False
+
+        # [BINANCE WS] Binance WebSocket数据源（CVD实时流）
+        self.binance_ws = None
+        if BINANCE_WS_AVAILABLE:
+            try:
+                self.binance_ws = get_binance_ws()
+                print("[BINANCE WS] Binance数据源已启动（后台线程）")
+                print("    提供数据: CVD(1m/5m) | 买卖墙 | 综合信号")
+            except Exception as e:
+                print(f"[WARN] Binance WebSocket启动失败: {e}")
+                self.binance_ws = None
+        else:
+            print("[WARN] Binance WebSocket不可用，CVD功能将被禁用")
 
         # CLOB client
         self.client = None
@@ -1584,86 +1605,46 @@ class AutoTraderV5:
 
     def _read_oracle_signal(self) -> Optional[Dict]:
         """
-        读取 binance_oracle.py 输出的信号文件，带健康检查
-
-        健康检查：
-        1. 文件是否存在
-        2. 文件修改时间（超过60秒视为过期）
-        3. 数据格式是否正确
-        4. CVD数据是否有效
+        从Binance WebSocket后台线程读取实时数据（内存共享，零延迟）
 
         返回：
         {
             'cvd_1m': float,      # 1分钟CVD
             'cvd_5m': float,      # 5分钟CVD
-            'signal_score': float,  # Oracle综合分数
-            'ut_hull_trend': str,   # UT Bot趋势（LONG/SHORT/NEUTRAL）
-            'momentum_30s': float,  # 30秒动量
-            'momentum_60s': float,  # 60秒动量
-            'momentum_120s': float, # 120秒动量
-            'timestamp': float      # 时间戳
+            'signal_score': float,  # 综合信号分数
+            'buy_wall': float,     # 买单墙
+            'sell_wall': float,    # 卖单墙
+            'timestamp': float     # 时间戳
         }
         """
+        if self.binance_ws is None:
+            if not hasattr(self, '_binance_ws_warned'):
+                print(f"       [BINANCE WS] ⚠️ Binance WebSocket未启动")
+                self._binance_ws_warned = True
+            return None
+
         try:
-            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'oracle_signal.json')
+            # 直接从内存读取（零延迟）
+            data = self.binance_ws.get_data()
 
-            # 检查1: 文件是否存在
-            if not os.path.exists(oracle_path):
-                # 只在首次运行时打印警告，避免日志污染
-                if not hasattr(self, '_oracle_warned'):
-                    print(f"       [ORACLE HEALTH] ⚠️ 文件不存在: oracle_signal.json")
-                    print(f"       [ORACLE HEALTH] 💡 解决方案: 在另一个终端运行 'python binance_oracle.py'")
-                    print(f"       [ORACLE HEALTH] 📁 文件路径: {oracle_path}")
-                    self._oracle_warned = True
+            # 数据新鲜度检查
+            now = time.time()
+            data_age = now - data.get('timestamp', 0)
+
+            if data_age > 10:
+                # 数据超过10秒没更新，可能有问题
+                print(f"       [BINANCE WS] ⚠️ 数据延迟{data_age:.0f}秒")
                 return None
 
-            # 检查2: 文件修改时间（超过60秒视为过期）
-            file_mtime = os.path.getmtime(oracle_path)
-            file_age = time.time() - file_mtime
-
-            # 🟢 Oracle恢复检测：如果之前过期，现在恢复正常
-            if hasattr(self, '_oracle_stale_warned') and file_age < 30:
-                print(f"       [ORACLE HEALTH] 🟢 Oracle已恢复！数据延迟{file_age:.0f}秒（正常范围）")
-                delattr(self, '_oracle_stale_warned')  # 清除崩溃标记
-
-            if file_age > 120:  # 2分钟没更新
-                if not hasattr(self, '_oracle_stale_warned'):
-                    print(f"       [ORACLE HEALTH] 🔴 数据严重过期: {file_age:.0f}秒前（binance_oracle.py 可能崩溃）")
-                    print(f"       [ORACLE HEALTH] 💡 解决方案: 重启 binance_oracle.py")
-                    self._oracle_stale_warned = True
-                return None
-            elif file_age > 60:  # 1分钟没更新
-                print(f"       [ORACLE HEALTH] ⚠️ 数据过期: {file_age:.0f}秒前")
-                return None
-
-            # 读取文件
-            with open(oracle_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # 检查3: 数据格式
-            required_fields = ['cvd_1m', 'cvd_5m']
-            for field in required_fields:
-                if field not in data:
-                    print(f"       [ORACLE HEALTH] ❌ 缺少字段: {field}")
-                    return None
-
-            # 检查4: CVD数据有效性
-            cvd_1m = data.get('cvd_1m', 0.0)
-            cvd_5m = data.get('cvd_5m', 0.0)
-
-            # 只在CVD数据有效时打印（避免日志污染）
-            if abs(cvd_1m) > 1000 or abs(cvd_5m) > 1000:
-                if not hasattr(self, '_oracle_data_shown'):
-                    print(f"       [ORACLE] ✅ CVD数据正常: 1m={cvd_1m:+.0f}, 5m={cvd_5m:+.0f}")
-                    self._oracle_data_shown = True
+            # 首次显示数据状态
+            if not hasattr(self, '_binance_data_shown'):
+                print(f"       [BINANCE WS] ✅ 实时数据正常: CVD(5m)={data.get('cvd_5m', 0):+.0f}")
+                self._binance_data_shown = True
 
             return data
 
-        except json.JSONDecodeError as e:
-            print(f"       [ORACLE HEALTH] ❌ JSON解析失败: {e}")
-            return None
         except Exception as e:
-            print(f"       [ORACLE HEALTH] ❌ 读取失败: {e}")
+            print(f"       [BINANCE WS ERROR] {e}")
             return None
 
     def check_oracle_health(self) -> Dict:
