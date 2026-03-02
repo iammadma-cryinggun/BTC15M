@@ -1599,6 +1599,11 @@ class VotingSystem:
 
         result['passed_gate'] = True
         result['all_votes'] = votes
+        
+        # 添加 score 字段（用于兼容性）
+        # score = 综合置信度 × 方向系数（LONG=+1, SHORT=-1）
+        direction_multiplier = 1.0 if result['direction'] == 'LONG' else -1.0
+        result['score'] = result['confidence'] * direction_multiplier * 10  # 归一化到 -10 到 +10
 
         return result
 

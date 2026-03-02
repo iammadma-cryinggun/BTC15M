@@ -44,6 +44,14 @@ except ImportError:
     MEMORY_AVAILABLE = False
     print("[WARN] Session Memory module not found, Layer 1 disabled")
 
+# 导入防御层（Layer 3）
+try:
+    from defense_layer import DefenseLayer
+    DEFENSE_AVAILABLE = True
+except ImportError:
+    DEFENSE_AVAILABLE = False
+    print("[WARN] Defense Layer module not found, Layer 3 disabled")
+
 CONFIG = {
     'clob_host': 'https://clob.polymarket.com',
     'gamma_host': 'https://gamma-api.polymarket.com',
@@ -656,6 +664,19 @@ class AutoTraderV5:
             print(f"[WARN] 投票系统初始化失败: {e}")
             self.voting_system = None
             self.use_voting_system = False
+
+        # [DEFENSE] Layer 3: Defense Layer System
+        self.defense_layer = None
+        if DEFENSE_AVAILABLE:
+            try:
+                self.defense_layer = DefenseLayer()
+                print("[DEFENSE] Defense Layer System (Layer 3) 已启用")
+                print("    功能: 五因子风控（CVD一票否决、穿越计数、时间/价格/空间评估）")
+            except Exception as e:
+                print(f"[WARN] Defense Layer初始化失败: {e}")
+                self.defense_layer = None
+        else:
+            print("[WARN] Defense Layer未安装，使用旧版防御层逻辑")
 
         # CLOB client
         self.client = None
@@ -1965,9 +1986,28 @@ class AutoTraderV5:
             # ==========================================
             #  智能防御层评估 (@jtrevorchapman 三层防御系统)
             # ==========================================
-            # 防御层包含：时间锁、混沌过滤、利润空间、核弹穿透
-            # 注意：这里传递的score是方向对应的分数（+5.0/-5.0），不代表"本地分"概念
-            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score, oracle)
+            # 使用新的防御层系统（五因子评估）
+            if self.defense_layer:
+                # 构建信号字典（用于防御层评估）
+                signal_dict = {
+                    'direction': direction,
+                    'confidence': confidence
+                }
+                
+                # 调用新防御层
+                defense_multiplier, defense_reasons = self.defense_layer.calculate_defense_multiplier(
+                    signal=signal_dict,
+                    oracle=oracle,
+                    market=market,
+                    current_price=price
+                )
+                
+                # 打印防御层报告
+                self.defense_layer.print_defense_report(defense_multiplier, defense_reasons)
+            else:
+                # Fallback：使用旧的防御层逻辑
+                print(f"       [WARN] 使用旧版防御层逻辑（建议安装 defense_layer.py）")
+                defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score, oracle)
 
             # 如果防御层返回0，直接拦截
             if defense_multiplier <= 0:
@@ -4764,6 +4804,7 @@ class AutoTraderV5:
 
         interval = CONFIG['system']['iteration_interval']
         i = 1
+        last_market_slug = None  # 追踪上一个市场
 
         try:
             while True:
@@ -4775,6 +4816,17 @@ class AutoTraderV5:
                     time.sleep(interval)
                     i += 1
                     continue
+
+                # 检测市场切换，重置防御层状态
+                current_slug = market.get('slug', '')
+                if current_slug and current_slug != last_market_slug:
+                    if last_market_slug:
+                        print(f"       [MARKET SWITCH] {last_market_slug} → {current_slug}")
+                        # 重置防御层的穿越计数器
+                        if self.defense_layer:
+                            self.defense_layer.reset_market(last_market_slug)
+                            print(f"       [DEFENSE] 防御层状态已重置")
+                    last_market_slug = current_slug
 
                 price = self.parse_price(market)
                 if not price:
