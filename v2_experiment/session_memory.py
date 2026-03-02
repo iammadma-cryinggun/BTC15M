@@ -56,12 +56,13 @@ class SessionMemory:
         """
         提取当前会话的特征向量
 
-        特征包括：
+        特征包括（热心哥原版要求）：
         1. 价格区间（5个bins）
         2. 时间段（00/15/30/45）
         3. RSI初始值
         4. CVD强度（替代Oracle分数）
         5. 5分钟价格趋势
+        6. 波动率（Volatility）← 新增
         """
         price = market_data.get('price', 0.5)
         rsi = market_data.get('rsi', 50.0)
@@ -98,12 +99,27 @@ class SessionMemory:
             trend = (recent[-1] - recent[0]) / recent[0] if recent[0] > 0 else 0
             price_trend = max(-1.0, min(1.0, trend / 0.1))  # 归一化到-1到+1
 
+        # 6. 波动率（Volatility）← 新增特征
+        # 计算价格历史的标准差作为波动率指标
+        volatility = 0.0
+        if len(price_history) >= 10:
+            # 使用最近10个价格点计算波动率
+            import statistics
+            prices = price_history[-10:]
+            # 标准差归一化：除以平均价格，得到相对波动率
+            std_dev = statistics.stdev(prices)
+            avg_price = statistics.mean(prices)
+            volatility = std_dev / avg_price if avg_price > 0 else 0.0
+            # 归一化到0-1范围（假设波动率范围0-0.3）
+            volatility = min(1.0, volatility / 0.3)
+
         features = {
             'price_bin': price_bin,
             'time_slot': time_slot,
             'rsi': rsi_normalized,
             'cvd': cvd_normalized,
             'price_trend': price_trend,
+            'volatility': volatility,  # ← 新增：波动率特征
             'timestamp': now.isoformat()
         }
 
@@ -121,7 +137,8 @@ class SessionMemory:
             'time_slot': 1.0,      # 时间段次之
             'rsi': 0.5,            # RSI权重
             'cvd': 1.5,            # CVD强度重要
-            'price_trend': 1.0     # 价格趋势
+            'price_trend': 1.0,    # 价格趋势
+            'volatility': 1.2      # 波动率（新增）
         }
 
         # 计算加权欧氏距离
@@ -258,7 +275,8 @@ class SessionMemory:
                 'time_slot': 0,  # 历史数据没有精确时间，设为0（权重低，影响小）
                 'rsi': session['rsi'] / 100.0,
                 'cvd': max(-1.0, min(1.0, session['cvd'] / 150000.0)),
-                'price_trend': 0.0  # 历史数据没有价格趋势，设为0
+                'price_trend': 0.0,  # 历史数据没有价格趋势，设为0
+                'volatility': 0.5  # 历史数据没有波动率，设为中性值（权重影响小）
             }
 
             similarity = self.calculate_similarity(current_features, hist_features)
