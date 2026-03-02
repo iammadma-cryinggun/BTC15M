@@ -3653,9 +3653,9 @@ class AutoTraderV5:
                 p = round(round(p / tick_size) * tick_size, 4)
                 return max(tick_size, min(1 - tick_size, p))
 
-            # 止盈：统一用30%百分比
+            # 止盈：基于合并后均价，统一用30%百分比
             tp_target_price = align_price(merged_entry_price * (1 + tp_pct_max))
-            # 止损：统一用30%百分比
+            # 止损：基于合并后均价，统一用70%百分比
             sl_target_price = align_price(merged_entry_price * (1 - sl_pct_max))
 
             print(f"       [MERGE] 新止盈: {tp_target_price:.4f} ({tp_pct_max*100:.0f}%)")
