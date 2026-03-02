@@ -2210,8 +2210,6 @@ class AutoTraderV5:
         return True, "OK"
 
     def place_stop_orders(self, market: Dict, side: str, size: float, entry_price: float, value_usdc: float, entry_order_id: str = None) -> tuple:
-
-    def place_stop_orders(self, market: Dict, side: str, size: float, entry_price: float, value_usdc: float, entry_order_id: str = None) -> tuple:
         """开仓后同时挂止盈止损单（带重试机制）
 
         参数:
