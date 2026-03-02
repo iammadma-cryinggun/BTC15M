@@ -3909,6 +3909,73 @@ class AutoTraderV5:
                     print(f"       [[ROCKET] 吸星大法] {exit_reason}: {side} 盈利 ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)")
                     continue  # 跳过后续处理，进入下一个持仓
 
+                # 🚨 [最后2分钟亏损减损] 防止到期归零，在亏损时主动平仓减少损失
+                from datetime import datetime as dt, timezone as tz
+                now_utc = dt.now(tz.utc)
+                # 计算当前15分钟窗口的结束时间
+                window_start_ts = (int(now_utc.timestamp()) // 900) * 900
+                window_end_ts = window_start_ts + 900
+                seconds_remaining = window_end_ts - int(now_utc.timestamp())
+
+                # 最后2分钟（120秒）且未触发其他平仓逻辑时检查
+                if seconds_remaining <= 120 and not trailing_triggered:
+                    # 计算当前盈亏
+                    current_pnl_usd = size * (pos_current_price - entry_token_price)
+                    current_pnl_pct = (current_pnl_usd / value_usdc) * 100 if value_usdc > 0 else 0
+
+                    if current_pnl_usd < 0:
+                        # 亏损状态：立即市价平仓减少损失
+                        print(f"       [🚨 亏损减损] 最后{seconds_remaining//60}分{seconds_remaining%60}秒，当前亏损${current_pnl_usd:.2f}({current_pnl_pct:.1f}%)，主动平仓止损！")
+                        print(f"       [🚨 亏损减损] 入场@{entry_token_price:.4f} → 现价{pos_current_price:.4f}")
+
+                        exit_reason = 'LAST_2MIN_LOSS_CUT'
+                        actual_exit_price = pos_current_price
+
+                        # 立即市价平仓
+                        try:
+                            from py_clob_client.clob_types import OrderArgs
+                            close_order_args = OrderArgs(
+                                token_id=token_id,
+                                price=max(0.01, min(0.99, pos_current_price)),
+                                size=float(size),
+                                side=SELL
+                            )
+                            close_response = self.client.create_and_post_order(close_order_args)
+                            if close_response and 'orderID' in close_response:
+                                triggered_order_id = close_response['orderID']
+                                print(f"       [🚨 亏损减损]  平仓单已发送: {triggered_order_id[-8:]}")
+
+                                # 计算实际盈亏并更新数据库
+                                pnl_usd = current_pnl_usd
+                                pnl_pct = current_pnl_pct
+
+                                cursor.execute("""
+                                    UPDATE positions
+                                    SET exit_time = ?, exit_token_price = ?, pnl_usd = ?,
+                                        pnl_pct = ?, exit_reason = ?, status = 'closed'
+                                    WHERE id = ? AND status IN ('open', 'closing')
+                                """, (
+                                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                    actual_exit_price,
+                                    pnl_usd,
+                                    pnl_pct,
+                                    exit_reason,
+                                    pos_id
+                                ))
+
+                                # 取消原有的止盈止损单
+                                self.cancel_pair_orders(tp_order_id, sl_order_id, exit_reason)
+
+                                print(f"       [🚨 亏损减损] 平仓完成: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)，避免归零！")
+                                continue  # 跳过后续处理，进入下一个持仓
+                            else:
+                                print(f"       [🚨 亏损减损] ⚠ 平仓单发送失败，继续监控")
+                        except Exception as e:
+                            print(f"       [🚨 亏损减损] [X] 平仓异常: {e}")
+                    else:
+                        # 盈利状态：不需要平仓，让止盈单正常工作
+                        pass
+
                 # 获取止损价格（从字段读取）
                 sl_price = None
                 try:
