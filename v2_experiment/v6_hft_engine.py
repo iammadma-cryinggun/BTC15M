@@ -145,7 +145,7 @@ class V6HFTEngine:
 
             # 后台任务完成，记录结果
             self.completed_tasks += 1
-            print(f"       [后台捷报] [OK] {task_name}执行成功")
+            # print(f"       [后台捷报] [OK] {task_name}执行成功")  # 删除重复日志
             return result
         except Exception as e:
             print(f"       [后台警报] ❌ {task_name}执行失败: {str(e)[:100]}")
@@ -166,7 +166,7 @@ class V6HFTEngine:
             self.completed_tasks += 1
 
             if order_result:
-                print(f"       [后台捷报]  {task_name}成功: {order_result.get('orderId', 'N/A')[:8]}")
+                # print(f"       [后台捷报]  {task_name}成功: {order_result.get('orderId', 'N/A')[:8]}")  # 删除重复日志
 
                 # 步骤2：后台记录交易（不阻塞主循环）
                 market = args[0]  # self.current_market
@@ -176,7 +176,7 @@ class V6HFTEngine:
                     self.v5.record_trade,
                     market, signal, order_result, False
                 )
-                print(f"       [后台捷报] [OK] 交易记录已保存")
+                # print(f"       [后台捷报] [OK] 交易记录已保存")  # 删除重复日志
             else:
                 print(f"       [后台警报] ⚠  {task_name}失败: 返回空结果")
 
