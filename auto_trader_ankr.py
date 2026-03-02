@@ -36,6 +36,14 @@ try:
 except ImportError:
     CLOB_AVAILABLE = False
 
+# 导入Binance WebSocket（CVD数据源）
+try:
+    from v2_experiment.binance_websocket import get_binance_ws
+    BINANCE_WS_AVAILABLE = True
+except ImportError:
+    BINANCE_WS_AVAILABLE = False
+    print("[WARN] Binance WebSocket module not found")
+
 # 导入Session Memory系统（Layer 1）
 try:
     from session_memory import SessionMemory
@@ -619,6 +627,17 @@ class AutoTraderV5:
         self.vwap = StandardVWAP()
         self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
+
+        # [BINANCE WS] Binance WebSocket数据源（CVD实时流）
+        self.binance_ws = None
+        if BINANCE_WS_AVAILABLE:
+            try:
+                self.binance_ws = get_binance_ws()
+                print("[BINANCE WS] Binance数据源已启动（后台线程）")
+                print("    提供数据: CVD(1m/5m) | 买卖墙 | 综合信号")
+            except Exception as e:
+                print(f"[WARN] Binance WebSocket启动失败: {e}")
+                self.binance_ws = None
 
         # [MEMORY] Layer 1: Session Memory System
         self.session_memory = None
@@ -1856,23 +1875,45 @@ class AutoTraderV5:
 
     def _read_oracle_signal(self) -> Optional[Dict]:
         """
-        读取 Binance Oracle 信号文件
-        
+        从Binance WebSocket后台线程读取实时数据（内存共享，零延迟）
+
         返回：
         {
             'cvd_1m': float,      # 1分钟CVD
             'cvd_5m': float,      # 5分钟CVD
-            'signal_score': float,  # Oracle综合分数
-            'ut_hull_trend': str,   # UT Bot趋势（LONG/SHORT/NEUTRAL）
-            'momentum_30s': float,  # 30秒动量
-            'momentum_60s': float,  # 60秒动量
-            'momentum_120s': float, # 120秒动量
-            'timestamp': float      # 时间戳
+            'signal_score': float,  # 综合信号分数
+            'buy_wall': float,     # 买单墙
+            'sell_wall': float,    # 卖单墙
+            'timestamp': float     # 时间戳
         }
         """
+        if self.binance_ws is None:
+            if not hasattr(self, '_binance_ws_warned'):
+                print("[WARN] Binance WebSocket不可用")
+                self._binance_ws_warned = True
+            return None
+
         try:
-            # Oracle信号文件路径（与数据库同目录）
-            signal_file = os.path.join(os.path.dirname(self.db_path), 'oracle_signal.json')
+            # 直接从内存读取（零延迟）
+            data = self.binance_ws.get_data()
+
+            # 数据新鲜度检查
+            now = time.time()
+            data_age = now - data.get('timestamp', 0)
+
+            if data_age > 10:
+                # 数据超过10秒没更新，可能有问题
+                print(f"       [BINANCE WS] ⚠️ 数据延迟{data_age:.0f}秒")
+                return None
+
+            # 首次显示数据状态
+            if not hasattr(self, '_binance_data_shown'):
+                print(f"       [BINANCE WS] ✅ 实时数据正常: CVD(5m)={data.get('cvd_5m', 0):+.0f}")
+                self._binance_data_shown = True
+
+            return data
+        except Exception as e:
+            print(f"       [BINANCE WS ERROR] {e}")
             
             if not os.path.exists(signal_file):
                 # 首次运行时不打印警告，避免日志污染
@@ -1899,15 +1940,9 @@ class AutoTraderV5:
                 print(f"       [ORACLE] 💰 CVD 1m: {cvd_1m:+.0f}, CVD 5m: {cvd_5m:+.0f}")
             
             return data
-            
-        except FileNotFoundError:
-            # 文件不存在，静默返回（避免日志污染）
-            return None
-        except json.JSONDecodeError as e:
-            print(f"       [ORACLE] ❌ JSON解析失败: {e}")
-            return None
         except Exception as e:
-            print(f"       [ORACLE] ❌ 读取失败: {e}")
+            print(f"       [BINANCE WS ERROR] {e}")
+            return None
             return None
 
     def generate_signal(self, market: Dict, price: float, no_price: float = None) -> Optional[Dict]:
