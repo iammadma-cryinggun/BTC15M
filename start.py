@@ -13,8 +13,8 @@ import os
 
 def print_banner():
     print("=" * 70)
-    print("  BTC 15分钟自动交易系统 - v2_experiment 版本")
-    print("  最新特性: Binance数据源集成 | 全时段入场 | 止盈止损 | 25规则")
+    print("  BTC 15分钟自动交易系统 - 最新版本")
+    print("  特性: Binance数据源 | 全时段入场 | 止盈止损 | 30规则投票")
     print("=" * 70)
     print()
 
@@ -25,15 +25,8 @@ def main():
     # 检查是否有命令行参数
     if len(sys.argv) > 1:
         version = sys.argv[1].upper()
-        if version == "V2":
-            print("[INFO] 启动 v2_experiment (最新版本)...")
-            print("[INFO] Binance WebSocket已集成，自动启动")
-            import v2_experiment.auto_trader_ankr
-            bot = v2_experiment.auto_trader_ankr.AutoTraderV5()
-            bot.run()
-            return
-        elif version == "V5":
-            print("[INFO] 启动 V5 (稳定版本)...")
+        if version == "V5" or version == "V2":
+            print("[INFO] 启动 AutoTrader (最新版本)...")
             print("[INFO] Binance WebSocket已集成，自动启动")
             import auto_trader_ankr
             bot = auto_trader_ankr.AutoTraderV5()
@@ -47,13 +40,13 @@ def main():
             asyncio.run(engine.run())
             return
 
-    # 没有参数时，默认运行 v2_experiment
-    print("[INFO] 启动 v2_experiment (最新版本)...")
+    # 没有参数时，默认运行最新版本
+    print("[INFO] 启动 AutoTrader (最新版本)...")
     print("[INFO] Binance WebSocket已集成到主程序，自动启动")
     print()
     try:
-        import v2_experiment.auto_trader_ankr
-        bot = v2_experiment.auto_trader_ankr.AutoTraderV5()
+        import auto_trader_ankr
+        bot = auto_trader_ankr.AutoTraderV5()
         bot.run()
 
     except KeyboardInterrupt:

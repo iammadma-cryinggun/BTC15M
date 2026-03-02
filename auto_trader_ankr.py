@@ -11,7 +11,6 @@ import os
 import sqlite3
 import requests
 import math
-import statistics
 from datetime import datetime, timedelta, timezone
 from collections import deque
 from typing import Optional, Dict, Tuple
@@ -38,7 +37,7 @@ except ImportError:
 
 # 导入Binance WebSocket（CVD数据源）
 try:
-    from v2_experiment.binance_websocket import get_binance_ws
+    from binance_websocket import get_binance_ws
     BINANCE_WS_AVAILABLE = True
 except ImportError:
     BINANCE_WS_AVAILABLE = False
@@ -51,14 +50,6 @@ try:
 except ImportError:
     MEMORY_AVAILABLE = False
     print("[WARN] Session Memory module not found, Layer 1 disabled")
-
-# 导入防御层（Layer 3）
-try:
-    from defense_layer import DefenseLayer
-    DEFENSE_AVAILABLE = True
-except ImportError:
-    DEFENSE_AVAILABLE = False
-    print("[WARN] Defense Layer module not found, Layer 3 disabled")
 
 CONFIG = {
     'clob_host': 'https://clob.polymarket.com',
@@ -99,13 +90,13 @@ CONFIG = {
 
         # [策略调整] 恢复止盈止损功能
         # 理由：允许全时段入场后，需要止盈止损保护
-        'max_stop_loss_pct': 0.50,      # 🔴 50%止损（确认）
-        'take_profit_pct': 0.30,        # 30%止盈
+        'max_stop_loss_pct': 0.70,      # 🔴 70%止损（扩大，给更多容忍空间）
+        'take_profit_pct': 0.30,        # 30%止盈（提高，给更多利润空间）
         'enable_stop_loss': True,       # ✅ 启用止盈止损
-        
+
         # [止盈开关] 可以单独控制每种止盈机制
         'enable_trailing_tp': True,     # ✅ 启用追踪止盈（0.75激活，回撤5¢触发）
-        'enable_absolute_tp': True,     # ✅ 启用绝对止盈（0.92强制平仓）
+        'enable_absolute_tp': True,     # ✅ 启用绝对止盈（0.90强制平仓）
     },
 
     'signal': {
@@ -203,14 +194,6 @@ class TelegramNotifier:
 [BLOCK] 止损: {sl_price:.4f}"""
 
         return self.send(message, parse_mode='HTML')
-
-    def send_stop_order_failed(self, side: str, size: float, tp_price: float, sl_price: float, token_id: str, error: str):
-        """（已弃用）"""
-        return False
-
-    def send_position_closed(self, side: str, entry_price: float, exit_price: float, pnl_usd: float, reason: str):
-        """（已弃用）"""
-        return False
 
 class RealBalanceDetector:
     """Get REAL balance using Polygon RPC (with dual-node fallback)"""
@@ -369,13 +352,13 @@ class PositionManager:
     def __init__(self, balance_usdc: float):
         self.balance = balance_usdc
 
-    def calculate_position(self, confidence: float, score: float = 0.0) -> float:
+    def calculate_position(self, confidence: float, vote_details: dict = None) -> float:
         """
-        智能动态仓位：根据信号强度（score）自动调整
+        智能动态仓位：根据信号置信度和投票强度自动调整
 
         Args:
             confidence: 置信度（0-1）
-            score: 信号分数（-10到+10）
+            vote_details: 投票详情（包含总票数等信息）
 
         Returns:
             实际下单金额（USDC）
@@ -388,20 +371,20 @@ class PositionManager:
         # 基础仓位：30%（提升以适应12U小资金，确保能买6份）
         base = self.balance * 0.30
 
-        # [TARGET] 根据信号分数分段调整（方案A：智能分段）
-        abs_score = abs(score)
+        # 根据投票强度调整（替代之前的score强度判断）
+        total_votes = vote_details.get('total_votes', 0) if vote_details else 0
 
-        if abs_score >= 6.0:
-            #  超强信号：40%
+        if total_votes >= 20:
+            # 超强共识：40%
             multiplier = 1.33
-        elif abs_score >= 4.5:
-            #  强信号：35%
+        elif total_votes >= 15:
+            # 强共识：35%
             multiplier = 1.16
-        elif abs_score >= 3.5:
-            #  中等信号：32%
+        elif total_votes >= 10:
+            # 中等共识：32%
             multiplier = 1.06
         else:
-            # ⚠ 弱信号：30%
+            # 弱共识：30%
             multiplier = 1.0
 
         # 结合confidence微调（±10%）
@@ -502,101 +485,17 @@ class StandardVWAP:
         return self.current_vwap
 
 
-
-
-
-class V5SignalScorer:
-    def __init__(self):
-        self.weights = {
-            'price_momentum': 0.26,
-            'volatility': 0.16,
-            'vwap_status': 0.18,
-            'rsi_status': 0.14,
-            'trend_strength': 0.14,
-            'orderbook_bias': 0.00,  # 已禁用
-        }
-
-    def calculate_score(self, price: float, rsi: float, vwap: float,
-                       price_history: list) -> Tuple[float, Dict]:
-        score = 0
-        components = {}
-
-        if len(price_history) >= 10:
-            recent = price_history[-10:]
-            momentum = (recent[-1] - recent[0]) / recent[0] * 100 if recent[0] > 0 else 0
-            momentum_score = max(-10, min(10, momentum * 2))
-            components['price_momentum'] = momentum_score
-            score += momentum_score * self.weights['price_momentum']
-        else:
-            components['price_momentum'] = 0
-
-        if len(price_history) >= 5:
-            volatility = statistics.stdev(price_history[-5:])
-            norm_vol = min(volatility / 0.1, 1.0)
-            # 波动率只影响置信度倍数，不贡献方向分
-            # 高波动时信号更可信（有趋势），低波动时信号弱（横盘）
-            vol_multiplier = 0.5 + norm_vol * 0.5  # 0.5~1.0
-            components['volatility'] = norm_vol
-        else:
-            vol_multiplier = 0.75
-            components['volatility'] = 0
-
-        if vwap > 0:
-            vwap_dist = ((price - vwap) / vwap * 100)
-            if vwap_dist > 0.5:
-                components['vwap_status'] = 1
-            elif vwap_dist < -0.5:
-                components['vwap_status'] = -1
-            else:
-                components['vwap_status'] = 0
-            score += components['vwap_status'] * self.weights['vwap_status'] * 5
-        else:
-            components['vwap_status'] = 0
-
-        # 放宽RSI阈值：从70/30改为60/40（15分钟合约需要更敏感）
-        is_extreme = rsi > 60 or rsi < 40
-        if rsi > 60:
-            components['rsi_status'] = -1
-        elif rsi < 40:
-            components['rsi_status'] = 1
-        else:
-            components['rsi_status'] = 0
-        score += components['rsi_status'] * self.weights['rsi_status'] * 5
-
-        if len(price_history) >= 3:
-            short_trend = (price_history[-1] - price_history[-3]) / price_history[-3] * 100 if price_history[-3] > 0 else 0
-            trend_score = max(-5, min(5, short_trend * 3))
-            components['trend_strength'] = trend_score
-            score += trend_score * self.weights['trend_strength']
-        else:
-            components['trend_strength'] = 0
-
-        score = max(-10, min(10, score))
-        # 波动率作为置信度倍数：高波动增强信号，低波动削弱信号
-        score = score * vol_multiplier
-        score = max(-10, min(10, score))
-        return score, components
-
-    def calculate_score_with_orderbook(self, price: float, rsi: float, vwap: float,
-                                        price_history: list, ob_bias: float) -> Tuple[float, Dict]:
-        """带订单簿偏向的评分（ob_bias: -1.0~+1.0）"""
-        score, components = self.calculate_score(price, rsi, vwap, price_history)
-        ob_score = ob_bias * 2.0
-        components['orderbook_bias'] = ob_score
-        score += ob_score * self.weights['orderbook_bias'] * 10
-        score = max(-10, min(10, score))
-        return score, components
-
 class AutoTraderV5:
     def __init__(self):
         # --- 强制使用网页版代理钱包 ---
-        wallet_address = "0xd5d037390c6216CCFa17DFF7148549B9C2399BD3" 
+        wallet_address = "0xd5d037390c6216CCFa17DFF7148549B9C2399BD3"
         CONFIG['wallet_address'] = wallet_address
 
         print("=" * 70)
-        print("V5 Auto Trading - WITH REAL BALANCE")
+        print("V5 Auto Trading - v2_experiment 版本")
         print("=" * 70)
         print(f"Wallet: {wallet_address}")
+        print(f"特性: 全时段入场 | 止盈止损 | 25规则全激活")
         print()
 
         # Fetch REAL balance
@@ -606,14 +505,14 @@ class AutoTraderV5:
         # Position manager with REAL balance
         self.position_mgr = PositionManager(usdc)
 
-        print("[BALANCE] Trading Configuration:")
-        print(f"  REAL Balance: {usdc:.2f} USDC.e")
-        print(f"  Available: {usdc - CONFIG['risk']['reserve_usdc']:.2f} USDC")
-        print(f"  Reserve: {CONFIG['risk']['reserve_usdc']:.2f} USDC")
-        print(f"  Min Position: {CONFIG['risk']['min_position_usdc']:.2f} USDC (Polymarket requirement)")
-        print(f"  Max Position: {usdc * CONFIG['risk']['max_position_pct']:.2f} USDC (10%)")
-        print(f"  Max Daily Loss: {self.position_mgr.get_max_daily_loss():.2f} USDC (20%)")
-        print(f"  Estimated Trades: {int((usdc - CONFIG['risk']['reserve_usdc']) / 2)} trades")
+        print("[BALANCE] 交易配置:")
+        print(f"  余额: {usdc:.2f} USDC.e")
+        print(f"  可用: {usdc - CONFIG['risk']['reserve_usdc']:.2f} USDC")
+        print(f"  保留: {CONFIG['risk']['reserve_usdc']:.2f} USDC")
+        print(f"  单笔最小: {CONFIG['risk']['min_position_usdc']:.2f} USDC")
+        print(f"  单笔最大: {usdc * CONFIG['risk']['max_position_pct']:.2f} USDC ({CONFIG['risk']['max_position_pct']:.0%})")
+        print(f"  日最大亏损: {self.position_mgr.get_max_daily_loss():.2f} USDC")
+        print(f"  预计交易次数: {int((usdc - CONFIG['risk']['reserve_usdc']) / 2)} 笔")
         print()
 
         # Telegram 通知
@@ -625,19 +524,7 @@ class AutoTraderV5:
         # Indicators
         self.rsi = StandardRSI(period=14)
         self.vwap = StandardVWAP()
-        self.scorer = V5SignalScorer()
         self.price_history = deque(maxlen=20)
-
-        # [BINANCE WS] Binance WebSocket数据源（CVD实时流）
-        self.binance_ws = None
-        if BINANCE_WS_AVAILABLE:
-            try:
-                self.binance_ws = get_binance_ws()
-                print("[BINANCE WS] Binance数据源已启动（后台线程）")
-                print("    提供数据: CVD(1m/5m) | 买卖墙 | 综合信号")
-            except Exception as e:
-                print(f"[WARN] Binance WebSocket启动失败: {e}")
-                self.binance_ws = None
 
         # [MEMORY] Layer 1: Session Memory System
         self.session_memory = None
@@ -668,7 +555,7 @@ class AutoTraderV5:
         self.http_session.mount("http://", adapter)
         self.http_session.mount("https://", adapter)
 
-        # [VOTING] 投票系统（实验性，替换原评分系统）
+        # [VOTING] 投票系统（三层决策架构）
         try:
             from voting_system import create_voting_system
             self.voting_system = create_voting_system(
@@ -676,26 +563,28 @@ class AutoTraderV5:
                 wallet_address=CONFIG.get('wallet_address'),
                 http_session=self.http_session
             )
-            self.use_voting_system = True  # 开关：True使用投票，False使用原系统
-            print("[VOTING] 投票系统已启用（25个规则全激活）")
-            print("    规则: 超短动量x3, 技术指标x8, CVDx3, PM指标x4, 订单簿x7, Memory, Positions")
+            self.use_voting_system = True
+            print("[VOTING] 投票系统已启用（31个规则全激活）")
+            print("    Layer 1: Session Memory (30场先验)")
+            print("    Layer 2: 投票规则 (超短x3 + 技术x8 + CVDx3 + 高级x2 + PMx6 + 趋势x2 + 订单簿x7 + 持仓x1)")
+            print("    Layer 3: 防御哨兵 (5因子仓位管理)")
         except Exception as e:
             print(f"[WARN] 投票系统初始化失败: {e}")
             self.voting_system = None
             self.use_voting_system = False
 
-        # [DEFENSE] Layer 3: Defense Layer System
-        self.defense_layer = None
-        if DEFENSE_AVAILABLE:
+        # [BINANCE WS] Binance WebSocket数据源（CVD实时流）
+        self.binance_ws = None
+        if BINANCE_WS_AVAILABLE:
             try:
-                self.defense_layer = DefenseLayer()
-                print("[DEFENSE] Defense Layer System (Layer 3) 已启用")
-                print("    功能: 五因子风控（CVD一票否决、穿越计数、时间/价格/空间评估）")
+                self.binance_ws = get_binance_ws()
+                print("[BINANCE WS] Binance数据源已启动（后台线程）")
+                print("    提供数据: CVD(1m/5m) | 买卖墙 | 综合信号")
             except Exception as e:
-                print(f"[WARN] Defense Layer初始化失败: {e}")
-                self.defense_layer = None
+                print(f"[WARN] Binance WebSocket启动失败: {e}")
+                self.binance_ws = None
         else:
-            print("[WARN] Defense Layer未安装，使用旧版防御层逻辑")
+            print("[WARN] Binance WebSocket不可用，CVD功能将被禁用")
 
         # CLOB client
         self.client = None
@@ -1280,6 +1169,33 @@ class AutoTraderV5:
             conn.commit()
             print("[MIGRATION] 数据库已升级：positions表添加strategy列")
 
+        #  数据库迁移：添加 vote_details 列（保存31个规则的投票详情）
+        try:
+            cursor.execute("SELECT vote_details FROM positions LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE positions ADD COLUMN vote_details TEXT")
+            conn.commit()
+            print("[MIGRATION] 数据库已升级：positions表添加vote_details列（JSON格式）")
+
+        #  数据库迁移：添加完整指标数据列（用于回测和Session Memory）
+        indicator_migrations = [
+            ("rsi", "ALTER TABLE positions ADD COLUMN rsi REAL DEFAULT 50.0"),
+            ("vwap", "ALTER TABLE positions ADD COLUMN vwap REAL DEFAULT 0.0"),
+            ("cvd_5m", "ALTER TABLE positions ADD COLUMN cvd_5m REAL DEFAULT 0.0"),
+            ("cvd_1m", "ALTER TABLE positions ADD COLUMN cvd_1m REAL DEFAULT 0.0"),
+            ("prior_bias", "ALTER TABLE positions ADD COLUMN prior_bias REAL DEFAULT 0.0"),
+            ("defense_multiplier", "ALTER TABLE positions ADD COLUMN defense_multiplier REAL DEFAULT 1.0"),
+            ("minutes_to_expiry", "ALTER TABLE positions ADD COLUMN minutes_to_expiry INTEGER DEFAULT 0"),  # ← 新增：入场时剩余时间（用于Session Memory加权）
+        ]
+
+        for column_name, alter_sql in indicator_migrations:
+            try:
+                cursor.execute(f"SELECT {column_name} FROM positions LIMIT 1")
+            except sqlite3.OperationalError:
+                cursor.execute(alter_sql)
+                conn.commit()
+                print(f"[MIGRATION] 数据库已升级：positions表添加{column_name}列（指标回测用）")
+
         self.safe_commit(conn)
 
         # 兼容旧数据库：添加 token_id 列（如果不存在）
@@ -1420,13 +1336,14 @@ class AutoTraderV5:
             cursor = conn.cursor()
 
             #  每次都打印最近的交易记录（自动导出到日志）
+            # 只显示有vote_details的交易（有31规则投票详情的交易）
             cursor.execute("""
                 SELECT
                     entry_time, side, entry_token_price, exit_token_price,
                     pnl_usd, pnl_pct, exit_reason, status,
-                    score, oracle_score, oracle_1h_trend, oracle_15m_trend
+                    score, vote_details
                 FROM positions
-                WHERE status = 'closed'
+                WHERE status = 'closed' AND vote_details IS NOT NULL
                 ORDER BY entry_time DESC
                 LIMIT 10
             """)
@@ -1447,13 +1364,15 @@ class AutoTraderV5:
 
                     print(f"\n  {i}. [{t['entry_time']}] {t['side']:6s} {t['entry_token_price']:.4f}->{exit_price} {pnl_icon:8s} ${t['pnl_usd']:+.2f}")
 
-                    # sqlite3.Row 不支持 .get() 方法，直接访问并检查 None
-                    oracle_score = t['oracle_score']
-                    if oracle_score is not None:
-                        oracle_icon = "" if abs(oracle_score) >= 10 else "" if abs(oracle_score) >= 7 else ""
-                        print(f"     Oracle:{oracle_icon} {oracle_score:+.2f} | 1H:{t['oracle_1h_trend']} 15m:{t['oracle_15m_trend']}")
-                    else:
-                        print(f"     Oracle: 未保存")
+                    # 显示投票详情（31规则投票数据）
+                    try:
+                        vote_details = json.loads(t['vote_details']) if t['vote_details'] else {}
+                        long_votes = vote_details.get('long_votes', 0)
+                        short_votes = vote_details.get('short_votes', 0)
+                        total_score = vote_details.get('total_score', 0)
+                        print(f"     投票: LONG={long_votes} SHORT={short_votes} | 总分={total_score:+.1f}")
+                    except:
+                        print(f"     投票详情: 未保存")
 
                     if t['pnl_usd']:
                         if t['pnl_usd'] > 0:
@@ -1462,7 +1381,7 @@ class AutoTraderV5:
                             loss_count += 1
                         total_pnl += t['pnl_usd']
 
-                print(f"\n  统计: 盈利{win_count}笔 亏损{loss_count}笔 净${total_pnl:+.2f}")
+                print(f"\n  统计: 盈利{win_count}笔 亏损{loss_count}笔 净${total_pnl:+.2f} (仅显示有投票详情的交易)")
                 print("="*140 + "\n")
 
             conn.close()
@@ -1472,6 +1391,7 @@ class AutoTraderV5:
         print("[DEBUG] 开始执行交易分析...")
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row  # 🔧 修复：设置row_factory以支持字典访问
             conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
@@ -1479,11 +1399,12 @@ class AutoTraderV5:
             print("[交易分析] Trading Performance Analysis")
             print("=" * 100)
 
-            # 1. 最近20笔交易
-            print("\n[1] 最近交易记录 (Last 20 Trades)")
+            # 1. 最近20笔交易（仅显示有投票详情的交易）
+            print("\n[1] 最近交易记录 (Last 20 Trades - Only with Vote Details)")
             cursor.execute('''
                 SELECT id, entry_time, side, entry_token_price, size, exit_token_price, exit_reason, pnl_usd, pnl_pct, merged_from
                 FROM positions
+                WHERE vote_details IS NOT NULL
                 ORDER BY id DESC LIMIT 20
             ''')
             rows = cursor.fetchall()
@@ -1500,8 +1421,8 @@ class AutoTraderV5:
             else:
                 print("  无交易记录")
 
-            # 2. 总体统计
-            print("\n[2] 总体统计 (Overall Statistics)")
+            # 2. 总体统计（仅显示有投票详情的交易）
+            print("\n[2] 总体统计 (Overall Statistics - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     COUNT(*) as total,
@@ -1509,7 +1430,7 @@ class AutoTraderV5:
                     AVG(pnl_pct) as avg_pnl,
                     SUM(pnl_usd) as total_pnl
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
             ''')
             row = cursor.fetchone()
             if row and row[0] > 0:
@@ -1522,8 +1443,8 @@ class AutoTraderV5:
             else:
                 print("  无已完成交易")
 
-            # 3. 按方向统计
-            print("\n[3] 按方向统计 (By Direction)")
+            # 3. 按方向统计（仅显示有投票详情的交易）
+            print("\n[3] 按方向统计 (By Direction - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     side,
@@ -1532,7 +1453,7 @@ class AutoTraderV5:
                     AVG(pnl_pct) as avg_pnl,
                     SUM(pnl_usd) as total_pnl
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 GROUP BY side
             ''')
             rows = cursor.fetchall()
@@ -1544,8 +1465,8 @@ class AutoTraderV5:
                     win_rate = (wins / total * 100) if total > 0 else 0
                     print(f"{side:<8} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}% ({total_pnl:+.2f} USDC)")
 
-            # 4. 按退出原因统计
-            print("\n[4] 按退出原因统计 (By Exit Reason)")
+            # 4. 按退出原因统计（仅显示有投票详情的交易）
+            print("\n[4] 按退出原因统计 (By Exit Reason - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     exit_reason,
@@ -1553,7 +1474,7 @@ class AutoTraderV5:
                     AVG(pnl_pct) as avg_pnl,
                     SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 GROUP BY exit_reason
                 ORDER BY total DESC
             ''')
@@ -1567,8 +1488,8 @@ class AutoTraderV5:
                     win_rate = (wins / total * 100) if total > 0 else 0
                     print(f"{reason:<30} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}%")
 
-            # 5. 盈亏分布
-            print("\n[5] 盈亏分布 (PnL Distribution)")
+            # 5. 盈亏分布（仅显示有投票详情的交易）
+            print("\n[5] 盈亏分布 (PnL Distribution - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     CASE
@@ -1582,7 +1503,7 @@ class AutoTraderV5:
                     COUNT(*) as count,
                     AVG(pnl_pct) as avg_pnl
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 GROUP BY pnl_range
                 ORDER BY MIN(pnl_pct) DESC
             ''')
@@ -1594,12 +1515,12 @@ class AutoTraderV5:
                     pnl_range, count, avg_pnl = row
                     print(f"{pnl_range:<15} {count:<8} {avg_pnl:+.2f}%")
 
-            # 6. 最近10笔表现
-            print("\n[6] 最近表现 (Last 10 Trades)")
+            # 6. 最近10笔表现（仅显示有投票详情的交易）
+            print("\n[6] 最近表现 (Last 10 Trades - Only with Vote Details)")
             cursor.execute('''
                 SELECT entry_time, side, pnl_pct, exit_reason
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 ORDER BY id DESC LIMIT 10
             ''')
             rows = cursor.fetchall()
@@ -1614,37 +1535,6 @@ class AutoTraderV5:
                     pnl_str = f'{pnl:+.1f}%' if pnl else 'N/A'
                     reason = (reason or '')[:25]
                     print(f"{ts:<18} {side:<8} {pnl_str:<10} {reason}")
-
-            # 7. 按信号强度统计（新增）
-            print("\n[7] 按信号强度统计 (By Signal Strength)")
-            cursor.execute('''
-                SELECT
-                    CASE
-                        WHEN abs(score) >= 7.0 THEN '7.0+ (很强)'
-                        WHEN abs(score) >= 5.0 THEN '5.0-6.9 (较强)'
-                        WHEN abs(score) >= 4.0 THEN '4.0-4.9 (中等)'
-                        WHEN abs(score) >= 3.0 THEN '3.0-3.9 (较弱)'
-                        ELSE '< 3.0 (弱)'
-                    END as score_range,
-                    COUNT(*) as total,
-                    SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
-                    AVG(pnl_pct) as avg_pnl,
-                    SUM(pnl_usd) as total_pnl
-                FROM positions
-                WHERE exit_reason IS NOT NULL AND score IS NOT NULL
-                GROUP BY score_range
-                ORDER BY MIN(abs(score)) DESC
-            ''')
-            rows = cursor.fetchall()
-            if rows:
-                print(f"{'信号强度':<15} {'交易数':<8} {'盈利':<8} {'胜率':<10} {'平均收益':<12} {'总盈亏'}")
-                print("-" * 80)
-                for row in rows:
-                    score_range, total, wins, avg_pnl, total_pnl = row
-                    win_rate = (wins / total * 100) if total > 0 else 0
-                    print(f"{score_range:<15} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}% ({total_pnl:+.2f} USDC)")
-            else:
-                print("  无数据（需要score字段）")
 
             conn.close()
             print("=" * 100 + "\n")
@@ -1714,166 +1604,6 @@ class AutoTraderV5:
         self.price_history.append(price)
 
     def _read_oracle_signal(self) -> Optional[Dict]:
-        """读取 binance_oracle.py 输出的信号文件，超过10秒视为过期"""
-        try:
-            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'oracle_signal.json')
-            if not os.path.exists(oracle_path):
-                return None
-            with open(oracle_path, 'r') as f:
-                data = json.load(f)
-            # 超过10秒的数据视为过期
-            if time.time() - data.get('ts_unix', 0) > 10:
-                return None
-            return data
-        except Exception:
-            return None
-
-    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float, oracle: Dict = None) -> float:
-        """
-        核心防御层 (Sentinel Dampening)
-
-        评估各项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
-
-        四大防御因子：
-        1. 时间窗口管理 - session剩余时间动态仓位调整
-        2. 混沌过滤器 - 预言机报价反复穿越基准价格次数
-        3. 利润空间防御 - 高价位压缩仓位
-        4. CVD否决权 - 混沌市场中的CVD强度检查
-
-        Args:
-            current_price: 当前价格
-            oracle_score: Oracle 评分
-            score: 本地信号评分
-            oracle: Oracle 数据字典（包含 cvd_5m 等）
-        """
-        from datetime import datetime
-        now = datetime.now()
-        current_session = now.minute // 15  # 划分 00, 15, 30, 45 的 Session
-
-        # ========== 1. 重置混沌震荡计数器 ==========
-        if current_session != self.last_session_id:
-            self.session_cross_count = 0
-            self.last_cross_state = None
-            self.last_session_id = current_session
-            print(f" [防御层] 新Session开始，混沌计数器重置")
-
-        # ========== 2. 记录 0.50 基准线穿越 ==========
-        current_state = 'UP' if current_price > 0.50 else 'DOWN'
-        if self.last_cross_state and current_state != self.last_cross_state:
-            self.session_cross_count += 1
-            print(f"⚠ [混沌监测] 价格穿越基准线！当前Session穿越次数: {self.session_cross_count}")
-        self.last_cross_state = current_state
-
-        # ================= 开始计算防御系数 =================
-        multiplier = 1.0
-        defense_reasons = []
-
-        # [ROCKET] 定义核弹级别（用于防御层穿透）
-        is_nuke = abs(oracle_score) >= 6.0
-
-        # ========== 因子A: 黄金时间窗口精细管理 (Time left to expiry) ==========
-        # 🔴 已移除 6 分钟限制，允许全时段入场
-        minutes_to_expiry = 15 - (now.minute % 15)
-
-        # [精细仓位管理] 根据剩余时间调整仓位
-        if minutes_to_expiry > 10:  # 10-15 分钟
-            multiplier *= 0.9  # 轻微压缩（时间充足但信号可能变化）
-            defense_reasons.append(f"早期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 早期窗口: {minutes_to_expiry}分钟剩余，仓位90%")
-        elif minutes_to_expiry > 5:  # 5-10 分钟
-            multiplier *= 1.0  # 全仓（最佳窗口）
-            print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
-        elif minutes_to_expiry > 2:  # 2-5 分钟
-            multiplier *= 1.0  # 全仓（仍可交易）
-            print(f" [防御层-A] 中期窗口: {minutes_to_expiry}分钟剩余，仓位100%")
-        else:  # < 2 分钟
-            multiplier *= 0.5  # 大幅压缩（快到期，风险陡增）
-            defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，仓位50%（快到期）")
-
-        # ========== 因子B: 混沌过滤器 + CVD否决权 ==========
-        # 参考 @jtrevorchapman: "CVD是预测力最强的单一指标，在混沌市场甚至有投票否决权"
-        # 反复穿越5次以上说明市场极度混乱，此时只有CVD强烈信号才能开仓
-        if self.session_cross_count >= 5:
-            if is_nuke:
-                # 核弹级巨鲸掀桌子，无视混沌锁！
-                print(f"[防御穿透-B] 核弹级信号(Oracle={oracle_score:+.2f})！无视{self.session_cross_count}次穿越混乱，强行突破！")
-            else:
-                # [CVD否决权] 混沌市场：检查CVD强度
-                cvd_5m = oracle.get('cvd_5m', 0.0) if oracle else 0.0
-
-                if abs(cvd_5m) >= 150000:  # CVD强烈信号（±15万）
-                    if abs(oracle_score) >= 8.0:  # Oracle综合评分也支持
-                        print(f"[CVD否决权-A] 市场混乱(session_cross_count={self.session_cross_count})但CVD极强({cvd_5m:+.0f})，强行开仓！")
-                        # CVD否决权通过，继续评估其他因子
-                    else:
-                        print(f"[CVD否决权-B] 混乱市场且CVD强({cvd_5m:+.0f})但Oracle不够强({oracle_score:+.2f})，谨慎")
-                        multiplier *= 0.3  # 大幅压缩仓位到30%
-                        defense_reasons.append(f"混乱CVD强({cvd_5m:+.0f})")
-                else:
-                    print(f"[CVD否决权-C] 混乱市场(session_cross_count={self.session_cross_count})且CVD弱({cvd_5m:+.0f})，拒绝")
-                    return 0.0
-        elif self.session_cross_count >= 3:
-            multiplier *= 0.5
-            defense_reasons.append(f"混沌x{self.session_cross_count}")
-
-        # ========== 因子C: 利润空间防御（基于175笔实盘数据优化）==========
-        #  数据证明：入场价格≥0.50的胜率<5%，几乎全部MARKET_SETTLED
-        # [TARGET] 黄金区间：0.28-0.43，胜率100%（在小样本中）
-
-        if current_price >= 0.50:
-            # [BLOCK] 死亡区间：0.50+几乎全部被套牢
-            if abs(oracle_score) < 10.0:
-                print(f" [防御层-C] 拦截: 入场价{current_price:.2f}处于死亡区间(≥0.50)，需Oracle≥10.0才可开单")
-                return 0.0
-            else:
-                # 即使有极端核弹信号，也只给最小仓位
-                multiplier *= 0.15  # 只给15%仓位
-                defense_reasons.append(f"⚠死亡区间{current_price:.2f}(仅核弹)")
-
-        elif current_price >= 0.45:
-            #  高风险区间：胜率大幅下降
-            multiplier *= 0.3  # 压缩到30%
-            defense_reasons.append(f"高风险区{current_price:.2f}")
-
-        elif current_price >= 0.43:
-            #  中等风险区间：边界地带
-            multiplier *= 0.7  # 轻微压缩
-            defense_reasons.append(f"中风险区{current_price:.2f}")
-
-        elif current_price < 0.28:
-            #  过低区间：虽然便宜但说明市场一边倒
-            if abs(oracle_score) < 5.0:
-                print(f" [防御层-C] 拦截: 入场价{current_price:.2f}过低，市场一边倒，需Oracle≥5.0")
-                return 0.0
-
-        # ========== 因子D: CVD一致性检查（强化版）==========
-        # [CVD强化] 参考 @jtrevorchapman: CVD是最强指标，背离时严厉惩罚
-        # 如果Oracle（代表CVD方向）与本地信号背离，大幅压缩仓位
-        if oracle_score * score < 0:
-            multiplier *= 0.2  # 从0.5改为0.2（更严厉的惩罚）
-            defense_reasons.append(f"CVD背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
-            print(f"[CVD一致性] Oracle({oracle_score:+.1f})与本地({score:+.1f})背离，仓位压缩至20%")
-
-        # ========== 因子E: 距离基准价格风险 ==========
-        # 价格越接近0.50，翻转风险越大
-        distance_from_baseline = abs(current_price - 0.50)
-        if distance_from_baseline < 0.05:
-            multiplier *= 0.6
-            defense_reasons.append(f"接近基准({current_price:.2f})")
-        elif distance_from_baseline < 0.10:
-            multiplier *= 0.8
-            defense_reasons.append(f"较近基准({current_price:.2f})")
-
-        # 打印防御层决策
-        if multiplier < 1.0:
-            print(f" [防御层] 最终乘数: {multiplier:.2f} | 原因: {', '.join(defense_reasons)}")
-        else:
-            print(f" [防御层] 全仓通过 (乘数1.0)")
-
-        return max(0.0, min(1.0, multiplier))
-
-    def _read_oracle_signal(self) -> Optional[Dict]:
         """
         从Binance WebSocket后台线程读取实时数据（内存共享，零延迟）
 
@@ -1889,7 +1619,7 @@ class AutoTraderV5:
         """
         if self.binance_ws is None:
             if not hasattr(self, '_binance_ws_warned'):
-                print("[WARN] Binance WebSocket不可用")
+                print(f"       [BINANCE WS] ⚠️ Binance WebSocket未启动")
                 self._binance_ws_warned = True
             return None
 
@@ -1912,38 +1642,271 @@ class AutoTraderV5:
                 self._binance_data_shown = True
 
             return data
+
         except Exception as e:
             print(f"       [BINANCE WS ERROR] {e}")
-            
-            if not os.path.exists(signal_file):
-                # 首次运行时不打印警告，避免日志污染
-                return None
-            
-            # 读取文件
-            with open(signal_file, 'r', encoding='utf-8') as f:
+            return None
+
+    def check_oracle_health(self) -> Dict:
+        """
+        检查Oracle系统健康状态（用于监控）
+
+        返回：
+        {
+            'status': 'healthy' | 'stale' | 'down',
+            'file_age': float,  # 文件年龄（秒）
+            'cvd_1m': float,
+            'cvd_5m': float,
+            'message': str
+        }
+        """
+        result = {
+            'status': 'unknown',
+            'file_age': 0.0,
+            'cvd_1m': 0.0,
+            'cvd_5m': 0.0,
+            'message': ''
+        }
+
+        try:
+            oracle_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'oracle_signal.json')
+
+            if not os.path.exists(oracle_path):
+                result['status'] = 'down'
+                result['message'] = 'oracle_signal.json 文件不存在'
+                return result
+
+            # 检查文件年龄
+            file_age = time.time() - os.path.getmtime(oracle_path)
+            result['file_age'] = file_age
+
+            if file_age > 120:
+                result['status'] = 'down'
+                result['message'] = f'数据过期 {file_age:.0f}秒（Oracle可能崩溃）'
+            elif file_age > 60:
+                result['status'] = 'stale'
+                result['message'] = f'数据过期 {file_age:.0f}秒'
+            else:
+                result['status'] = 'healthy'
+                result['message'] = f'数据正常 ({file_age:.0f}秒前)'
+
+            # 尝试读取CVD数据
+            with open(oracle_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            # 检查数据新鲜度（超过60秒视为过期）
-            timestamp = data.get('timestamp', 0)
-            age = time.time() - timestamp
-            
-            if age > 60:
-                print(f"       [ORACLE] ⚠️ 数据过期: {age:.1f}秒前（binance_oracle.py 可能未运行）")
-                return None
-            
-            # 提取CVD数据
-            cvd_1m = data.get('cvd_1m', 0.0)
-            cvd_5m = data.get('cvd_5m', 0.0)
-            
-            # 只在CVD数据有效时打印
-            if abs(cvd_1m) > 1000 or abs(cvd_5m) > 1000:
-                print(f"       [ORACLE] 💰 CVD 1m: {cvd_1m:+.0f}, CVD 5m: {cvd_5m:+.0f}")
-            
-            return data
+                result['cvd_1m'] = data.get('cvd_1m', 0.0)
+                result['cvd_5m'] = data.get('cvd_5m', 0.0)
+
         except Exception as e:
-            print(f"       [BINANCE WS ERROR] {e}")
-            return None
-            return None
+            result['status'] = 'error'
+            result['message'] = f'检查失败: {str(e)}'
+
+        return result
+
+    def calculate_defense_multiplier(self, current_price: float, direction: str, oracle: Dict = None) -> float:
+        """
+        核心防御层 (Sentinel Dampening) - 五因子系统 @jtrevorchapman
+
+        评估五项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
+
+        五大防御因子：
+        1. CVD一致性 - 信号方向 vs CVD方向（背离时大幅压缩）
+        2. 距离基准价格 - 价格越接近0.50，翻转风险越高
+        3. Session剩余时间 - 最后2-3分钟风险陡增
+        4. 混沌过滤器 - 预言机报价反复穿越基准价格次数
+        5. 利润空间 - 入场价越高，对胜率要求越高
+
+        Args:
+            current_price: 当前价格
+            direction: 信号方向 ('LONG' or 'SHORT')
+            oracle: Oracle 数据字典（包含 cvd_5m 等）
+        """
+        from datetime import datetime
+        now = datetime.now()
+        current_session = now.minute // 15  # 划分 00, 15, 30, 45 的 Session
+
+        # ========== 混沌过滤器：记录基准线穿越 ==========
+        # 使用0.35作为动态基准线（BTC当前价格区间的中位数）
+        baseline_price = 0.35
+        current_state = 'UP' if current_price > baseline_price else 'DOWN'
+        if self.last_cross_state and current_state != self.last_cross_state:
+            self.session_cross_count += 1
+            print(f"⚠ [混沌监测] 价格穿越基准线({baseline_price:.2f})！当前Session穿越次数: {self.session_cross_count}")
+        self.last_cross_state = current_state
+
+        # ========== Session切换检测 ==========
+        if current_session != self.last_session_id:
+            self.session_cross_count = 0
+            self.last_cross_state = None
+            self.last_session_id = current_session
+
+            # [LAYER 1] Session Memory预加载
+            if self.session_memory:
+                try:
+                    oracle_data = None
+                    try:
+                        oracle_data = self._read_oracle_signal()
+                    except:
+                        pass
+                    self.session_memory.preload_session_bias(
+                        price=current_price,
+                        rsi=0.0,
+                        oracle=oracle_data or {},
+                        price_history=list(self.price_history) if self.price_history else []
+                    )
+                except Exception as e:
+                    print(f" [LAYER-1 ERROR] Session Memory预加载失败: {e}")
+
+        # ================= 五因子防御系统 =================
+        multiplier = 1.0
+        defense_reasons = []
+
+        # ========== 因子1: CVD一致性 ==========
+        # [逻辑] 如果信号方向与CVD方向背离，大幅压缩仓位
+        if oracle:
+            cvd_5m = oracle.get('cvd_5m', 0.0)
+            cvd_1m = oracle.get('cvd_1m', 0.0)
+
+            # 综合CVD判断（5分钟权重70%，1分钟权重30%）
+            cvd_combined = cvd_5m * 0.7 + cvd_1m * 0.3
+
+            # 判断CVD方向
+            cvd_direction = 'LONG' if cvd_combined > 0 else 'SHORT'
+
+            # 计算CVD强度（绝对值）
+            cvd_strength = abs(cvd_combined)
+
+            # ========== CVD 极端背离一票否决（高频次影响最小） ==========
+            # 只在极端情况下拒绝，几乎不影响正常交易
+            CVD_EXTREME_THRESHOLD = 180000  # 极高阈值，只拦截极端异常
+            if cvd_strength > CVD_EXTREME_THRESHOLD:
+                # 检查方向是否背离
+                if (direction == 'LONG' and cvd_direction == 'SHORT') or \
+                   (direction == 'SHORT' and cvd_direction == 'LONG'):
+                    print(f" [🚨 CVD一票否决] CVD{cvd_direction}强度{cvd_combined:+.0f}超过{CVD_EXTREME_THRESHOLD}，极端背离 → 拒绝开仓")
+                    print(f"     理由：{direction}信号与CVD{cvd_direction}方向相反，强度{cvd_strength:.0f}超过安全阈值")
+                    return 0.0  # 直接拒绝
+
+            # CVD一致性检查
+            if direction == 'LONG':
+                if cvd_direction == 'SHORT':
+                    # 背离：信号做多，但CVD显示卖压
+                    if cvd_strength > 100000:  # 强卖压
+                        multiplier *= 0.2  # 大幅压缩
+                        defense_reasons.append(f"CVD强背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至20%")
+                    elif cvd_strength > 50000:  # 中等卖压
+                        multiplier *= 0.5
+                        defense_reasons.append(f"CVD背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至50%")
+                else:
+                    # 一致：信号做多，CVD显示买压 → 无惩罚
+                    if cvd_strength > 100000:
+                        print(f" [因子1-CVD] {direction}信号与CVD一致({cvd_combined:+.0f}) → 强确认")
+            else:  # direction == 'SHORT'
+                if cvd_direction == 'LONG':
+                    # 背离：信号做空，但CVD显示买压
+                    if cvd_strength > 100000:  # 强买压
+                        multiplier *= 0.2  # 大幅压缩
+                        defense_reasons.append(f"CVD强背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至20%")
+                    elif cvd_strength > 50000:  # 中等买压
+                        multiplier *= 0.5
+                        defense_reasons.append(f"CVD背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至50%")
+                else:
+                    # 一致：信号做空，CVD显示卖压 → 无惩罚
+                    if cvd_strength > 100000:
+                        print(f" [因子1-CVD] {direction}信号与CVD一致({cvd_combined:+.0f}) → 强确认")
+
+        # ========== 因子2: 距离基准价格 ==========
+        # [逻辑] 价格越接近基准线(0.35)，翻转风险越高
+        distance_from_baseline = abs(current_price - baseline_price)
+        if distance_from_baseline < 0.02:
+            multiplier *= 0.7  # 非常接近基准，高不确定性
+            defense_reasons.append(f"近基准({distance_from_baseline:.2f})")
+            print(f" [因子2-基准] 价格{current_price:.2f}极接近基准{baseline_price:.2f} → 仓位70%")
+        elif distance_from_baseline < 0.05:
+            multiplier *= 0.9  # 较近基准，轻微风险
+            defense_reasons.append(f"较近基准({distance_from_baseline:.2f})")
+            print(f" [因子2-基准] 价格{current_price:.2f}接近基准{baseline_price:.2f} → 仓位90%")
+
+        # ========== 因子3: Session剩余时间 ==========
+        # [逻辑] 最后2-3分钟风险陡增，任何波动都来不及反应
+        minutes_to_expiry = 15 - (now.minute % 15)
+        seconds_to_expiry = (15 - (now.minute % 15)) * 60 - now.second
+
+        if minutes_to_expiry >= 13:
+            multiplier *= 0.9  # 早期窗口，信号可能变化
+            defense_reasons.append(f"早期窗口({minutes_to_expiry}分钟)")
+        elif minutes_to_expiry <= 2:
+            multiplier *= 0.0  # 最后2分钟，直接拒绝
+            defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
+            print(f" [因子3-时间] 最后{minutes_to_expiry}分钟，风险太大 → 拒绝开仓")
+            return 0.0
+        elif minutes_to_expiry <= 3:
+            multiplier *= 0.5  # 最后3分钟，大幅压缩
+            defense_reasons.append(f"末期窗口({minutes_to_expiry}分钟)")
+            print(f" [因子3-时间] 最后{minutes_to_expiry}分钟，反应时间不足 → 仓位50%")
+        elif minutes_to_expiry <= 5:
+            multiplier *= 0.8  # 最后5分钟，轻微压缩
+            defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
+
+        # ========== 因子4: 混沌过滤器 ==========
+        # [逻辑] 价格反复穿越基准线 → 市场无明确方向 → 压缩仓位
+        # 混乱市场 + CVD背离 = 一票否决（热心哥核心逻辑）
+        if self.session_cross_count >= 5:
+            # 极度混乱，直接拒绝
+            print(f" [因子4-混沌] 价格穿越{self.session_cross_count}次，极度混乱 → 拒绝开仓")
+            return 0.0
+        elif self.session_cross_count >= 3:
+            # 中度混乱：检查是否与CVD背离组合
+            # 如果混乱市场 + CVD背离 → 一票否决（热心哥策略）
+            cvd_opposite = (
+                (direction == 'LONG' and cvd_direction == 'SHORT') or
+                (direction == 'SHORT' and cvd_direction == 'LONG')
+            )
+
+            if cvd_opposite and cvd_strength > 50000:  # 混乱+CVD背离（中等以上）
+                print(f" [🚨 因子4+CVD一票否决] 价格穿越{self.session_cross_count}次(混乱) + CVD{cvd_direction}({cvd_combined:+.0f}) → 拒绝开仓")
+                print(f"     理由：混沌市场与CVD背离双重风险，避免大概率亏损")
+                return 0.0
+
+            # 混乱但不与CVD背离（或CVD弱），正常压缩
+            chaos_multiplier = 0.3 if self.session_cross_count >= 4 else 0.5
+            multiplier *= chaos_multiplier
+            defense_reasons.append(f"混沌x{self.session_cross_count}")
+            print(f" [因子4-混沌] 价格穿越{self.session_cross_count}次，市场混乱 → 仓位{chaos_multiplier:.0%}")
+
+        # ========== 因子5: 利润空间 ==========
+        # [逻辑] 入场价越高，对胜率要求越高
+        # 基于最新数据重新定义价格区间
+        if current_price >= 0.45:
+            # 高价区，只允许最干净的信号
+            multiplier *= 0.3
+            defense_reasons.append(f"高价区({current_price:.2f})")
+            print(f" [因子5-空间] 入场价{current_price:.2f}过高，利润空间有限 → 仓位30%")
+        elif current_price >= 0.40:
+            # 中高价区
+            multiplier *= 0.6
+            defense_reasons.append(f"中高价({current_price:.2f})")
+            print(f" [因子5-空间] 入场价{current_price:.2f}，利润空间中等 → 仓位60%")
+        elif current_price < 0.25:
+            # 极低价，可能过度反应
+            multiplier *= 0.7
+            defense_reasons.append(f"极低价({current_price:.2f})")
+            print(f" [因子5-空间] 入场价{current_price:.2f}过低，可能超跌 → 仓位70%")
+        # 0.25-0.40: 当前价格区间，无惩罚（1.0）
+
+        # ================= 最终决策 =================
+        if multiplier < 0.2:
+            print(f" [防御层] 多重风险叠加，最终乘数{multiplier:.2f} < 0.2 → 拒绝开仓")
+            return 0.0
+        elif multiplier < 1.0:
+            print(f" [防御层] 最终乘数: {multiplier:.2f} | 原因: {', '.join(defense_reasons)}")
+        else:
+            print(f" [防御层] 五因子全部通过，全仓执行 (乘数1.0)")
+
+        return max(0.0, min(1.0, multiplier))
 
     def generate_signal(self, market: Dict, price: float, no_price: float = None) -> Optional[Dict]:
         # 注意：V5主循环在调用generate_signal前已调用update_indicators
@@ -1991,21 +1954,38 @@ class AutoTraderV5:
         # 移除"本地分"vs"Oracle分"的区分，所有指标平等输入投票系统
         # 投票系统直接生成最终方向和置信度
 
-        # 读取Oracle数据（包含CVD、UT Bot、超短动量等）
+        # 读取Oracle数据（包含CVD、超短动量等）
         oracle = self._read_oracle_signal()
-        oracle_score = 0.0
-        ut_hull_trend = 'NEUTRAL'
+        # 注意：UT Bot趋势已根据奥卡姆剃刀原则删除，不再使用
+        ut_hull_trend = 'NEUTRAL'  # 保留变量以兼容旧日志
 
         if oracle:
-            oracle_score = oracle.get('signal_score', 0.0)
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
 
-        print(f"       [ORACLE] Oracle分数:{oracle_score:+.2f} | UT Bot:{ut_hull_trend}")
+        # ==========================================
+        # [LAYER 1] Session Memory - 先验层（使用预加载缓存）
+        # ==========================================
+        # 在任何信号之前，系统已经基于历史数据有了"观点"
+        # prior_bias在session开始时已预加载，这里直接使用缓存
+        prior_bias = 0.0
+        prior_analysis = {}
+
+        if self.session_memory:
+            prior_bias = self.session_memory.get_cached_bias()
+            prior_analysis = self.session_memory.get_cached_analysis()
+
+            if abs(prior_bias) >= 0.1:
+                direction_str = "LONG" if prior_bias > 0 else "SHORT"
+                print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} ({direction_str})")
+            else:
+                print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} (中立)")
+        else:
+            print(f"       [LAYER-1 MEMORY] 未初始化，使用中立先验")
 
         # ==========================================
-        # [VOTING] 投票系统（统一信号生成）
+        # [LAYER 2] 投票系统（信号层）
         # ==========================================
-        print(f"       [VOTING SYSTEM] 所有指标统一投票（25个规则：24个激活 + 1个占位）")
+        print(f"       [LAYER-2 SIGNALS] 30个规则投票（Session Memory已作为Layer 1独立）")
 
         # 获取Polymarket订单簿数据（用于7个订单簿规则）
         orderbook = self.get_polymarket_orderbook(market)
@@ -2030,27 +2010,16 @@ class AutoTraderV5:
         direction = vote_result['direction']
         confidence = vote_result['confidence']
         vote_details = vote_result
-        # 方向对应的分数（仅用于防御层计算，不代表"本地分"概念）
-        score = 5.0 if direction == 'LONG' else -5.0
 
         print(f"\n       [VOTING RESULT] 最终方向: {direction} | 置信度: {confidence:.0%}")
-        print(f"       [VOTE] 继续执行风控检查（RSI防呆、防御层）...")
+        print(f"       [VOTE] 继续执行防御层评估...")
 
-        # 投票系统已经返回了 direction，继续执行风控检查
+        # 投票系统已经返回了 direction，直接进入防御层
         if direction:
             # ==========================================
-            #  极简风控：只保留基础RSI防呆
+            # [已删除] RSI防呆 - 交由31规则投票系统决策
+            # [已删除] UT Bot趋势锁 - 15分钟趋势对3-6分钟入场窗口无效
             # ==========================================
-            # 彻底抛弃1H/15m UT Bot趋势锁，交由防御层裁决
-            if direction == 'LONG' and rsi > 70:
-                print(f"[BLOCK] [RSI防呆] 拒绝做多！RSI={rsi:.1f}>70（超买），追高风险！")
-                return None
-            elif direction == 'SHORT' and rsi < 30:
-                print(f"[BLOCK] [RSI防呆] 拒绝做空！RSI={rsi:.1f}<30（超卖），反弹风险！")
-                return None
-
-            # ==========================================
-            # [已禁用] UT Bot趋势过滤（因3-6分钟入场窗口太短，15m趋势过时）
             # 理由：
             #   1. 15m蜡烛图含11分钟历史（4分钟剩余入场时）
             #   2. 无法反映最近1-2分钟变化
@@ -2075,30 +2044,10 @@ class AutoTraderV5:
                 print(f" [UT Bot参考] 15m趋势={ut_hull_trend}（不作为过滤条件）")
 
             # ==========================================
-            #  智能防御层评估 (@jtrevorchapman 三层防御系统)
+            # [LAYER 3] 防御层（五因子风险控制）
             # ==========================================
-            # 使用新的防御层系统（五因子评估）
-            if self.defense_layer:
-                # 构建信号字典（用于防御层评估）
-                signal_dict = {
-                    'direction': direction,
-                    'confidence': confidence
-                }
-                
-                # 调用新防御层
-                defense_multiplier, defense_reasons = self.defense_layer.calculate_defense_multiplier(
-                    signal=signal_dict,
-                    oracle=oracle,
-                    market=market,
-                    current_price=price
-                )
-                
-                # 打印防御层报告
-                self.defense_layer.print_defense_report(defense_multiplier, defense_reasons)
-            else:
-                # Fallback：使用旧的防御层逻辑
-                print(f"       [WARN] 使用旧版防御层逻辑（建议安装 defense_layer.py）")
-                defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score, oracle)
+            # 五因子：CVD一致性、距离基准、剩余时间、混沌过滤、利润空间
+            defense_multiplier = self.calculate_defense_multiplier(price, direction, oracle)
 
             # 如果防御层返回0，直接拦截
             if defense_multiplier <= 0:
@@ -2106,22 +2055,21 @@ class AutoTraderV5:
                 return None
 
             # 所有风控通过，返回常规信号（带上防御层乘数）
-            strategy_name = 'VOTING_SYSTEM'
-            print(f" [{strategy_name}] {direction} 信号确认（防御层通过）")
+            strategy_name = 'THREE_LAYER_SYSTEM'
+            print(f" [{strategy_name}] {direction} 信号确认（三层系统全部通过）")
 
             return {
                 'direction': direction,
                 'strategy': strategy_name,
-                'score': score,
                 'confidence': confidence,
                 'rsi': rsi,
                 'vwap': vwap,
                 'price': price,
                 'components': {},  # 投票系统没有components概念
-                'oracle_score': oracle_score,
                 'oracle_15m_trend': ut_hull_trend,
                 'defense_multiplier': defense_multiplier,
-                'vote_details': vote_details,  # 添加投票详情（原系统为None）
+                'prior_bias': prior_bias,  # Layer 1: Session Memory先验
+                'vote_details': vote_details,  # Layer 2: 投票详情
             }
 
         return None
@@ -2159,7 +2107,7 @@ class AutoTraderV5:
         except Exception as e:
             print(f"       [POSITION LOCK CHECK ERROR] {e}")
 
-        # ⏱ 【已禁用】5分钟全局冷却，使用弹匣微冷却（60秒）即可
+        # [已禁用] 5分钟全局冷却
         # 原因：仓位绝对锁定已经足够防止连续加仓，60秒微冷却防止同一市场疯狂交易
         # ==========================================
         # # 检查最后一次交易时间，强制冷却5分钟
@@ -2180,8 +2128,7 @@ class AutoTraderV5:
                 print(f"       [RESET] 新的15分钟窗口: {self.last_traded_market} → {current_slug}")
                 self.last_traded_market = None
 
-        # 【已解除】每个市场只交易一次的限制
-        # 改为：通过弹匣限制、射击冷却、时间防火墙等精细风控来控制频率
+        # [已解除] 每个市场只交易一次的限制（v2版本允许多次交易）
         # if market and self.last_traded_market:
         #     current_slug = market.get('slug', '')
         #     if current_slug == self.last_traded_market:
@@ -2196,9 +2143,9 @@ class AutoTraderV5:
         all_long = positions.get('LONG', 0) + real_positions.get('LONG', 0)
         all_short = positions.get('SHORT', 0) + real_positions.get('SHORT', 0)
 
-        if signal['direction'] == 'LONG' and all_short > 0:
+        if signal['direction'] == 'LONG' and all_short >= 1:
             return False, f" [反向冲突] 已有 {all_short:.0f} 空头仓位，禁止同时做多！"
-        if signal['direction'] == 'SHORT' and all_long > 0:
+        if signal['direction'] == 'SHORT' and all_long >= 1:
             return False, f" [反向冲突] 已有 {all_long:.0f} 多头仓位，禁止同时做空！"
 
         #  === 总持仓额度限制（防止多笔交易累计超仓）===
@@ -2388,7 +2335,7 @@ class AutoTraderV5:
                     # 市场已过期，拒绝开仓
                     return False, f" 时间防火墙: 市场已过期({time_left:.0f}秒)，拒绝开仓"
 
-                # [已移除] 3-6分钟时间窗口限制
+                # [v2版本] 已移除3-6分钟时间窗口限制
                 # 现在通过防御层的动态仓位管理来控制不同时间段的风险
                 # ==========================================
                 # if time_left > 360:
@@ -2462,208 +2409,6 @@ class AutoTraderV5:
 
         return True, "OK"
 
-    def get_positions(self) -> Dict[str, float]:
-        """查询当前持仓（从 positions 表）"""
-        positions = {}  # {side: size}
-        try:
-            conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
-            #  激活WAL模式：多线程并发读写（防止database is locked）
-            conn.execute('PRAGMA journal_mode=WAL;')
-            cursor = conn.cursor()
-
-            # 从 positions 表获取当前持仓
-            #  修复：也包括'closing'状态的持仓（它们实际上还在持仓中）
-            cursor.execute("""
-                SELECT side, size
-                FROM positions
-                WHERE status IN ('open', 'closing')
-            """)
-
-            for row in cursor.fetchall():
-                side, size = row
-                if side in positions:
-                    positions[side] += size
-                else:
-                    positions[side] = size
-
-            conn.close()
-        except Exception as e:
-            print(f"       [POS CHECK ERROR] {e}")
-
-        return positions
-
-    def get_real_positions(self) -> Dict[str, float]:
-        """获取实时持仓（从 Polymarket API）"""
-        try:
-            from py_clob_client.headers.headers import create_level_2_headers
-            from py_clob_client.clob_types import RequestArgs
-
-            url = f"{CONFIG['clob_host']}/positions"
-            request_args = RequestArgs(method="GET", request_path="/positions")
-            headers = create_level_2_headers(self.client.signer, self.client.creds, request_args)
-            # [ROCKET] 使用Session复用TCP连接（提速持仓查询）
-            resp = self.http_session.get(url, headers=headers, proxies=CONFIG['proxy'], timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                positions = {}
-                for pos in data:
-                    asset_id = pos.get('asset_id', '')
-                    side = pos.get('side', '')  # 'BUY' or 'SELL'
-                    size = pos.get('size', 0)
-                    if isinstance(size, str):
-                        size = float(size)
-                    if asset_id:
-                        positions[side] = positions.get(side, 0) + size
-                return positions
-        except Exception as e:
-            print(f"       [POS CHECK ERROR] {e}")
-        return {}
-
-    def cancel_order(self, order_id: str) -> bool:
-        """取消订单"""
-        try:
-            response = self.client.cancel(order_id)
-            # 修复判断逻辑：检查 canceled 数组是否包含订单ID
-            if response:
-                canceled_list = response.get('canceled', [])
-                if canceled_list and order_id in canceled_list:
-                    print(f"       [CANCEL]  订单已取消: {order_id[-8:]}")
-                    return True
-                else:
-                    #  canceled=[] 时，查询订单状态确认（可能是已成交/已取消）
-                    try:
-                        order_info = self.client.get_order(order_id)
-                        if order_info:
-                            status = order_info.get('status', '').upper()
-                            if status in ('FILLED', 'MATCHED', 'CANCELED', 'TRIGGERED'):
-                                print(f"       [CANCEL] ℹ 订单已{status}，无需撤销: {order_id[-8:]}")
-                                return True
-                    except:
-                        pass  # 查询失败，继续报错
-                    # success 字段可能不准确，主要看 canceled 数组
-                    print(f"       [CANCEL FAIL] {order_id[-8:]}: canceled={canceled_list}")
-                    return False
-            else:
-                print(f"       [CANCEL FAIL] {order_id[-8:]}: 无响应")
-                return False
-        except Exception as e:
-            print(f"       [CANCEL ERROR] {order_id[-8:]}: {e}")
-            return False
-
-    def cancel_pair_orders(self, take_profit_order_id: str, stop_loss_order_id: str, triggered_order: str):
-        """止盈成交时取消止损（现在止损是本地轮询，无需取消）"""
-        if triggered_order == 'TAKE_PROFIT':
-            # 止盈成交，无需操作（止损是本地轮询，没有挂单）
-            pass
-        elif triggered_order == 'STOP_LOSS':
-            # 止损已在check_positions里撤止盈单了，这里无需重复
-            pass
-
-    def update_allowance_fixed(self, asset_type, token_id=None):
-        """修复版授权：正确传入 funder 地址（绕过 SDK bug）"""
-        from py_clob_client.headers.headers import create_level_2_headers
-        from py_clob_client.http_helpers.helpers import get
-        from py_clob_client.clob_types import RequestArgs
-        UPDATE_BALANCE_ALLOWANCE = "/balance-allowance/update"
-        request_args = RequestArgs(method="GET", request_path=UPDATE_BALANCE_ALLOWANCE)
-        headers = create_level_2_headers(self.client.signer, self.client.creds, request_args)
-        url = "{}{}?asset_type={}&signature_type=2".format(
-            self.client.host, UPDATE_BALANCE_ALLOWANCE, asset_type
-        )
-        if token_id:
-            url += "&token_id={}".format(token_id)
-        return get(url, headers=headers)
-
-    def ensure_allowance(self, token_id: str, expected_size: float) -> bool:
-        """确保已授权指定token（用于SELL操作），并等待token到账
-
-        返回: True=已授权且有余额, False=授权失败或余额不足
-        """
-        import time
-        max_wait = 15  # 最多等待15秒
-
-        try:
-            params = BalanceAllowanceParams(
-                asset_type=AssetType.CONDITIONAL,  # 条件token（YES/NO）
-                token_id=token_id,
-                signature_type=2
-            )
-
-            # 等待token到账并检查授权
-            for wait_i in range(max_wait):
-                try:
-                    result = self.client.get_balance_allowance(params)
-                    if result:
-                        balance = float(result.get('balance', 0))
-                        allowance = float(result.get('allowance', 0))
-
-                        print(f"       [ALLOWANCE] token={token_id[-8:]}, balance={balance:.2f}, allowance={allowance:.2f}")
-
-                        if balance >= expected_size:
-                            # 余额足够，检查授权
-                            if allowance > 0:
-                                print(f"       [ALLOWANCE]  余额和授权都足够")
-                                return True
-                            else:
-                                # 尝试授权
-                                print(f"       [ALLOWANCE] 授权中...")
-                                self.update_allowance_fixed(AssetType.CONDITIONAL, token_id)
-                                print(f"       [ALLOWANCE]  授权请求已发送，等待链上确认...")
-                                # 等待授权在链上生效（增加等待时间）
-                                import time
-                                for auth_wait in range(10):
-                                    time.sleep(1)
-                                    try:
-                                        result2 = self.client.get_balance_allowance(params)
-                                        if result2:
-                                            allowance2 = float(result2.get('allowance', 0))
-                                            if allowance2 > 0:
-                                                print(f"       [ALLOWANCE]  授权已生效: allowance={allowance2:.2f} (等待{auth_wait+1}秒)")
-                                                break
-                                        elif auth_wait < 9:
-                                            print(f"       [ALLOWANCE] 等待授权生效... ({auth_wait+1}/10)")
-                                    except:
-                                        if auth_wait < 9:
-                                            print(f"       [ALLOWANCE] 查询授权状态... ({auth_wait+1}/10)")
-                                        time.sleep(1)
-                                else:
-                                    print(f"       [ALLOWANCE] ⚠  授权可能仍未生效，继续尝试挂单")
-                                return True
-                        else:
-                            if wait_i < max_wait - 1:
-                                print(f"       [ALLOWANCE] 等待token到账... ({wait_i+1}/{max_wait})")
-                                time.sleep(1)
-
-                except Exception as e:
-                    err_str = str(e)
-                    # 401 说明 API key 权限不足，无法查询授权，直接跳过等待挂单
-                    if '401' in err_str or 'Unauthorized' in err_str:
-                        print(f"       [ALLOWANCE] API key 权限不足，尝试直接授权token={token_id[-8:]}...")
-                        try:
-                            self.update_allowance_fixed(AssetType.CONDITIONAL, token_id)
-                            print(f"       [ALLOWANCE]  授权请求已发送，等待链上确认...")
-                            # 等待授权在链上生效（增加等待时间）
-                            import time
-                            for auth_wait in range(10):
-                                time.sleep(1)
-                            return True
-                        except Exception as e2:
-                            print(f"       [ALLOWANCE] 直接授权失败: {e2}，等待12秒后继续尝试挂单")
-                            time.sleep(12)
-                            return True
-                    if wait_i < max_wait - 1:
-                        print(f"       [ALLOWANCE] 查询失败，重试中... ({wait_i+1}/{max_wait}): {e}")
-                        time.sleep(1)
-
-            print(f"       [ALLOWANCE] [X] 等待超时，但仍尝试挂单")
-            return True  # 返回True让程序继续尝试
-
-        except Exception as e:
-            print(f"       [ALLOWANCE ERROR] {e}")
-            import traceback
-            traceback.print_exc()
-            return True  # 即使失败也继续尝试
-
     def place_stop_orders(self, market: Dict, side: str, size: float, entry_price: float, value_usdc: float, entry_order_id: str = None) -> tuple:
         """开仓后同时挂止盈止损单（带重试机制）
 
@@ -2695,7 +2440,7 @@ class AutoTraderV5:
 
             # --- 止盈计算 ---
             #  彻底解除 1U 封印，独立计算 30% 止盈
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  
             tp_target_price = entry_price * (1 + tp_pct_max)          
             
             #  极限价格保护 + 精度控制（保留2位小数，最高不超过0.99）
@@ -2787,14 +2532,16 @@ class AutoTraderV5:
                                         pass
                                 # 基于最终确认的actual_entry_price统一重算止盈止损（对称30%逻辑）
                                 value_usdc = size * actual_entry_price
-                                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                                 tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                 tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                 tp_target_price = min(tp_by_fixed, tp_by_pct)
                                 sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                 sl_by_pct = actual_entry_price * (1 - sl_pct_max)
                                 sl_original = (value_usdc - 1.0) / max(size, 1)
-                                sl_target_price = max(sl_original, sl_by_pct)
+                                # [BUG修复] 应该取更严格的止损(min)，而不是更宽松的(max)
+                                # max会选择亏更多的价格，min会选择亏更少的价格
+                                sl_target_price = min(sl_original, sl_by_pct)
                                 tp_target_price = align_price(tp_target_price)
                                 sl_target_price = align_price(sl_target_price)
                                 print(f"       [STOP ORDERS] 止盈止损确认: entry={actual_entry_price:.4f}, tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
@@ -2838,14 +2585,15 @@ class AutoTraderV5:
                                 if abs(actual_entry_price - entry_price) > 0.001:
                                     value_usdc = size * actual_entry_price
                                     # 对称30%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                                     tp_by_pct = actual_entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = min(tp_by_fixed, tp_by_pct)
                                     sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
                                     sl_by_pct = actual_entry_price * (1 - sl_pct_max)
                                     sl_original = (value_usdc - 1.0) / max(size, 1)
-                                    sl_target_price = max(sl_original, sl_by_pct)
+                                    # [BUG修复] 应该取更严格的止损(min)，而不是更宽松的(max)
+                                    sl_target_price = min(sl_original, sl_by_pct)
                                     tp_target_price = align_price(tp_target_price)
                                     sl_target_price = align_price(sl_target_price)
                                     print(f"       [STOP ORDERS] 重新计算止盈止损: tp={tp_target_price:.4f}, sl={sl_target_price:.4f}")
@@ -2881,7 +2629,7 @@ class AutoTraderV5:
                                         return max(tick_size, min(1 - tick_size, p))
 
                                     # 对称30%止盈止损
-                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                                     tp_by_pct = entry_price * (1 + tp_pct_max)
                                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                                     tp_target_price = align_price_local(min(tp_by_fixed, tp_by_pct))
@@ -2910,7 +2658,8 @@ class AutoTraderV5:
             # 确认token授权
             # 检查token授权
             print(f"       [STOP ORDERS] 检查token授权...")
-            self.ensure_allowance(token_id, expected_size=stop_size)
+            from py_clob_client.clob_types import AssetType
+            self.update_allowance_fixed(AssetType.CONDITIONAL, token_id)
 
             # ==========================================
             # [ROCKET] 强制止盈挂单（带动态退避与重试机制）
@@ -3352,6 +3101,17 @@ class AutoTraderV5:
 
             print(f"       [PRICE] 使用={'YES' if signal['direction']=='LONG' else 'NO'}={base_price:.4f}")
 
+            # [价格一致性检查] WebSocket实时价与信号价偏差检查
+            signal_price = float(signal['price'])
+            price_deviation = abs(base_price - signal_price)
+            MAX_PRICE_DEVIATION = 0.02  # 最大容忍偏差：2美分
+
+            if price_deviation > MAX_PRICE_DEVIATION:
+                print(f"       [价格拦截] 实时价{base_price:.4f}与信号价{signal_price:.4f}偏差{price_deviation:.3f}超过{MAX_PRICE_DEVIATION}，拒绝下单（价格已变）")
+                return None
+            elif price_deviation > 0.01:
+                print(f"       [价格警告] 实时价{base_price:.4f}与信号价{signal_price:.4f}偏差{price_deviation:.3f}，谨慎下单")
+
             # tick_size 对齐
             tick_size_float = float(market.get('orderPriceMinTickSize') or 0.01)
             # tick_size 必须是字符串格式给 SDK（"0.1"/"0.01"/"0.001"/"0.0001"）
@@ -3363,19 +3123,19 @@ class AutoTraderV5:
 
             #  === 防弹衣：智能滑点保护（击破250ms做市商撤单）===
             # Polymarket有250ms延迟，做市商可在期间撤单。我们需要设定价格上限防止高位接盘
-            MAX_SLIPPAGE_ABSOLUTE = 0.03  # 绝对滑点上限：3美分
+            MAX_SLIPPAGE_ABSOLUTE = 0.02  # 绝对滑点上限：2美分（降低以减少滑点风险）
             MAX_SAFE_ENTRY_PRICE = 0.70   # 安全入场价上限：超过70¢盈亏比太差
 
             # 基础滑点：2个tick（确保成交）
             slippage_ticks = 2
             adjusted_price = align_price(base_price + tick_size_float * slippage_ticks)
 
-            #  关键：计算实际滑点并限制在3美分以内
+            #  关键：计算实际滑点并限制在2美分以内
             actual_slippage = adjusted_price - base_price
             if actual_slippage > MAX_SLIPPAGE_ABSOLUTE:
-                # 滑点超过3美分，强制限制
+                # 滑点超过2美分，强制限制
                 adjusted_price = align_price(base_price + MAX_SLIPPAGE_ABSOLUTE)
-                print(f"       [ 防弹衣] 原滑点{actual_slippage:.3f}超过3¢，强制限制到3¢")
+                print(f"       [ 防弹衣] 原滑点{actual_slippage:.3f}超过2¢，强制限制到2¢")
 
             #  极限保护：即使加上滑点，价格也不能超过70¢
             if adjusted_price > MAX_SAFE_ENTRY_PRICE:
@@ -3401,8 +3161,8 @@ class AutoTraderV5:
                 return None
             self.position_mgr.balance = fresh_usdc
 
-            # [TARGET] 智能动态仓位：根据信号强度自动调整（15%-30%）
-            base_position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
+            # [TARGET] 智能动态仓位：根据置信度和投票强度自动调整（15%-30%）
+            base_position_value = self.position_mgr.calculate_position(signal['confidence'], signal.get('vote_details'))
 
             #  应用防御层乘数 (@jtrevorchapman 三层防御系统)
             defense_multiplier = signal.get('defense_multiplier', 1.0)
@@ -3510,7 +3270,7 @@ class AutoTraderV5:
                 signal['direction'],
                 signal['price'],
                 value,
-                signal['score'],
+                5.0 if signal['direction'] == 'LONG' else -5.0,  # 占位值（方向标记）
                 signal['confidence'],
                 signal['rsi'],
                 signal['vwap'],
@@ -3613,7 +3373,7 @@ class AutoTraderV5:
 
                 real_value = position_size * actual_price
                 # 止盈：与 place_stop_orders 保持相同公式
-                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)
+                tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)
                 tp_by_pct = actual_price * (1 + tp_pct_max)
                 tp_by_fixed = (real_value + 1.0) / max(position_size, 1)
                 tp_target_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -3637,7 +3397,7 @@ class AutoTraderV5:
                             return max(tick_size, min(1 - tick_size, p))
 
                         # 基于实际成交价格计算止盈止损（对称30%逻辑）
-                        tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                        tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                         tp_by_pct = actual_price * (1 + tp_pct_max)
                         tp_by_fixed = (position_value + 1.0) / max(position_size, 1)
                         tp_price = align_price(min(tp_by_fixed, tp_by_pct))
@@ -3676,9 +3436,11 @@ class AutoTraderV5:
                         size, value_usdc, take_profit_usd, stop_loss_usd,
                         take_profit_pct, stop_loss_pct,
                         take_profit_order_id, stop_loss_order_id, token_id, status,
-                        score, oracle_score, oracle_1h_trend, oracle_15m_trend,
-                        merged_from, strategy, highest_price
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        score, oracle_1h_trend, oracle_15m_trend,
+                        merged_from, strategy, highest_price, vote_details,
+                        rsi, vwap, cvd_5m, cvd_1m, prior_bias, defense_multiplier,
+                        minutes_to_expiry
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3695,19 +3457,28 @@ class AutoTraderV5:
                     str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.30))), 4)),
                     token_id,
                     'open',
-                    signal['score'],  #  保存信号评分（本地融合分数）
-                    signal.get('oracle_score', 0.0),  #  保存Oracle先知分
+                    5.0 if signal['direction'] == 'LONG' else -5.0,  # 占位值（方向标记）
                     signal.get('oracle_1h_trend', 'NEUTRAL'),  #  保存1H趋势
                     signal.get('oracle_15m_trend', 'NEUTRAL'),  #  保存15m趋势
                     merged_from,  #  标记是否是合并交易（0=独立，>0=被合并的持仓ID）
                     signal.get('strategy', 'TREND_FOLLOWING'),  # [TARGET] 标记策略类型
-                    actual_price  # [ROCKET] 吸星大法：初始化历史最高价为入场价
+                    actual_price,  # [ROCKET] 吸星大法：初始化历史最高价为入场价
+                    json.dumps(signal.get('vote_details', {}), ensure_ascii=False),  # 保存31个规则的投票详情（JSON格式）
+                    #  指标数据（用于回测和Session Memory相似度匹配）
+                    signal.get('rsi', 50.0),  # RSI指标
+                    signal.get('vwap', 0.0),  # VWAP价格基准
+                    signal.get('vote_details', {}).get('oracle', {}).get('cvd_5m', 0.0),  # 5分钟CVD
+                    signal.get('vote_details', {}).get('oracle', {}).get('cvd_1m', 0.0),  # 1分钟CVD
+                    signal.get('prior_bias', 0.0),  # Layer 1先验偏差
+                    signal.get('defense_multiplier', 1.0),  # Layer 3防御乘数
+                    # 计算并记录剩余时间（用于Session Memory：最后6分钟加权）
+                    (15 - (datetime.now().minute % 15)) % 15,  # Session剩余分钟数（0-14）
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
                 # 根据止盈止损单状态显示不同信息
                 if tp_order_id:
-                    sl_status = "已禁用" if not CONFIG['risk'].get('enable_stop_loss', False) else "本地监控"
+                    sl_status = "本地监控" if CONFIG['risk'].get('enable_stop_loss', False) else "已禁用"
                     print(f"       [POSITION]  止盈单已挂 @ {tp_target_price:.4f}，止损线 @ {sl_target_price:.4f} ({sl_status})")
                 else:
                     print(f"       [POSITION] ⚠  止盈单挂单失败，将使用本地监控双向平仓")
@@ -3735,6 +3506,7 @@ class AutoTraderV5:
         """
         try:
             import time
+            import json
             token_ids = market.get('clobTokens', [])
             if isinstance(token_ids, str):
                 token_ids = json.loads(token_ids)
@@ -3814,33 +3586,56 @@ class AutoTraderV5:
 
             # 取消旧止盈止损单（带验证，确保取消成功再挂新单）
             if old_tp_order_id:
-                try:
-                    self.cancel_order(old_tp_order_id)
-                    time.sleep(1)
-                    # 验证旧止盈单确实已取消/成交，防止双重卖出
-                    tp_still_live = False
-                    try:
-                        tp_info = self.client.get_order(old_tp_order_id)
-                        if tp_info and tp_info.get('status', '').upper() in ('LIVE', 'OPEN'):
-                            tp_still_live = True
-                            print(f"       [MERGE] ⚠ 旧止盈单仍在挂单中，再次尝试取消...")
-                            self.cancel_order(old_tp_order_id)
-                            time.sleep(2)
-                    except Exception:
-                        pass  # 查询失败视为已取消
-                    if not tp_still_live:
-                        print(f"       [MERGE]  已取消旧止盈单 {old_tp_order_id[-8:]}")
-                except Exception as e:
-                    print(f"       [MERGE] ⚠ 取消旧止盈单失败: {e}，放弃合并以防双重卖出")
+                # 🔧 修复：检查 cancel_order 返回值
+                cancel_success = self.cancel_order(old_tp_order_id)
+                if not cancel_success:
+                    print(f"       [MERGE] ❌ 取消旧止盈单失败，放弃合并以防双重卖出！")
                     conn.close()
                     return False, 0
+
+                time.sleep(1)
+
+                # 验证旧止盈单确实已取消/成交，防止双重卖出
+                tp_still_live = False
+                try:
+                    tp_info = self.client.get_order(old_tp_order_id)
+                    if tp_info:
+                        status = tp_info.get('status', '').upper()
+                        if status in ('LIVE', 'OPEN', 'PENDING'):
+                            tp_still_live = True
+                            print(f"       [MERGE] ⚠ 旧止盈单仍在挂单中({status})，再次尝试取消...")
+                            retry_cancel = self.cancel_order(old_tp_order_id)
+                            if not retry_cancel:
+                                print(f"       [MERGE] ❌ 重试取消失败，放弃合并！")
+                                conn.close()
+                                return False, 0
+                            time.sleep(2)
+                            # 再次验证
+                            tp_info2 = self.client.get_order(old_tp_order_id)
+                            if tp_info2 and tp_info2.get('status', '').upper() in ('LIVE', 'OPEN', 'PENDING'):
+                                print(f"       [MERGE] ❌ 旧止盈单无法取消，放弃合并！")
+                                conn.close()
+                                return False, 0
+                except Exception as e:
+                    # 查询异常可能是订单不存在（已成交），视为成功
+                    error_msg = str(e).lower()
+                    if 'not found' in error_msg or 'does not exist' in error_msg:
+                        print(f"       [MERGE] 旧止盈单不存在（可能已成交）")
+                    else:
+                        print(f"       [MERGE] ⚠ 查询旧止盈单失败: {e}")
+
+                print(f"       [MERGE]  已确认旧止盈单已取消/成交 {old_tp_order_id[-8:]}")
+
             if old_sl_order_id and old_sl_order_id.startswith('0x'):
                 try:
-                    self.cancel_order(old_sl_order_id)
-                    print(f"       [MERGE]  已取消旧止损单 {old_sl_order_id[-8:]}")
-                    time.sleep(1)
+                    cancel_sl = self.cancel_order(old_sl_order_id)
+                    if cancel_sl:
+                        print(f"       [MERGE]  已取消旧止损单 {old_sl_order_id[-8:]}")
+                        time.sleep(1)
+                    else:
+                        print(f"       [MERGE] ⚠ 取消旧止损单失败（继续合并）")
                 except Exception as e:
-                    print(f"       [MERGE] ⚠ 取消旧止损单失败: {e}")
+                    print(f"       [MERGE] ⚠ 取消旧止损单异常: {e}")
 
             # 合并持仓（加权平均）
             merged_size = old_size + new_size
@@ -3850,10 +3645,11 @@ class AutoTraderV5:
             print(f"       [MERGE] 合并后: {merged_size}股 @ {merged_entry_price:.4f} (${merged_value:.2f})")
 
             # 计算新的止盈止损价格（合并持仓只用百分比，不用固定金额）
-            #  修复：移除固定金额逻辑，统一使用30%百分比
+            #  修复：移除固定金额逻辑，统一使用CONFIG中的百分比
             # 原因：大仓位时+1U/-1U占比太小，会偏离设计意图
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+            #  注意：合并持仓的止盈止损与正常开仓保持一致（30%止盈 / 70%止损）
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 30%止盈
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.70)  # 70%止损（与正常开仓一致）
 
             # 对齐价格精度
             tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
@@ -3861,9 +3657,9 @@ class AutoTraderV5:
                 p = round(round(p / tick_size) * tick_size, 4)
                 return max(tick_size, min(1 - tick_size, p))
 
-            # 止盈：统一用30%百分比
+            # 止盈：基于合并后均价，统一用30%百分比
             tp_target_price = align_price(merged_entry_price * (1 + tp_pct_max))
-            # 止损：统一用30%百分比
+            # 止损：基于合并后均价，统一用70%百分比
             sl_target_price = align_price(merged_entry_price * (1 - sl_pct_max))
 
             print(f"       [MERGE] 新止盈: {tp_target_price:.4f} ({tp_pct_max*100:.0f}%)")
@@ -4072,7 +3868,7 @@ class AutoTraderV5:
                 # 超高位强制结算保护（防止最后1秒画门）
                 # 🔴 检查绝对止盈开关
                 if not trailing_triggered and CONFIG['risk'].get('enable_absolute_tp', True):
-                    if pos_current_price >= 0.92:
+                    if pos_current_price >= 0.90:
                         print(f"       [[TARGET] 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
                         trailing_triggered = True
                         exit_reason = 'ABSOLUTE_TAKE_PROFIT'
@@ -4120,6 +3916,88 @@ class AutoTraderV5:
 
                     print(f"       [[ROCKET] 吸星大法] {exit_reason}: {side} 盈利 ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)")
                     continue  # 跳过后续处理，进入下一个持仓
+
+                # 🚨 [最后2分钟亏损减损] 防止到期归零，在亏损时主动平仓减少损失
+                # 注意：这个检查必须在追踪止盈、绝对止盈之前执行，确保不会被跳过
+                from datetime import datetime as dt, timezone as tz
+                now_utc = dt.now(tz.utc)
+                # 计算当前15分钟窗口的结束时间
+                window_start_ts = (int(now_utc.timestamp()) // 900) * 900
+                window_end_ts = window_start_ts + 900
+                seconds_remaining = window_end_ts - int(now_utc.timestamp())
+
+                # 🔧 调试日志：每30秒打印一次剩余时间
+                if int(now_utc.timestamp()) % 30 == 0:
+                    print(f"       [🚨 亏损减损] Session剩余{seconds_remaining:.0f}秒 ({seconds_remaining//60}分{seconds_remaining%60}秒)")
+
+                # 最后2分钟（120秒）且未触发其他平仓逻辑时检查
+                if seconds_remaining <= 120 and not trailing_triggered:
+                    print(f"       [🚨 亏损减损] ⏰ 进入最后2分钟检查窗口！剩余{seconds_remaining:.0f}秒")
+
+                    # 计算当前盈亏
+                    current_pnl_usd = size * (pos_current_price - entry_token_price)
+                    current_pnl_pct = (current_pnl_usd / value_usdc) * 100 if value_usdc > 0 else 0
+
+                    print(f"       [🚨 亏损减损] 当前状态: PnL=${current_pnl_usd:.2f} ({current_pnl_pct:.1f}%), 位置={side}")
+
+                    if current_pnl_usd < 0:
+                        # 亏损状态：立即市价平仓减少损失
+                        print(f"       [🚨 亏损减损] 最后{seconds_remaining//60}分{seconds_remaining%60}秒，当前亏损${current_pnl_usd:.2f}({current_pnl_pct:.1f}%)，主动平仓止损！")
+                        print(f"       [🚨 亏损减损] 入场@{entry_token_price:.4f} → 现价{pos_current_price:.4f}")
+
+                        exit_reason = 'LAST_2MIN_LOSS_CUT'
+                        actual_exit_price = pos_current_price
+
+                        # 立即市价平仓
+                        try:
+                            from py_clob_client.clob_types import OrderArgs
+                            close_order_args = OrderArgs(
+                                token_id=token_id,
+                                price=max(0.01, min(0.99, pos_current_price)),
+                                size=float(size),
+                                side=SELL
+                            )
+                            close_response = self.client.create_and_post_order(close_order_args)
+                            if close_response and 'orderID' in close_response:
+                                triggered_order_id = close_response['orderID']
+                                print(f"       [🚨 亏损减损]  平仓单已发送: {triggered_order_id[-8:]}")
+
+                                # 计算实际盈亏并更新数据库
+                                pnl_usd = current_pnl_usd
+                                pnl_pct = current_pnl_pct
+
+                                cursor.execute("""
+                                    UPDATE positions
+                                    SET exit_time = ?, exit_token_price = ?, pnl_usd = ?,
+                                        pnl_pct = ?, exit_reason = ?, status = 'closed'
+                                    WHERE id = ? AND status IN ('open', 'closing')
+                                """, (
+                                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                                    actual_exit_price,
+                                    pnl_usd,
+                                    pnl_pct,
+                                    exit_reason,
+                                    pos_id
+                                ))
+
+                                # 取消原有的止盈止损单
+                                self.cancel_pair_orders(tp_order_id, sl_order_id, exit_reason)
+
+                                print(f"       [🚨 亏损减损] 平仓完成: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)，避免归零！")
+                                continue  # 跳过后续处理，进入下一个持仓
+                            else:
+                                print(f"       [🚨 亏损减损] ⚠ 平仓单发送失败，继续监控")
+                        except Exception as e:
+                            print(f"       [🚨 亏损减损] [X] 平仓异常: {e}")
+                            import traceback
+                            print(f"       [🚨 亏损减损] TRACEBACK: {traceback.format_exc()}")
+                    else:
+                        print(f"       [🚨 亏损减损] 当前盈利${current_pnl_usd:+.2f}，不需要止损")
+                else:
+                    if seconds_remaining > 120:
+                        pass  # 还没到2分钟，不打印
+                    else:
+                        print(f"       [🚨 亏损减损] 已触发其他平仓逻辑(trailing_triggered={trailing_triggered})，跳过")
 
                 # 获取止损价格（从字段读取）
                 sl_price = None
@@ -4235,7 +4113,7 @@ class AutoTraderV5:
                 # 如果止盈单没成交，检查本地止盈止损价格（双向轮询模式）
                 if not exit_reason:
                     #  关键修复：使用与开仓时相同的公式，确保一致性（对称30%逻辑）
-                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 修复：止盈应使用take_profit_pct
+                    tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)  # 修复：止盈应使用take_profit_pct
                     tp_by_pct = entry_token_price * (1 + tp_pct_max)
                     tp_by_fixed = (value_usdc + 1.0) / max(size, 1)
                     tp_target_price = min(tp_by_fixed, tp_by_pct)
@@ -4895,7 +4773,6 @@ class AutoTraderV5:
 
         interval = CONFIG['system']['iteration_interval']
         i = 1
-        last_market_slug = None  # 追踪上一个市场
 
         try:
             while True:
@@ -4907,17 +4784,6 @@ class AutoTraderV5:
                     time.sleep(interval)
                     i += 1
                     continue
-
-                # 检测市场切换，重置防御层状态
-                current_slug = market.get('slug', '')
-                if current_slug and current_slug != last_market_slug:
-                    if last_market_slug:
-                        print(f"       [MARKET SWITCH] {last_market_slug} → {current_slug}")
-                        # 重置防御层的穿越计数器
-                        if self.defense_layer:
-                            self.defense_layer.reset_market(last_market_slug)
-                            print(f"       [DEFENSE] 防御层状态已重置")
-                    last_market_slug = current_slug
 
                 price = self.parse_price(market)
                 if not price:
@@ -4953,7 +4819,7 @@ class AutoTraderV5:
                     # 增加信号计数器
                     self.stats['signal_count'] += 1
 
-                    print(f"       Signal: {new_signal['direction']} | Score: {new_signal['score']:.1f}")
+                    print(f"       Signal: {new_signal['direction']} | Conf: {new_signal['confidence']:.0%}")
 
                     # 检测信号改变（作为止盈信号）
                     # [LOCK] 已禁用信号反转强制平仓 - 让仓位完全由止盈止损控制，避免频繁左右横跳
@@ -4984,15 +4850,34 @@ class AutoTraderV5:
                 else:
                     print("       No signal")
 
-                # 每60次迭代输出交易分析（约15分钟）
-                if i % 60 == 0 and i > 0:
-                    print()
-                    self.print_trading_analysis()
+                # 📊 交易分析已移除自动输出（数据已保存数据库，可随时查询）
+                # 如需查看分析，请手动调用 print_trading_analysis() 或查询数据库
+                #
+                # # 每60次迭代输出交易分析（约15分钟）
+                # if i % 60 == 0 and i > 0:
+                #     print()
+                #     self.print_trading_analysis()
+                #
+                # # 每30次迭代导出一次（约7.5分钟），确保能看到最新数据
+                # if i % 30 == 0 and i > 0:
+                #     print()
+                #     self.print_trading_analysis()
 
-                #  每30次迭代导出一次（约7.5分钟），确保能看到最新数据
-                if i % 30 == 0 and i > 0:
+                # 每120次迭代检查Oracle健康状态（约30分钟）
+                if i % 120 == 0 and i > 0:
                     print()
-                    self.print_trading_analysis()
+                    print("=" * 70)
+                    print("[HEALTH CHECK] Oracle系统健康检查")
+                    print("=" * 70)
+                    health = self.check_oracle_health()
+                    status_icon = "✅" if health['status'] == 'healthy' else "⚠️" if health['status'] == 'stale' else "❌"
+                    print(f"  状态: {status_icon} {health['status'].upper()}")
+                    print(f"  消息: {health['message']}")
+                    if health['status'] != 'healthy':
+                        print(f"  CVD: 1m={health['cvd_1m']:+.0f}, 5m={health['cvd_5m']:+.0f}")
+                        print(f"  建议: 检查 binance_oracle.py 是否运行")
+                    print("=" * 70)
+                    print()
 
                 time.sleep(interval)
                 i += 1
@@ -5404,4 +5289,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

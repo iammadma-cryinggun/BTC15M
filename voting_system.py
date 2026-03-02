@@ -292,15 +292,10 @@ class SessionMemoryRule(VotingRule):
             return None
 
         try:
-            # 从oracle中提取oracle_score
-            oracle_score = 0.0
-            if oracle:
-                oracle_score = oracle.get('signal_score', 0.0)
-
             market_features = {
                 'price': price,
                 'rsi': rsi,
-                'oracle_score': oracle_score,
+                'oracle': oracle or {},  # 传递完整的oracle字典（包含cvd_5m等）
                 'price_history': price_history or []
             }
 
@@ -349,24 +344,24 @@ class MomentumAccelerationRule(VotingRule):
         if mom_30 == 0.0 or mom_60 == 0.0 or mom_120 == 0.0:
             return None
 
-        # 计算加速度（60s相对于30s的变化率）
-        accel_1 = (mom_60 - mom_30) / 30.0 if mom_30 != 0 else 0
+        # 计算加速度（60s相对于30s的变化）
+        accel_1 = mom_60 - mom_30
 
-        # 计算加速度（120s相对于60s的变化率）
-        accel_2 = (mom_120 - mom_60) / 60.0 if mom_60 != 0 else 0
+        # 计算加速度（120s相对于60s的变化）
+        accel_2 = mom_120 - mom_60
 
-        # 综合加速度
+        # 综合加速度（平均变化）
         acceleration = (accel_1 + accel_2) / 2.0
 
-        # 加速度阈值（0.05%每秒的平方）
-        threshold = 0.05
+        # 加速度阈值（0.1%的动量变化）
+        threshold = 0.1
 
         if abs(acceleration) < threshold:
             return None
 
         direction = 'LONG' if acceleration > 0 else 'SHORT'
-        confidence = min(abs(acceleration) / 0.5, 0.99)
-        reason = f'加速度{acceleration:+.3f}%/s²'
+        confidence = min(abs(acceleration) / 1.0, 0.99)  # 1.0%变化为满分
+        reason = f'加速度{acceleration:+.2f}%'
 
         return {
             'direction': direction,
@@ -400,40 +395,33 @@ class MACDHistogramRule(VotingRule):
         """
         计算MACD柱状图
 
-        Histogram > 0: 牛市
-        Histogram < 0: 熊市
-        Histogram柱子增长：趋势加强
+        简化版本：直接使用 MACD 线（快慢 EMA 差值）
+        MACD > 0: 牛市
+        MACD < 0: 熊市
         """
-        if len(price_history) < self.slow_period + self.signal_period:
+        if len(price_history) < self.slow_period:
             return None
 
         # 计算快慢EMA
         ema_fast = self._calculate_ema(price_history, self.fast_period)
         ema_slow = self._calculate_ema(price_history, self.slow_period)
 
-        # MACD线
+        # MACD线（简化版：不计算信号线和柱状图）
         macd_line = ema_fast - ema_slow
 
-        # 需要历史MACD值来计算信号线
-        # 这里简化处理：使用当前MACD作为信号线估计
-        signal_line = macd_line * 0.8  # 简化估计
-
-        # MACD柱状图
-        histogram = macd_line - signal_line
-
-        # 柱状图阈值
-        if abs(histogram) < 0.001:
+        # MACD阈值
+        if abs(macd_line) < 0.001:
             return None
 
-        direction = 'LONG' if histogram > 0 else 'SHORT'
-        confidence = min(abs(histogram) / 0.01, 0.99)
-        reason = f'MACD柱{histogram:+.4f}'
+        direction = 'LONG' if macd_line > 0 else 'SHORT'
+        confidence = min(abs(macd_line) / 0.01, 0.99)
+        reason = f'MACD{macd_line:+.4f}'
 
         return {
             'direction': direction,
             'confidence': confidence,
             'reason': reason,
-            'raw_value': histogram
+            'raw_value': macd_line
         }
 
 
@@ -523,27 +511,33 @@ class VolatilityRegimeRule(VotingRule):
         variance = sum((r - mean_ret) ** 2 for r in returns) / len(returns)
         volatility = math.sqrt(variance)
 
-        # 波动率阈值
-        if volatility < 0.005:  # 0.5%以下为低波动
+        # 波动率阈值：至少 0.5% 才有意义
+        if volatility < 0.005:
             return None  # 波动率太低，不投票
 
         # 当前价格动量
         recent_returns = returns[-5:] if len(returns) >= 5 else returns
         momentum = sum(recent_returns) / len(recent_returns)
 
-        # 波动率越高，跟随趋势的置信度越高
+        # 动量阈值：至少 0.1% 才有方向
         if abs(momentum) < 0.001:
             return None
 
+        # 方向基于动量，置信度基于动量强度（不是波动率）
         direction = 'LONG' if momentum > 0 else 'SHORT'
-        confidence = min(volatility / 0.02, 0.99)
+        
+        # 置信度 = 动量强度 × 波动率因子
+        # 波动率越高，动量越可靠（趋势延续性强）
+        volatility_factor = min(volatility / 0.01, 1.5)  # 1% 波动率 = 1.0x, 1.5% = 1.5x
+        confidence = min(abs(momentum) / 0.005 * volatility_factor, 0.99)
+        
         reason = f'波动率{volatility:.2%} 动量{momentum:+.2%}'
 
         return {
             'direction': direction,
             'confidence': confidence,
             'reason': reason,
-            'raw_value': volatility
+            'raw_value': momentum
         }
 
 
@@ -824,7 +818,7 @@ class OBIRule(VotingRule):
 
 
 class PMSpreadRule(VotingRule):
-    """PM价差异常规则（需要Polymarket数据）"""
+    """PM价差异常规则（需要Polymarket YES/NO价格）"""
 
     def __init__(self, weight: float = 1.0):
         super().__init__('PM Spread Dev', weight)
@@ -833,17 +827,37 @@ class PMSpreadRule(VotingRule):
         """
         检测YES/NO价差异常
 
-        正常情况：YES + NO ≈ 1.00
-        异常情况：YES + NO > 1.00（套利机会）
+        正常情况：YES + NO ≈ 1.00（允许微小套利空间）
+        异常情况：YES + NO > 1.02（价差异常，市场流动性问题）
 
-        [占位规则] 需要Polymarket YES/NO实时价格，暂时不投票
+        价差异常说明市场存在套利机会或流动性不足
         """
-        # TODO: 实现价差异常检测
-        # if no_price:
-        #     spread = price + no_price
-        #     if spread > 1.02:  # 价差异常
-        #         return {'direction': ..., 'confidence': ...}
-        return None  # 不投票（占位）
+        if not price or not no_price:
+            return None
+
+        # 计算价差
+        spread = price + no_price
+        deviation = spread - 1.0
+
+        # 价差异常阈值：> 2%
+        if abs(deviation) < 0.02:
+            return None
+
+        # 价差过大说明市场不稳定，降低置信度
+        confidence = min(abs(deviation) / 0.05, 0.99)  # 2%→40%, 5%→100%
+
+        # 价差异常时，倾向于不做交易（中性投票）
+        # 但如果一定要选，选择价格较低的一边（更安全）
+        direction = 'LONG' if price < 0.5 else 'SHORT'
+
+        reason = f'价差异常{deviation*100:+.1f}%（YES={price:.2f}+NO={no_price:.2f}）'
+
+        return {
+            'direction': direction,
+            'confidence': confidence * 0.3,  # 降低置信度（价差异常时风险高）
+            'reason': reason,
+            'raw_value': deviation
+        }
 
 
 class PMSentimentRule(VotingRule):
@@ -1599,28 +1613,31 @@ class VotingSystem:
 
         result['passed_gate'] = True
         result['all_votes'] = votes
-        
-        # 添加 score 字段（用于兼容性）
-        # score = 综合置信度 × 方向系数（LONG=+1, SHORT=-1）
-        direction_multiplier = 1.0 if result['direction'] == 'LONG' else -1.0
-        result['score'] = result['confidence'] * direction_multiplier * 10  # 归一化到 -10 到 +10
 
         return result
 
 
 def create_voting_system(session_memory=None, wallet_address=None, http_session=None) -> VotingSystem:
     """
-    创建投票系统实例（完整实现@jtrevorchapman的23个原始指标）
+    创建投票系统实例（Layer 2: 信号层）
 
-    总计25个规则（25个激活）：
-    - 已实现（17个）：超短动量x3、价格动量x2、RSI、VWAP、趋势强度、CVDx2、UT Bot、Session Memory、
-                      动量加速度、MACD柱状图、EMA交叉、波动率、Delta Z-Score、交易强度
-    - 新增PM指标（4个）：CL Data Age、PM YES、Bias Score、PM Spread Dev
-    - 订单簿规则（7个）：买墙、卖墙、订单簿失衡、自然价格、自然价格绝对值、缓冲订单、PM价差
-    - 持仓规则（1个）：Positions（需要Polymarket Data API + wallet_address）
+    三层架构：
+    - Layer 1: Session Memory (先验层) - 在auto_trader_ankr.py中独立调用
+    - Layer 2: 投票系统 (信号层) - 本函数创建的30个规则
+    - Layer 3: 防御层 (风险控制) - 在auto_trader_ankr.py中独立调用
+
+    总计30个规则（全部激活）：
+    - 超短动量x3：30s/60s/120s 精确时间窗口
+    - 技术指标x8：Price Momentum, Price Trend, RSI, VWAP, Trend Strength, MACD, EMA, 波动率
+    - CVD指标x3：5m CVD (3.0x权重), 1m CVD, Delta Z-Score
+    - 高级指标x2：动量加速度, 交易强度
+    - PM指标x6：CL Data Age, PM YES, Bias Score, PM Spread Dev, PM Sentiment, PM Spread
+    - 趋势指标x1：UT Bot（Session Memory已移至Layer 1）
+    - 订单簿x7：买墙, 卖墙, OBI, 自然价格, 自然绝对值, 缓冲订单
+    - 持仓规则x1：Positions（当前暴露管理）
 
     Args:
-        session_memory: SessionMemory实例（用于SessionMemoryRule）
+        session_memory: SessionMemory实例（已废弃，保留参数仅为兼容性）
         wallet_address: Polymarket钱包地址（用于PositionsRule）
         http_session: requests.Session实例（用于PositionsRule的API调用）
     """
@@ -1634,62 +1651,63 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     system.add_rule(UltraShortMomentumRule(120, 'Momentum 120s', weight=1.0))  # 120秒精确时间窗口
 
     # ==========================================
-    # 标准技术指标（降低权重，让位给 CVD）
+    # 标准技术指标（低权重）
     # ==========================================
-    system.add_rule(PriceMomentumRule(weight=0.8))      # 🔧 价格动量（降低权重）
-    system.add_rule(PriceTrendRule(weight=0.6))         # 🔧 价格趋势（降低权重）
-    system.add_rule(RSIRule(weight=0.5))                # 🔧 RSI 只是防呆，降低权重
-    system.add_rule(VWAPRule(weight=0.8))               # 🔧 VWAP偏离（降低权重）
-    system.add_rule(TrendStrengthRule(weight=0.5))      # 🔧 趋势强度只是辅助，降低权重
+    system.add_rule(PriceMomentumRule(weight=1.0))      # 价格动量（10周期）
+    system.add_rule(PriceTrendRule(weight=0.8))         # 价格趋势（5周期，短期）
+    system.add_rule(RSIRule(weight=0.3))                # RSI 14（降为低权重）
+    system.add_rule(VWAPRule(weight=0.3))               # VWAP偏离（降为低权重）
+    system.add_rule(TrendStrengthRule(weight=0.3))      # 趋势强度（降为低权重）
 
     # ==========================================
     # [CVD强化] 参考 @jtrevorchapman: CVD是预测力最强的单一指标
     # ==========================================
-    system.add_rule(OracleCVDRule('5m', weight=3.0))    # 🚀 5分钟CVD：统治级权重（3.0x）
-    system.add_rule(OracleCVDRule('1m', weight=1.5))    # 🚀 1分钟CVD：即时动量（1.5x）
+    system.add_rule(OracleCVDRule('5m', weight=3.0))    # 5分钟CVD：最强指标（3.0x权重）
+    system.add_rule(OracleCVDRule('1m', weight=1.5))    # 1分钟CVD：即时动量
     system.add_rule(DeltaZScoreRule(weight=1.2))        # Delta Z-Score：CVD标准化
 
     # ==========================================
-    # 高级技术指标（新增7个）
+    # 高级技术指标（降为低权重）
     # ==========================================
     system.add_rule(MomentumAccelerationRule(weight=1.2))   # 动量加速度：超短动量的变化率
-    system.add_rule(MACDHistogramRule(weight=1.0))          # MACD柱状图：趋势转折点
-    system.add_rule(EMACrossRule(weight=0.9))               # EMA交叉：EMA9/21
-    system.add_rule(VolatilityRegimeRule(weight=0.8))       # 波动率制度：高/低波动
-    system.add_rule(TradingIntensityRule(weight=1.0))       # 交易强度：成交量变化
+    system.add_rule(MACDHistogramRule(weight=0.3))          # MACD柱状图：趋势转折点（降为低权重）
+    system.add_rule(EMACrossRule(weight=0.3))               # EMA交叉：EMA9/21（降为低权重）
+    system.add_rule(VolatilityRegimeRule(weight=0.3))       # 波动率制度：高/低波动（降为低权重）
+    system.add_rule(TradingIntensityRule(weight=0.3))       # 交易强度：成交量变化（降为低权重）
 
     # ==========================================
-    # 新增指标（4个）
+    # 新增指标（降为低权重）
     # ==========================================
-    system.add_rule(CLDataAgeRule(weight=0.5))         # 数据延迟（质量检查）
-    system.add_rule(PMYesRule(weight=1.0))             # PM YES价格情绪
-    system.add_rule(BiasScoreRule(weight=1.0))         # 综合偏差分数
-    system.add_rule(PMSpreadDevRule(weight=0.8))       # YES/NO价差异常
+    system.add_rule(CLDataAgeRule(weight=0.3))         # 数据延迟（降为低权重）
+    system.add_rule(PMYesRule(weight=0.3))             # PM YES价格情绪（降为低权重）
+    system.add_rule(BiasScoreRule(weight=1.0))         # 综合偏差分数（保持中等权重）
+    system.add_rule(PMSpreadDevRule(weight=0.3))       # YES/NO价差异常（降为低权重）
 
     # ==========================================
     # 趋势指标
     # ==========================================
-    system.add_rule(UTBotTrendRule(weight=1.0))         # UT Bot 15m趋势（已禁用硬锁，仅投票）
-    system.add_rule(SessionMemoryRule(session_memory, weight=1.0))  # Session Memory：30场先验
+    # 注意：Session Memory已移至Layer 1（独立先验层），不再是投票规则之一
+    system.add_rule(UTBotTrendRule(weight=0.3))  # UT Bot 15m趋势（降为低权重）
 
     # ==========================================
-    # 占位规则（需要Polymarket订单簿数据，暂时不投票）
+    # 市场微观结构规则（保持OBI中等，其他降为低权重）
     # ==========================================
-    # 市场微观结构（需要订单簿API）
-    system.add_rule(BidWallsRule(weight=1.0))           # 买墙：需要订单簿数据
-    system.add_rule(AskWallsRule(weight=1.0))           # 卖墙：需要订单簿数据
-    system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：需要订单簿数据
-    system.add_rule(NaturalPriceRule(weight=1.0))       # 自然价格：需要订单簿数据
-    system.add_rule(NaturalAbsRule(weight=1.0))         # 自然价格绝对值：需要订单簿数据
-    system.add_rule(BufferTicketsRule(weight=1.0))      # 缓冲订单：需要订单簿数据
+    system.add_rule(BidWallsRule(weight=0.3))           # 买墙（降为低权重）
+    system.add_rule(AskWallsRule(weight=0.3))           # 卖墙（降为低权重）
+    system.add_rule(OBIRule(weight=1.0))                # 订单簿失衡：买卖力量对比（保持中等）
+    system.add_rule(NaturalPriceRule(weight=0.3))       # 自然价格（降为低权重）
+    system.add_rule(NaturalAbsRule(weight=0.3))         # 自然价格绝对值（降为低权重）
+    system.add_rule(BufferTicketsRule(weight=0.3))      # 缓冲订单（降为低权重）
 
-    # Polymarket数据（需要PM API）
-    system.add_rule(PMSpreadRule(weight=1.0))           # PM价差异常：需要YES/NO价格
-    system.add_rule(PMSentimentRule(weight=1.0))        # PM情绪：需要Polymarket历史数据
-    system.add_rule(PositionsRule(weight=1.0, wallet_address=wallet_address, http_session=http_session))  # 持仓分析：需要PM API + wallet_address
+    # ==========================================
+    # Polymarket特定规则（降为低权重）
+    # ==========================================
+    system.add_rule(PMSpreadRule(weight=0.3))           # PM价差异常（降为低权重）
+    system.add_rule(PMSentimentRule(weight=0.3))        # PM情绪（降为低权重）
+    system.add_rule(PositionsRule(weight=0.3, wallet_address=wallet_address, http_session=http_session))  # 持仓分析（降为低权重）
 
-    # 总权重：25.8x（全部25个规则已激活）
-    # CVD权重占比：5.7x / 25.8x = 22.1%（仍然主导）
+    # 总权重：25.5x（全部30个规则已激活，Session Memory已移至Layer 1）
+    # CVD权重占比：5.7x / 25.5x = 22.4%（仍然主导）
 
     return system
 
@@ -1741,4 +1759,3 @@ if __name__ == "__main__":
         print(f"\n✅ 最终决策: {result['direction']} | 置信度: {result['confidence']:.0%}")
     else:
         print(f"\n❌ 无明确信号")
-

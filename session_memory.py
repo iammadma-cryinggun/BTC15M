@@ -38,6 +38,11 @@ class SessionMemory:
         self.session_cache = deque(maxlen=100)  # 缓存最近100个会话特征
         self.prior_cache = {}  # 缓存先验计算结果
 
+        # Session预加载缓存
+        self.current_session_id = None  # 当前session ID (格式: YYYYMMDD_HHMM)
+        self.current_session_bias = 0.0  # 当前session的prior_bias
+        self.current_session_analysis = {}  # 当前session的分析详情
+
         print("[MEMORY] Session Memory System initialized")
         print(f"[MEMORY] Database: {db_path}")
 
@@ -51,16 +56,18 @@ class SessionMemory:
         """
         提取当前会话的特征向量
 
-        特征包括：
+        特征包括（热心哥原版要求）：
         1. 价格区间（5个bins）
         2. 时间段（00/15/30/45）
         3. RSI初始值
-        4. Oracle初始分数
+        4. CVD强度（替代Oracle分数）
         5. 5分钟价格趋势
+        6. 波动率（Volatility）← 新增
         """
         price = market_data.get('price', 0.5)
         rsi = market_data.get('rsi', 50.0)
-        oracle_score = market_data.get('oracle_score', 0.0)
+        oracle = market_data.get('oracle', {})
+        cvd_5m = oracle.get('cvd_5m', 0.0)  # 使用CVD替代oracle_score
         price_history = market_data.get('price_history', [])
 
         # 1. 价格区间（0.00-0.20, 0.20-0.40, 0.40-0.60, 0.60-0.80, 0.80-1.00）
@@ -82,8 +89,8 @@ class SessionMemory:
         # 3. RSI归一化（0-1）
         rsi_normalized = rsi / 100.0
 
-        # 4. Oracle归一化（-1到+1）
-        oracle_normalized = max(-1.0, min(1.0, oracle_score / 10.0))
+        # 4. CVD归一化（-1到+1），使用5分钟CVD范围[-150000, +150000]
+        cvd_normalized = max(-1.0, min(1.0, cvd_5m / 150000.0))
 
         # 5. 5分钟价格趋势（如果有历史数据）
         price_trend = 0.0
@@ -92,12 +99,27 @@ class SessionMemory:
             trend = (recent[-1] - recent[0]) / recent[0] if recent[0] > 0 else 0
             price_trend = max(-1.0, min(1.0, trend / 0.1))  # 归一化到-1到+1
 
+        # 6. 波动率（Volatility）← 新增特征
+        # 计算价格历史的标准差作为波动率指标
+        volatility = 0.0
+        if len(price_history) >= 10:
+            # 使用最近10个价格点计算波动率
+            import statistics
+            prices = price_history[-10:]
+            # 标准差归一化：除以平均价格，得到相对波动率
+            std_dev = statistics.stdev(prices)
+            avg_price = statistics.mean(prices)
+            volatility = std_dev / avg_price if avg_price > 0 else 0.0
+            # 归一化到0-1范围（假设波动率范围0-0.3）
+            volatility = min(1.0, volatility / 0.3)
+
         features = {
             'price_bin': price_bin,
             'time_slot': time_slot,
             'rsi': rsi_normalized,
-            'oracle': oracle_normalized,
+            'cvd': cvd_normalized,
             'price_trend': price_trend,
+            'volatility': volatility,  # ← 新增：波动率特征
             'timestamp': now.isoformat()
         }
 
@@ -114,8 +136,9 @@ class SessionMemory:
             'price_bin': 2.0,      # 价格区间最重要
             'time_slot': 1.0,      # 时间段次之
             'rsi': 0.5,            # RSI权重
-            'oracle': 1.5,         # Oracle分数重要
-            'price_trend': 1.0     # 价格趋势
+            'cvd': 1.5,            # CVD强度重要
+            'price_trend': 1.0,    # 价格趋势
+            'volatility': 1.2      # 波动率（新增）
         }
 
         # 计算加权欧氏距离
@@ -149,7 +172,7 @@ class SessionMemory:
                 print("[MEMORY] positions表不存在")
                 return []
 
-            # 查询已关闭的仓位
+            # 查询已关闭的仓位（包含完整指标数据）
             sql = """
             SELECT
                 entry_time,
@@ -159,7 +182,13 @@ class SessionMemory:
                 pnl_usd,
                 status,
                 score,
-                oracle_score
+                rsi,
+                vwap,
+                cvd_5m,
+                cvd_1m,
+                prior_bias,
+                defense_multiplier,
+                minutes_to_expiry
             FROM positions
             WHERE status = 'closed'
             ORDER BY entry_time DESC
@@ -174,6 +203,11 @@ class SessionMemory:
                 is_win = row['pnl_usd'] and row['pnl_usd'] > 0
                 is_long = row['side'] == 'LONG'
 
+                # 从数据库读取真实指标（用于相似度匹配）
+                cvd_5m = row['cvd_5m'] or 0.0
+                cvd_1m = row['cvd_1m'] or 0.0
+                cvd_combined = cvd_5m * 0.7 + cvd_1m * 0.3  # 与防御层一致
+
                 session = {
                     'entry_time': row['entry_time'],
                     'side': row['side'],
@@ -183,8 +217,12 @@ class SessionMemory:
                     'is_win': is_win,
                     'is_long': is_long,
                     'score': row['score'] or 0.0,
-                    'oracle_score': row['oracle_score'] or 0.0,
-                    'rsi': 50.0  # 默认中性值（数据库中没有保存rsi）
+                    'cvd': cvd_combined,  # 真实CVD数据
+                    'rsi': row['rsi'] or 50.0,  # 真实RSI数据
+                    'vwap': row['vwap'] or 0.0,  # 真实VWAP数据
+                    'prior_bias': row['prior_bias'] or 0.0,  # 真实先验偏差
+                    'defense_multiplier': row['defense_multiplier'] or 1.0,  # 真实防御乘数
+                    'minutes_to_expiry': row['minutes_to_expiry'] or 0,  # Session剩余分钟数
                 }
                 sessions.append(session)
 
@@ -238,8 +276,9 @@ class SessionMemory:
                 'price_bin': int(session['entry_price'] * 5),  # 近似价格区间
                 'time_slot': 0,  # 历史数据没有精确时间，设为0（权重低，影响小）
                 'rsi': session['rsi'] / 100.0,
-                'oracle': max(-1.0, min(1.0, session['oracle_score'] / 10.0)),
-                'price_trend': 0.0  # 历史数据没有价格趋势，设为0
+                'cvd': max(-1.0, min(1.0, session['cvd'] / 150000.0)),
+                'price_trend': 0.0,  # 历史数据没有价格趋势，设为0
+                'volatility': 0.5  # 历史数据没有波动率，设为中性值（权重影响小）
             }
 
             similarity = self.calculate_similarity(current_features, hist_features)
@@ -252,21 +291,42 @@ class SessionMemory:
         sessions_with_similarity.sort(key=lambda x: x['similarity'], reverse=True)
         top_sessions = sessions_with_similarity[:min_sessions]
 
-        # 统计YES/LONG的胜率
-        long_sessions = [s for s in top_sessions if s['session']['is_long']]
-        long_wins = sum(1 for s in long_sessions if s['session']['is_win'])
-        long_total = len(long_sessions)
+        # 🕐 Layer 1优化：最后6分钟加权优先
+        # 回测数据显示：session最后6分钟指标最可靠，给予更高权重
+        def get_time_weight(minutes_to_expiry: int) -> float:
+            """根据session剩余时间返回权重（最后6分钟优先）"""
+            if minutes_to_expiry <= 6:
+                return 2.0  # 黄金6分钟：最高权重
+            elif minutes_to_expiry <= 9:
+                return 1.5  # 7-9分钟：中等权重
+            else:
+                return 1.0  # 10-14分钟：正常权重
 
-        short_sessions = [s for s in top_sessions if not s['session']['is_long']]
-        short_wins = sum(1 for s in short_sessions if s['session']['is_win'])
-        short_total = len(short_sessions)
+        # 统计LONG/SHORT的加权胜率
+        long_weighted_wins = 0.0
+        long_total_weight = 0.0
+        short_weighted_wins = 0.0
+        short_total_weight = 0.0
 
-        # 计算方向性胜率
+        for item in top_sessions:
+            session = item['session']
+            weight = get_time_weight(session.get('minutes_to_expiry', 0))
+
+            if session['is_long']:
+                long_total_weight += weight
+                if session['is_win']:
+                    long_weighted_wins += weight
+            else:
+                short_total_weight += weight
+                if session['is_win']:
+                    short_weighted_wins += weight
+
+        # 计算加权方向性胜率
         # 如果LONG胜率高 → 倾向做多（prior_bias > 0）
         # 如果SHORT胜率高 → 倾向做空（prior_bias < 0）
-        if long_total >= 5 and short_total >= 5:
-            long_win_rate = long_wins / long_total
-            short_win_rate = short_wins / short_total
+        if long_total_weight >= 5.0 and short_total_weight >= 5.0:
+            long_win_rate = long_weighted_wins / long_total_weight
+            short_win_rate = short_weighted_wins / short_total_weight
 
             # 方向偏差：LONG胜率 - SHORT胜率
             direction_bias = long_win_rate - short_win_rate
@@ -274,25 +334,35 @@ class SessionMemory:
             # 转换为先验分数（-1到+1）
             prior_bias = max(-1.0, min(1.0, direction_bias * 2))  # 放大效果
         else:
-            # 某个方向数据不足，使用总体胜率
-            total_wins = sum(1 for s in top_sessions if s['session']['is_win'])
-            total_win_rate = total_wins / len(top_sessions)
+            # 某个方向数据不足，使用总体加权胜率
+            total_weighted_wins = long_weighted_wins + short_weighted_wins
+            total_weight = long_total_weight + short_total_weight
+            total_win_rate = total_weighted_wins / total_weight if total_weight > 0 else 0.5
             # 如果总体胜率>50%，使用LONG偏倚（保守策略）
             prior_bias = (total_win_rate - 0.5) * 0.5  # 缩小效果，更保守
+
+        # 统计原始数量（用于显示）
+        long_count = sum(1 for s in top_sessions if s['session']['is_long'])
+        short_count = sum(1 for s in top_sessions if not s['session']['is_long'])
+
+        # 统计最后6分钟的交易数量
+        last_6min_sessions = [s for s in top_sessions if s['session'].get('minutes_to_expiry', 0) <= 6]
+        last_6min_count = len(last_6min_sessions)
 
         # 构建分析报告
         analysis = {
             'status': 'success',
             'total_sessions_analyzed': len(historical_sessions),
             'similar_sessions': min_sessions,
-            'long_sessions': long_total,
-            'long_wins': long_wins,
-            'long_win_rate': long_wins / long_total if long_total > 0 else 0,
-            'short_sessions': short_total,
-            'short_wins': short_wins,
-            'short_win_rate': short_wins / short_total if short_total > 0 else 0,
+            'long_sessions': long_count,
+            'long_wins': sum(1 for s in top_sessions if s['session']['is_long'] and s['session']['is_win']),
+            'long_win_rate': long_weighted_wins / long_total_weight if long_total_weight > 0 else 0,
+            'short_sessions': short_count,
+            'short_wins': sum(1 for s in top_sessions if not s['session']['is_long'] and s['session']['is_win']),
+            'short_win_rate': short_weighted_wins / short_total_weight if short_total_weight > 0 else 0,
             'prior_bias': prior_bias,
             'avg_similarity': sum(s['similarity'] for s in top_sessions) / len(top_sessions),
+            'last_6min_count': last_6min_count,  # 最后6分钟的交易数量
             'top_sessions': top_sessions[:5]  # 最相似的5个会话
         }
 
@@ -300,6 +370,93 @@ class SessionMemory:
         self.prior_cache[cache_key] = (prior_bias, analysis)
 
         return prior_bias, analysis
+
+    def preload_session_bias(self, price: float, rsi: float, oracle: dict, price_history: list = None) -> bool:
+        """
+        在session开始时预加载prior_bias
+
+        在每个15分钟session开始时调用，计算并缓存整个session的先验bias。
+        之后同一session的信号生成直接使用缓存值，无需重新计算。
+
+        Args:
+            price: 当前价格
+            rsi: 当前RSI
+            oracle: Oracle数据字典（包含cvd_5m等）
+            price_history: 价格历史列表
+
+        Returns:
+            bool: 是否成功预加载
+        """
+        try:
+            # 计算当前session ID
+            now = datetime.now()
+            session_id = now.strftime('%Y%m%d_%H%M')
+
+            # 检查是否是新的session
+            if self.current_session_id == session_id:
+                # 同一个session，已预加载过
+                return True
+
+            # 提取特征
+            market_features = {
+                'price': price,
+                'rsi': rsi,
+                'oracle': oracle or {},
+                'price_history': price_history or []
+            }
+
+            features = self.extract_session_features(market_features)
+
+            # 计算prior_bias
+            prior_bias, analysis = self.calculate_prior_bias(features)
+
+            # 缓存session级别的结果
+            self.current_session_id = session_id
+            self.current_session_bias = prior_bias
+            self.current_session_analysis = analysis
+
+            # 打印预加载结果
+            self.print_preload_result(analysis)
+
+            return True
+
+        except Exception as e:
+            print(f"[MEMORY ERROR] 预加载失败: {e}")
+            # 使用中立先验
+            self.current_session_bias = 0.0
+            self.current_session_analysis = {'status': 'error', 'error': str(e)}
+            return False
+
+    def get_cached_bias(self) -> float:
+        """
+        获取当前session缓存的prior_bias
+
+        在信号生成时调用，快速返回预计算的bias值。
+        """
+        return self.current_session_bias
+
+    def get_cached_analysis(self) -> dict:
+        """获取当前session缓存的analysis详情"""
+        return self.current_session_analysis
+
+    def print_preload_result(self, analysis: dict):
+        """打印预加载结果"""
+        if analysis.get('status') == 'insufficient_data':
+            print(f"⚪ [MEMORY-L1] Session预加载: 历史数据不足，使用中立先验 (0.00)")
+            return
+
+        bias = analysis.get('prior_bias', 0.0)
+        emoji = "🟢" if bias > 0.2 else "🔴" if bias < -0.2 else "⚪"
+
+        long_wr = analysis.get('long_win_rate', 0.0)
+        short_wr = analysis.get('short_win_rate', 0.0)
+        similar = analysis.get('similar_sessions', 0)
+        last_6min = analysis.get('last_6min_count', 0)
+
+        print(f"{emoji} [MEMORY-L1] Session预加载完成")
+        print(f"     基于过去{similar}个相似session(含{last_6min}个黄金6分钟)")
+        print(f"     加权胜率: LONG={long_wr:.1%} SHORT={short_wr:.1%} (最后6分钟权重2x)")
+        print(f"     先验bias: {bias:+.2f} {'(倾向做多)' if bias > 0.2 else '(倾向做空)' if bias < -0.2 else '(中立)'}")
 
     def print_analysis(self, analysis: dict):
         """打印先验分析报告"""
@@ -312,8 +469,9 @@ class SessionMemory:
         print(f"\n{status} [MEMORY] 先验记忆分析（Layer 1）")
         print("=" * 70)
         print(f"  分析样本: {analysis['similar_sessions']}个相似会话（平均相似度{analysis['avg_similarity']:.2%}）")
-        print(f"  LONG: {analysis['long_wins']}/{analysis['long_sessions']} ({analysis['long_win_rate']:.1%})")
-        print(f"  SHORT: {analysis['short_wins']}/{analysis['short_sessions']} ({analysis['short_win_rate']:.1%})")
+        print(f"  🕐 时间加权: {analysis['last_6min_count']}个黄金6分钟会话(权重2x) + {analysis['similar_sessions'] - analysis['last_6min_count']}个其他会话")
+        print(f"  LONG: {analysis['long_wins']}/{analysis['long_sessions']} ({analysis['long_win_rate']:.1%} 加权)")
+        print(f"  SHORT: {analysis['short_wins']}/{analysis['short_sessions']} ({analysis['short_win_rate']:.1%} 加权)")
         print(f"  先验偏差: {analysis['prior_bias']:+.2f} ", end="")
 
         if analysis['prior_bias'] > 0.2:
@@ -328,7 +486,9 @@ class SessionMemory:
             sess = item['session']
             sim = item['similarity']
             result = "✅盈利" if sess['is_win'] else "❌亏损"
-            print(f"    #{i} {sess['entry_time']} | {sess['side']} @ {sess['entry_price']:.2f} | {result} ${sess['pnl']:+.2f} | 相似度{sim:.2%}")
+            minutes = sess.get('minutes_to_expiry', 0)
+            weight_icon = "⭐" if minutes <= 6 else ""
+            print(f"    #{i} {sess['entry_time']} | {sess['side']} @ {sess['entry_price']:.2f} | {result} ${sess['pnl']:+.2f} | 相似度{sim:.2%} {weight_icon}")
 
         print("=" * 70)
 
