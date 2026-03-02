@@ -1741,9 +1741,40 @@ class AutoTraderV5:
         print(f"       [ORACLE] UT Bot趋势:{ut_hull_trend}")
 
         # ==========================================
-        # [VOTING] 投票系统（统一信号生成）
+        # [LAYER 1] Session Memory - 先验层
         # ==========================================
-        print(f"       [VOTING SYSTEM] 所有指标统一投票（31个规则全激活）")
+        # 在任何信号之前，系统已经基于历史数据有了"观点"
+        prior_bias = 0.0
+        prior_analysis = {}
+
+        if self.session_memory:
+            try:
+                market_features = {
+                    'price': price,
+                    'rsi': rsi,
+                    'oracle': oracle or {},
+                    'price_history': price_hist
+                }
+
+                features = self.session_memory.extract_session_features(market_features)
+                prior_bias, prior_analysis = self.session_memory.calculate_prior_bias(features)
+
+                if abs(prior_bias) >= 0.3:
+                    direction_str = "LONG" if prior_bias > 0 else "SHORT"
+                    print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} ({direction_str})")
+                    print(f"         基于过去{prior_analysis.get('matched_sessions', 0)}个相似session")
+                else:
+                    print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} (中立，历史无明显倾向)")
+            except Exception as e:
+                print(f"       [LAYER-1 MEMORY] 计算失败: {e}，使用中立先验")
+                prior_bias = 0.0
+        else:
+            print(f"       [LAYER-1 MEMORY] 未初始化，使用中立先验")
+
+        # ==========================================
+        # [LAYER 2] 投票系统（信号层）
+        # ==========================================
+        print(f"       [LAYER-2 SIGNALS] 30个规则投票（Session Memory已作为Layer 1独立）")
 
         # 获取Polymarket订单簿数据（用于7个订单簿规则）
         orderbook = self.get_polymarket_orderbook(market)
@@ -1804,7 +1835,7 @@ class AutoTraderV5:
                 print(f" [UT Bot参考] 15m趋势={ut_hull_trend}（不作为过滤条件）")
 
             # ==========================================
-            #  智能防御层评估 (@jtrevorchapman 三层防御系统)
+            # [LAYER 3] 防御层（风险控制）
             # ==========================================
             # 防御层包含：时间锁、混沌过滤、利润空间
             # 注意：这里传递的score是方向对应的分数（+5.0/-5.0），不代表"本地分"概念
@@ -1816,8 +1847,8 @@ class AutoTraderV5:
                 return None
 
             # 所有风控通过，返回常规信号（带上防御层乘数）
-            strategy_name = 'VOTING_SYSTEM'
-            print(f" [{strategy_name}] {direction} 信号确认（防御层通过）")
+            strategy_name = 'THREE_LAYER_SYSTEM'
+            print(f" [{strategy_name}] {direction} 信号确认（三层系统全部通过）")
 
             return {
                 'direction': direction,
@@ -1830,7 +1861,8 @@ class AutoTraderV5:
                 'components': {},  # 投票系统没有components概念
                 'oracle_15m_trend': ut_hull_trend,
                 'defense_multiplier': defense_multiplier,
-                'vote_details': vote_details,  # 添加投票详情（原系统为None）
+                'prior_bias': prior_bias,  # Layer 1: Session Memory先验
+                'vote_details': vote_details,  # Layer 2: 投票详情
             }
 
         return None

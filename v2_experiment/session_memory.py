@@ -55,12 +55,13 @@ class SessionMemory:
         1. 价格区间（5个bins）
         2. 时间段（00/15/30/45）
         3. RSI初始值
-        4. Oracle初始分数
+        4. CVD强度（替代Oracle分数）
         5. 5分钟价格趋势
         """
         price = market_data.get('price', 0.5)
         rsi = market_data.get('rsi', 50.0)
-        oracle_score = market_data.get('oracle_score', 0.0)
+        oracle = market_data.get('oracle', {})
+        cvd_5m = oracle.get('cvd_5m', 0.0)  # 使用CVD替代oracle_score
         price_history = market_data.get('price_history', [])
 
         # 1. 价格区间（0.00-0.20, 0.20-0.40, 0.40-0.60, 0.60-0.80, 0.80-1.00）
@@ -82,8 +83,8 @@ class SessionMemory:
         # 3. RSI归一化（0-1）
         rsi_normalized = rsi / 100.0
 
-        # 4. Oracle归一化（-1到+1）
-        oracle_normalized = max(-1.0, min(1.0, oracle_score / 10.0))
+        # 4. CVD归一化（-1到+1），使用5分钟CVD范围[-150000, +150000]
+        cvd_normalized = max(-1.0, min(1.0, cvd_5m / 150000.0))
 
         # 5. 5分钟价格趋势（如果有历史数据）
         price_trend = 0.0
@@ -96,7 +97,7 @@ class SessionMemory:
             'price_bin': price_bin,
             'time_slot': time_slot,
             'rsi': rsi_normalized,
-            'oracle': oracle_normalized,
+            'cvd': cvd_normalized,
             'price_trend': price_trend,
             'timestamp': now.isoformat()
         }
@@ -114,7 +115,7 @@ class SessionMemory:
             'price_bin': 2.0,      # 价格区间最重要
             'time_slot': 1.0,      # 时间段次之
             'rsi': 0.5,            # RSI权重
-            'oracle': 1.5,         # Oracle分数重要
+            'cvd': 1.5,            # CVD强度重要
             'price_trend': 1.0     # 价格趋势
         }
 
@@ -158,8 +159,7 @@ class SessionMemory:
                 exit_token_price,
                 pnl_usd,
                 status,
-                score,
-                oracle_score
+                score
             FROM positions
             WHERE status = 'closed'
             ORDER BY entry_time DESC
@@ -183,7 +183,7 @@ class SessionMemory:
                     'is_win': is_win,
                     'is_long': is_long,
                     'score': row['score'] or 0.0,
-                    'oracle_score': row['oracle_score'] or 0.0,
+                    'cvd': 0.0,  # 默认中性值（数据库中没有保存cvd）
                     'rsi': 50.0  # 默认中性值（数据库中没有保存rsi）
                 }
                 sessions.append(session)
@@ -238,7 +238,7 @@ class SessionMemory:
                 'price_bin': int(session['entry_price'] * 5),  # 近似价格区间
                 'time_slot': 0,  # 历史数据没有精确时间，设为0（权重低，影响小）
                 'rsi': session['rsi'] / 100.0,
-                'oracle': max(-1.0, min(1.0, session['oracle_score'] / 10.0)),
+                'cvd': max(-1.0, min(1.0, session['cvd'] / 150000.0)),
                 'price_trend': 0.0  # 历史数据没有价格趋势，设为0
             }
 

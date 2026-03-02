@@ -292,15 +292,10 @@ class SessionMemoryRule(VotingRule):
             return None
 
         try:
-            # 从oracle中提取oracle_score
-            oracle_score = 0.0
-            if oracle:
-                oracle_score = oracle.get('signal_score', 0.0)
-
             market_features = {
                 'price': price,
                 'rsi': rsi,
-                'oracle_score': oracle_score,
+                'oracle': oracle or {},  # 传递完整的oracle字典（包含cvd_5m等）
                 'price_history': price_history or []
             }
 
@@ -1624,20 +1619,25 @@ class VotingSystem:
 
 def create_voting_system(session_memory=None, wallet_address=None, http_session=None) -> VotingSystem:
     """
-    创建投票系统实例（完整实现@jtrevorchapman的23个原始指标）
+    创建投票系统实例（Layer 2: 信号层）
 
-    总计31个规则（全部激活）：
+    三层架构：
+    - Layer 1: Session Memory (先验层) - 在auto_trader_ankr.py中独立调用
+    - Layer 2: 投票系统 (信号层) - 本函数创建的30个规则
+    - Layer 3: 防御层 (风险控制) - 在auto_trader_ankr.py中独立调用
+
+    总计30个规则（全部激活）：
     - 超短动量x3：30s/60s/120s 精确时间窗口
     - 技术指标x8：Price Momentum, Price Trend, RSI, VWAP, Trend Strength, MACD, EMA, 波动率
     - CVD指标x3：5m CVD (3.0x权重), 1m CVD, Delta Z-Score
     - 高级指标x2：动量加速度, 交易强度
     - PM指标x6：CL Data Age, PM YES, Bias Score, PM Spread Dev, PM Sentiment, PM Spread
-    - 趋势指标x2：UT Bot, Session Memory (Layer 1)
+    - 趋势指标x1：UT Bot（Session Memory已移至Layer 1）
     - 订单簿x7：买墙, 卖墙, OBI, 自然价格, 自然绝对值, 缓冲订单
     - 持仓规则x1：Positions（当前暴露管理）
 
     Args:
-        session_memory: SessionMemory实例（用于SessionMemoryRule）
+        session_memory: SessionMemory实例（已废弃，保留参数仅为兼容性）
         wallet_address: Polymarket钱包地址（用于PositionsRule）
         http_session: requests.Session实例（用于PositionsRule的API调用）
     """
@@ -1684,10 +1684,10 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     system.add_rule(PMSpreadDevRule(weight=0.3))       # YES/NO价差异常（降为低权重）
 
     # ==========================================
-    # 趋势指标（降为低权重）
+    # 趋势指标
     # ==========================================
-    system.add_rule(UTBotTrendRule(weight=0.3))         # UT Bot 15m趋势（降为低权重）
-    system.add_rule(SessionMemoryRule(session_memory, weight=0.3))  # Session Memory（降为低权重）
+    # 注意：Session Memory已移至Layer 1（独立先验层），不再是投票规则之一
+    system.add_rule(UTBotTrendRule(weight=0.3))  # UT Bot 15m趋势（降为低权重）
 
     # ==========================================
     # 市场微观结构规则（保持OBI中等，其他降为低权重）
@@ -1706,8 +1706,8 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     system.add_rule(PMSentimentRule(weight=0.3))        # PM情绪（降为低权重）
     system.add_rule(PositionsRule(weight=0.3, wallet_address=wallet_address, http_session=http_session))  # 持仓分析（降为低权重）
 
-    # 总权重：25.8x（全部25个规则已激活）
-    # CVD权重占比：5.7x / 25.8x = 22.1%（仍然主导）
+    # 总权重：25.5x（全部30个规则已激活，Session Memory已移至Layer 1）
+    # CVD权重占比：5.7x / 25.5x = 22.4%（仍然主导）
 
     return system
 
