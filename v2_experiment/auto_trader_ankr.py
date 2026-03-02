@@ -3605,33 +3605,56 @@ class AutoTraderV5:
 
             # 取消旧止盈止损单（带验证，确保取消成功再挂新单）
             if old_tp_order_id:
-                try:
-                    self.cancel_order(old_tp_order_id)
-                    time.sleep(1)
-                    # 验证旧止盈单确实已取消/成交，防止双重卖出
-                    tp_still_live = False
-                    try:
-                        tp_info = self.client.get_order(old_tp_order_id)
-                        if tp_info and tp_info.get('status', '').upper() in ('LIVE', 'OPEN'):
-                            tp_still_live = True
-                            print(f"       [MERGE] ⚠ 旧止盈单仍在挂单中，再次尝试取消...")
-                            self.cancel_order(old_tp_order_id)
-                            time.sleep(2)
-                    except Exception:
-                        pass  # 查询失败视为已取消
-                    if not tp_still_live:
-                        print(f"       [MERGE]  已取消旧止盈单 {old_tp_order_id[-8:]}")
-                except Exception as e:
-                    print(f"       [MERGE] ⚠ 取消旧止盈单失败: {e}，放弃合并以防双重卖出")
+                # 🔧 修复：检查 cancel_order 返回值
+                cancel_success = self.cancel_order(old_tp_order_id)
+                if not cancel_success:
+                    print(f"       [MERGE] ❌ 取消旧止盈单失败，放弃合并以防双重卖出！")
                     conn.close()
                     return False, 0
+
+                time.sleep(1)
+
+                # 验证旧止盈单确实已取消/成交，防止双重卖出
+                tp_still_live = False
+                try:
+                    tp_info = self.client.get_order(old_tp_order_id)
+                    if tp_info:
+                        status = tp_info.get('status', '').upper()
+                        if status in ('LIVE', 'OPEN', 'PENDING'):
+                            tp_still_live = True
+                            print(f"       [MERGE] ⚠ 旧止盈单仍在挂单中({status})，再次尝试取消...")
+                            retry_cancel = self.cancel_order(old_tp_order_id)
+                            if not retry_cancel:
+                                print(f"       [MERGE] ❌ 重试取消失败，放弃合并！")
+                                conn.close()
+                                return False, 0
+                            time.sleep(2)
+                            # 再次验证
+                            tp_info2 = self.client.get_order(old_tp_order_id)
+                            if tp_info2 and tp_info2.get('status', '').upper() in ('LIVE', 'OPEN', 'PENDING'):
+                                print(f"       [MERGE] ❌ 旧止盈单无法取消，放弃合并！")
+                                conn.close()
+                                return False, 0
+                except Exception as e:
+                    # 查询异常可能是订单不存在（已成交），视为成功
+                    error_msg = str(e).lower()
+                    if 'not found' in error_msg or 'does not exist' in error_msg:
+                        print(f"       [MERGE] 旧止盈单不存在（可能已成交）")
+                    else:
+                        print(f"       [MERGE] ⚠ 查询旧止盈单失败: {e}")
+
+                print(f"       [MERGE]  已确认旧止盈单已取消/成交 {old_tp_order_id[-8:]}")
+
             if old_sl_order_id and old_sl_order_id.startswith('0x'):
                 try:
-                    self.cancel_order(old_sl_order_id)
-                    print(f"       [MERGE]  已取消旧止损单 {old_sl_order_id[-8:]}")
-                    time.sleep(1)
+                    cancel_sl = self.cancel_order(old_sl_order_id)
+                    if cancel_sl:
+                        print(f"       [MERGE]  已取消旧止损单 {old_sl_order_id[-8:]}")
+                        time.sleep(1)
+                    else:
+                        print(f"       [MERGE] ⚠ 取消旧止损单失败（继续合并）")
                 except Exception as e:
-                    print(f"       [MERGE] ⚠ 取消旧止损单失败: {e}")
+                    print(f"       [MERGE] ⚠ 取消旧止损单异常: {e}")
 
             # 合并持仓（加权平均）
             merged_size = old_size + new_size
