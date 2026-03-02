@@ -502,7 +502,7 @@ class AutoTraderV5:
         print(f"  可用: {usdc - CONFIG['risk']['reserve_usdc']:.2f} USDC")
         print(f"  保留: {CONFIG['risk']['reserve_usdc']:.2f} USDC")
         print(f"  单笔最小: {CONFIG['risk']['min_position_usdc']:.2f} USDC")
-        print(f"  单笔最大: {usdc * CONFIG['risk']['max_position_pct']:.2f} USDC ({CONFIG['risk']['max_position_pct']*100:.0%})")
+        print(f"  单笔最大: {usdc * CONFIG['risk']['max_position_pct']:.2f} USDC ({CONFIG['risk']['max_position_pct']:.0%})")
         print(f"  日最大亏损: {self.position_mgr.get_max_daily_loss():.2f} USDC")
         print(f"  预计交易次数: {int((usdc - CONFIG['risk']['reserve_usdc']) / 2)} 笔")
         print()
