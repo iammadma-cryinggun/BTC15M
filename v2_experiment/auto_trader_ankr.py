@@ -1448,8 +1448,8 @@ class AutoTraderV5:
                     win_rate = (wins / total * 100) if total > 0 else 0
                     print(f"{reason:<30} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}%")
 
-            # 5. 盈亏分布
-            print("\n[5] 盈亏分布 (PnL Distribution)")
+            # 5. 盈亏分布（仅显示有投票详情的交易）
+            print("\n[5] 盈亏分布 (PnL Distribution - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     CASE
@@ -1463,7 +1463,7 @@ class AutoTraderV5:
                     COUNT(*) as count,
                     AVG(pnl_pct) as avg_pnl
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 GROUP BY pnl_range
                 ORDER BY MIN(pnl_pct) DESC
             ''')
@@ -1475,12 +1475,12 @@ class AutoTraderV5:
                     pnl_range, count, avg_pnl = row
                     print(f"{pnl_range:<15} {count:<8} {avg_pnl:+.2f}%")
 
-            # 6. 最近10笔表现
-            print("\n[6] 最近表现 (Last 10 Trades)")
+            # 6. 最近10笔表现（仅显示有投票详情的交易）
+            print("\n[6] 最近表现 (Last 10 Trades - Only with Vote Details)")
             cursor.execute('''
                 SELECT entry_time, side, pnl_pct, exit_reason
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 ORDER BY id DESC LIMIT 10
             ''')
             rows = cursor.fetchall()
@@ -1495,37 +1495,6 @@ class AutoTraderV5:
                     pnl_str = f'{pnl:+.1f}%' if pnl else 'N/A'
                     reason = (reason or '')[:25]
                     print(f"{ts:<18} {side:<8} {pnl_str:<10} {reason}")
-
-            # 7. 按信号强度统计（新增）
-            print("\n[7] 按信号强度统计 (By Signal Strength)")
-            cursor.execute('''
-                SELECT
-                    CASE
-                        WHEN abs(score) >= 7.0 THEN '7.0+ (很强)'
-                        WHEN abs(score) >= 5.0 THEN '5.0-6.9 (较强)'
-                        WHEN abs(score) >= 4.0 THEN '4.0-4.9 (中等)'
-                        WHEN abs(score) >= 3.0 THEN '3.0-3.9 (较弱)'
-                        ELSE '< 3.0 (弱)'
-                    END as score_range,
-                    COUNT(*) as total,
-                    SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins,
-                    AVG(pnl_pct) as avg_pnl,
-                    SUM(pnl_usd) as total_pnl
-                FROM positions
-                WHERE exit_reason IS NOT NULL AND score IS NOT NULL
-                GROUP BY score_range
-                ORDER BY MIN(abs(score)) DESC
-            ''')
-            rows = cursor.fetchall()
-            if rows:
-                print(f"{'信号强度':<15} {'交易数':<8} {'盈利':<8} {'胜率':<10} {'平均收益':<12} {'总盈亏'}")
-                print("-" * 80)
-                for row in rows:
-                    score_range, total, wins, avg_pnl, total_pnl = row
-                    win_rate = (wins / total * 100) if total > 0 else 0
-                    print(f"{score_range:<15} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}% ({total_pnl:+.2f} USDC)")
-            else:
-                print("  无数据（需要score字段）")
 
             conn.close()
             print("=" * 100 + "\n")
