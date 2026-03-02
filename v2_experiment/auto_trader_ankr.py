@@ -3189,6 +3189,17 @@ class AutoTraderV5:
 
             print(f"       [PRICE] 使用={'YES' if signal['direction']=='LONG' else 'NO'}={base_price:.4f}")
 
+            # [价格一致性检查] WebSocket实时价与信号价偏差检查
+            signal_price = float(signal['price'])
+            price_deviation = abs(base_price - signal_price)
+            MAX_PRICE_DEVIATION = 0.02  # 最大容忍偏差：2美分
+
+            if price_deviation > MAX_PRICE_DEVIATION:
+                print(f"       [价格拦截] 实时价{base_price:.4f}与信号价{signal_price:.4f}偏差{price_deviation:.3f}超过{MAX_PRICE_DEVIATION}，拒绝下单（价格已变）")
+                return None
+            elif price_deviation > 0.01:
+                print(f"       [价格警告] 实时价{base_price:.4f}与信号价{signal_price:.4f}偏差{price_deviation:.3f}，谨慎下单")
+
             # tick_size 对齐
             tick_size_float = float(market.get('orderPriceMinTickSize') or 0.01)
             # tick_size 必须是字符串格式给 SDK（"0.1"/"0.01"/"0.001"/"0.0001"）
@@ -3200,19 +3211,19 @@ class AutoTraderV5:
 
             #  === 防弹衣：智能滑点保护（击破250ms做市商撤单）===
             # Polymarket有250ms延迟，做市商可在期间撤单。我们需要设定价格上限防止高位接盘
-            MAX_SLIPPAGE_ABSOLUTE = 0.03  # 绝对滑点上限：3美分
+            MAX_SLIPPAGE_ABSOLUTE = 0.02  # 绝对滑点上限：2美分（降低以减少滑点风险）
             MAX_SAFE_ENTRY_PRICE = 0.70   # 安全入场价上限：超过70¢盈亏比太差
 
             # 基础滑点：2个tick（确保成交）
             slippage_ticks = 2
             adjusted_price = align_price(base_price + tick_size_float * slippage_ticks)
 
-            #  关键：计算实际滑点并限制在3美分以内
+            #  关键：计算实际滑点并限制在2美分以内
             actual_slippage = adjusted_price - base_price
             if actual_slippage > MAX_SLIPPAGE_ABSOLUTE:
-                # 滑点超过3美分，强制限制
+                # 滑点超过2美分，强制限制
                 adjusted_price = align_price(base_price + MAX_SLIPPAGE_ABSOLUTE)
-                print(f"       [ 防弹衣] 原滑点{actual_slippage:.3f}超过3¢，强制限制到3¢")
+                print(f"       [ 防弹衣] 原滑点{actual_slippage:.3f}超过2¢，强制限制到2¢")
 
             #  极限保护：即使加上滑点，价格也不能超过70¢
             if adjusted_price > MAX_SAFE_ENTRY_PRICE:
