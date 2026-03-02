@@ -3946,17 +3946,34 @@ class AutoTraderV5:
 
                 # 最后2分钟（120秒）且未触发其他平仓逻辑时检查
                 if seconds_remaining <= 120 and not trailing_triggered:
-                    # 计算当前盈亏
-                    current_pnl_usd = size * (pos_current_price - entry_token_price)
+                    # 🔧 修复：LONG和SHORT的盈亏计算不同
+                    if side == 'LONG':
+                        # LONG: 价格涨 = 盈利
+                        current_pnl_usd = size * (pos_current_price - entry_token_price)
+                    else:  # SHORT
+                        # SHORT: 价格跌 = 盈利（做空逻辑）
+                        current_pnl_usd = size * (entry_token_price - pos_current_price)
+
                     current_pnl_pct = (current_pnl_usd / value_usdc) * 100 if value_usdc > 0 else 0
 
                     if current_pnl_usd < 0:
                         # 亏损状态：立即市价平仓减少损失
-                        print(f"       [🚨 亏损减损] 最后{seconds_remaining//60}分{seconds_remaining%60}秒，当前亏损${current_pnl_usd:.2f}({current_pnl_pct:.1f}%)，主动平仓止损！")
+                        print(f"       [🚨 亏损减损] 最后{seconds_remaining//60}分{seconds_remaining%60}秒，{side}当前亏损${current_pnl_usd:.2f}({current_pnl_pct:.1f}%)，主动平仓止损！")
                         print(f"       [🚨 亏损减损] 入场@{entry_token_price:.4f} → 现价{pos_current_price:.4f}")
 
                         exit_reason = 'LAST_2MIN_LOSS_CUT'
                         actual_exit_price = pos_current_price
+
+                        # 🔧 修复：先取消止盈单，防止双重卖出
+                        if tp_order_id:
+                            print(f"       [🚨 亏损减损] 先取消止盈单 {tp_order_id[-8:]}...")
+                            cancel_ok = self.cancel_order(tp_order_id)
+                            if cancel_ok:
+                                print(f"       [🚨 亏损减损]  止盈单已取消")
+                            else:
+                                print(f"       [🚨 亏损减损] ⚠ 止盈单取消失败，继续平仓")
+                            import time
+                            time.sleep(1)  # 等待取消生效
 
                         # 立即市价平仓
                         try:
@@ -3989,9 +4006,6 @@ class AutoTraderV5:
                                     exit_reason,
                                     pos_id
                                 ))
-
-                                # 取消原有的止盈止损单
-                                self.cancel_pair_orders(tp_order_id, sl_order_id, exit_reason)
 
                                 print(f"       [🚨 亏损减损] 平仓完成: ${pnl_usd:+.2f} ({pnl_pct:+.1f}%)，避免归零！")
                                 continue  # 跳过后续处理，进入下一个持仓
