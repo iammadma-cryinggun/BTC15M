@@ -1,6 +1,6 @@
-#!/usr/bin/env python3
+#!/bin/bash
 """
-Zeabur v2_experiment V6 启动脚本（WebSocket实时价格 + 25规则）
+Zeabur v2_experiment V6 启动脚本（WebSocket实时价格 + 30规则）
 先启动 binance_oracle.py（后台），再启动 v2_experiment/v6_hft_engine.py（前台）
 """
 import os
