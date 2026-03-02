@@ -1973,14 +1973,13 @@ class AutoTraderV5:
         # 移除"本地分"vs"Oracle分"的区分，所有指标平等输入投票系统
         # 投票系统直接生成最终方向和置信度
 
-        # 读取Oracle数据（包含CVD、UT Bot、超短动量等）
+        # 读取Oracle数据（包含CVD、超短动量等）
         oracle = self._read_oracle_signal()
-        ut_hull_trend = 'NEUTRAL'
+        # 注意：UT Bot趋势已根据奥卡姆剃刀原则删除，不再使用
+        ut_hull_trend = 'NEUTRAL'  # 保留变量以兼容旧日志
 
         if oracle:
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
-
-        print(f"       [ORACLE] UT Bot趋势:{ut_hull_trend}")
 
         # ==========================================
         # [LAYER 1] Session Memory - 先验层（使用预加载缓存）
