@@ -344,13 +344,13 @@ class PositionManager:
     def __init__(self, balance_usdc: float):
         self.balance = balance_usdc
 
-    def calculate_position(self, confidence: float, score: float = 0.0) -> float:
+    def calculate_position(self, confidence: float, vote_details: dict = None) -> float:
         """
-        智能动态仓位：根据信号强度（score）自动调整
+        智能动态仓位：根据信号置信度和投票强度自动调整
 
         Args:
             confidence: 置信度（0-1）
-            score: 信号分数（-10到+10）
+            vote_details: 投票详情（包含总票数等信息）
 
         Returns:
             实际下单金额（USDC）
@@ -363,20 +363,20 @@ class PositionManager:
         # 基础仓位：30%（提升以适应12U小资金，确保能买6份）
         base = self.balance * 0.30
 
-        # [TARGET] 根据信号分数分段调整（方案A：智能分段）
-        abs_score = abs(score)
+        # 根据投票强度调整（替代之前的score强度判断）
+        total_votes = vote_details.get('total_votes', 0) if vote_details else 0
 
-        if abs_score >= 6.0:
-            #  超强信号：40%
+        if total_votes >= 20:
+            # 超强共识：40%
             multiplier = 1.33
-        elif abs_score >= 4.5:
-            #  强信号：35%
+        elif total_votes >= 15:
+            # 强共识：35%
             multiplier = 1.16
-        elif abs_score >= 3.5:
-            #  中等信号：32%
+        elif total_votes >= 10:
+            # 中等共识：32%
             multiplier = 1.06
         else:
-            # ⚠ 弱信号：30%
+            # 弱共识：30%
             multiplier = 1.0
 
         # 结合confidence微调（±10%）
@@ -1578,131 +1578,186 @@ class AutoTraderV5:
         except Exception:
             return None
 
-    def calculate_defense_multiplier(self, current_price: float, score: float, oracle: Dict = None) -> float:
+    def calculate_defense_multiplier(self, current_price: float, direction: str, oracle: Dict = None) -> float:
         """
-        核心防御层 (Sentinel Dampening) - v2_experiment版本
+        核心防御层 (Sentinel Dampening) - 五因子系统 @jtrevorchapman
 
-        评估各项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
+        评估五项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
 
-        三大防御因子（v2版本）：
-        1. 时间窗口管理 - 全时段入场 + 动态仓位调整（已移除6分钟限制）
-        2. 混沌过滤器 - 预言机报价反复穿越基准价格次数
-        3. 利润空间防御 - 基于实盘数据的价格区间分层
+        五大防御因子：
+        1. CVD一致性 - 信号方向 vs CVD方向（背离时大幅压缩）
+        2. 距离基准价格 - 价格越接近0.50，翻转风险越高
+        3. Session剩余时间 - 最后2-3分钟风险陡增
+        4. 混沌过滤器 - 预言机报价反复穿越基准价格次数
+        5. 利润空间 - 入场价越高，对胜率要求越高
 
         Args:
             current_price: 当前价格
-            score: 本地信号评分（31规则投票总分）
-            oracle: Oracle 数据字典（包含 cvd_5m 等，用于基准价格计算）
+            direction: 信号方向 ('LONG' or 'SHORT')
+            oracle: Oracle 数据字典（包含 cvd_5m 等）
         """
         from datetime import datetime
         now = datetime.now()
         current_session = now.minute // 15  # 划分 00, 15, 30, 45 的 Session
 
-        # ========== 1. Session切换检测 + Layer 1预加载 ==========
+        # ========== 混沌过滤器：记录基准线穿越 ==========
+        # 使用0.35作为动态基准线（BTC当前价格区间的中位数）
+        baseline_price = 0.35
+        current_state = 'UP' if current_price > baseline_price else 'DOWN'
+        if self.last_cross_state and current_state != self.last_cross_state:
+            self.session_cross_count += 1
+            print(f"⚠ [混沌监测] 价格穿越基准线({baseline_price:.2f})！当前Session穿越次数: {self.session_cross_count}")
+        self.last_cross_state = current_state
+
+        # ========== Session切换检测 ==========
         if current_session != self.last_session_id:
             self.session_cross_count = 0
             self.last_cross_state = None
             self.last_session_id = current_session
-            print(f" [防御层] 新Session开始，混沌计数器重置")
 
             # [LAYER 1] Session Memory预加载
-            # 在新session开始时立即计算整个session的prior_bias
             if self.session_memory:
                 try:
-                    # 读取Oracle数据用于Session Memory
                     oracle_data = None
                     try:
                         oracle_data = self._read_oracle_signal()
                     except:
                         pass
-
-                    # 调用预加载
                     self.session_memory.preload_session_bias(
                         price=current_price,
-                        rsi=0.0,  # Session Memory主要用价格和CVD，RSI用默认值
+                        rsi=0.0,
                         oracle=oracle_data or {},
                         price_history=list(self.price_history) if self.price_history else []
                     )
                 except Exception as e:
                     print(f" [LAYER-1 ERROR] Session Memory预加载失败: {e}")
 
-        # ========== 2. 记录 0.50 基准线穿越 ==========
-        current_state = 'UP' if current_price > 0.50 else 'DOWN'
-        if self.last_cross_state and current_state != self.last_cross_state:
-            self.session_cross_count += 1
-            print(f"⚠ [混沌监测] 价格穿越基准线！当前Session穿越次数: {self.session_cross_count}")
-        self.last_cross_state = current_state
-
-        # ================= 开始计算防御系数 =================
+        # ================= 五因子防御系统 =================
         multiplier = 1.0
         defense_reasons = []
 
-        # ========== 因子A: 黄金时间窗口精细管理 (Time left to expiry) ==========
-        # 🔴 已移除 6 分钟限制，允许全时段入场
+        # ========== 因子1: CVD一致性 ==========
+        # [逻辑] 如果信号方向与CVD方向背离，大幅压缩仓位
+        if oracle:
+            cvd_5m = oracle.get('cvd_5m', 0.0)
+            cvd_1m = oracle.get('cvd_1m', 0.0)
+
+            # 综合CVD判断（5分钟权重70%，1分钟权重30%）
+            cvd_combined = cvd_5m * 0.7 + cvd_1m * 0.3
+
+            # 判断CVD方向
+            cvd_direction = 'LONG' if cvd_combined > 0 else 'SHORT'
+
+            # 计算CVD强度（绝对值）
+            cvd_strength = abs(cvd_combined)
+
+            # CVD一致性检查
+            if direction == 'LONG':
+                if cvd_direction == 'SHORT':
+                    # 背离：信号做多，但CVD显示卖压
+                    if cvd_strength > 100000:  # 强卖压
+                        multiplier *= 0.2  # 大幅压缩
+                        defense_reasons.append(f"CVD强背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至20%")
+                    elif cvd_strength > 50000:  # 中等卖压
+                        multiplier *= 0.5
+                        defense_reasons.append(f"CVD背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至50%")
+                else:
+                    # 一致：信号做多，CVD显示买压 → 无惩罚
+                    if cvd_strength > 100000:
+                        print(f" [因子1-CVD] {direction}信号与CVD一致({cvd_combined:+.0f}) → 强确认")
+            else:  # direction == 'SHORT'
+                if cvd_direction == 'LONG':
+                    # 背离：信号做空，但CVD显示买压
+                    if cvd_strength > 100000:  # 强买压
+                        multiplier *= 0.2  # 大幅压缩
+                        defense_reasons.append(f"CVD强背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至20%")
+                    elif cvd_strength > 50000:  # 中等买压
+                        multiplier *= 0.5
+                        defense_reasons.append(f"CVD背离(信号{direction} vs CVD{cvd_direction} {cvd_combined:+.0f})")
+                        print(f" [因子1-CVD] {direction}信号 vs CVD{cvd_direction}({cvd_combined:+.0f}) → 仓位压缩至50%")
+                else:
+                    # 一致：信号做空，CVD显示卖压 → 无惩罚
+                    if cvd_strength > 100000:
+                        print(f" [因子1-CVD] {direction}信号与CVD一致({cvd_combined:+.0f}) → 强确认")
+
+        # ========== 因子2: 距离基准价格 ==========
+        # [逻辑] 价格越接近基准线(0.35)，翻转风险越高
+        distance_from_baseline = abs(current_price - baseline_price)
+        if distance_from_baseline < 0.02:
+            multiplier *= 0.7  # 非常接近基准，高不确定性
+            defense_reasons.append(f"近基准({distance_from_baseline:.2f})")
+            print(f" [因子2-基准] 价格{current_price:.2f}极接近基准{baseline_price:.2f} → 仓位70%")
+        elif distance_from_baseline < 0.05:
+            multiplier *= 0.9  # 较近基准，轻微风险
+            defense_reasons.append(f"较近基准({distance_from_baseline:.2f})")
+            print(f" [因子2-基准] 价格{current_price:.2f}接近基准{baseline_price:.2f} → 仓位90%")
+
+        # ========== 因子3: Session剩余时间 ==========
+        # [逻辑] 最后2-3分钟风险陡增，任何波动都来不及反应
         minutes_to_expiry = 15 - (now.minute % 15)
+        seconds_to_expiry = (15 - (now.minute % 15)) * 60 - now.second
 
-        # [精细仓位管理] 根据剩余时间调整仓位
-        if minutes_to_expiry > 10:  # 10-15 分钟
-            multiplier *= 0.9  # 轻微压缩（时间充足但信号可能变化）
+        if minutes_to_expiry >= 13:
+            multiplier *= 0.9  # 早期窗口，信号可能变化
             defense_reasons.append(f"早期窗口({minutes_to_expiry}分钟)")
-            print(f" [防御层-A] 早期窗口: {minutes_to_expiry}分钟剩余，仓位90%")
-        elif minutes_to_expiry > 5:  # 5-10 分钟
-            multiplier *= 1.0  # 全仓（最佳窗口）
-            print(f" [防御层-A] 黄金窗口: {minutes_to_expiry}分钟剩余，仓位100%（最佳时机）")
-        elif minutes_to_expiry > 2:  # 2-5 分钟
-            multiplier *= 1.0  # 全仓（仍可交易）
-            print(f" [防御层-A] 中期窗口: {minutes_to_expiry}分钟剩余，仓位100%")
-        else:  # < 2 分钟
-            # [安全修复] 晚期窗口直接拒绝，避免结算前剧烈波动无法止损
-            print(f"[防御层-A] 晚期窗口: {minutes_to_expiry}分钟剩余，拒绝开仓（结算前风险太大）")
+        elif minutes_to_expiry <= 2:
+            multiplier *= 0.0  # 最后2分钟，直接拒绝
+            defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
+            print(f" [因子3-时间] 最后{minutes_to_expiry}分钟，风险太大 → 拒绝开仓")
             return 0.0
+        elif minutes_to_expiry <= 3:
+            multiplier *= 0.5  # 最后3分钟，大幅压缩
+            defense_reasons.append(f"末期窗口({minutes_to_expiry}分钟)")
+            print(f" [因子3-时间] 最后{minutes_to_expiry}分钟，反应时间不足 → 仓位50%")
+        elif minutes_to_expiry <= 5:
+            multiplier *= 0.8  # 最后5分钟，轻微压缩
+            defense_reasons.append(f"晚期窗口({minutes_to_expiry}分钟)")
 
-        # ========== 因子B: 混沌过滤器（纯数学逻辑）==========
-        # [逻辑] 价格反复穿越基准线 → 市场无明确方向 → 惩罚仓位
+        # ========== 因子4: 混沌过滤器 ==========
+        # [逻辑] 价格反复穿越基准线 → 市场无明确方向 → 压缩仓位
+        # 混乱市场 + CVD背离 = 一票否决
         if self.session_cross_count >= 5:
-            print(f"[防御层-B] 混沌市场: 价格穿越{self.session_cross_count}次，拒绝开仓")
+            # 极度混乱，直接拒绝
+            print(f" [因子4-混沌] 价格穿越{self.session_cross_count}次，极度混乱 → 拒绝开仓")
             return 0.0
         elif self.session_cross_count >= 3:
-            multiplier *= 0.5
+            # 中度混乱
+            chaos_multiplier = 0.3 if self.session_cross_count >= 4 else 0.5
+            multiplier *= chaos_multiplier
             defense_reasons.append(f"混沌x{self.session_cross_count}")
+            print(f" [因子4-混沌] 价格穿越{self.session_cross_count}次，市场混乱 → 仓位{chaos_multiplier:.0%}")
 
-        # ========== 因子C: 利润空间（价格分层逻辑）==========
-        # [逻辑] 价格位置决定风险收益比，而非绝对高低
-        # 0.50附近是翻转最剧烈区域，两端是趋势确认区
-        if current_price >= 0.50:
-            multiplier *= 0.3  # 高价区，上升空间有限
-            defense_reasons.append(f"高价区{current_price:.2f}")
-        elif current_price >= 0.45:
-            multiplier *= 0.5  # 中高价区，接近翻转点
-            defense_reasons.append(f"中高价{current_price:.2f}")
-        elif current_price >= 0.43:
-            multiplier *= 0.7  # 中性区，轻微风险
-            defense_reasons.append(f"中性区{current_price:.2f}")
-        elif current_price < 0.28:
-            multiplier *= 0.6  # 极低价，可能已过度反应
-            defense_reasons.append(f"极低价{current_price:.2f}")
-        # 0.28-0.43: 黄金区间，无惩罚（隐含1.0）
+        # ========== 因子5: 利润空间 ==========
+        # [逻辑] 入场价越高，对胜率要求越高
+        # 基于最新数据重新定义价格区间
+        if current_price >= 0.45:
+            # 高价区，只允许最干净的信号
+            multiplier *= 0.3
+            defense_reasons.append(f"高价区({current_price:.2f})")
+            print(f" [因子5-空间] 入场价{current_price:.2f}过高，利润空间有限 → 仓位30%")
+        elif current_price >= 0.40:
+            # 中高价区
+            multiplier *= 0.6
+            defense_reasons.append(f"中高价({current_price:.2f})")
+            print(f" [因子5-空间] 入场价{current_price:.2f}，利润空间中等 → 仓位60%")
+        elif current_price < 0.25:
+            # 极低价，可能过度反应
+            multiplier *= 0.7
+            defense_reasons.append(f"极低价({current_price:.2f})")
+            print(f" [因子5-空间] 入场价{current_price:.2f}过低，可能超跌 → 仓位70%")
+        # 0.25-0.40: 当前价格区间，无惩罚（1.0）
 
-        # ========== 因子D: 距离基准价格风险 ==========
-        # [逻辑] 价格越接近0.50，多空分歧越大，翻转风险越高
-        distance_from_baseline = abs(current_price - 0.50)
-        if distance_from_baseline < 0.05:
-            multiplier *= 0.7  # 非常接近基准，高不确定性
-            defense_reasons.append(f"近基准{distance_from_baseline:.2f}")
-        elif distance_from_baseline < 0.10:
-            multiplier *= 0.9  # 较近基准，轻微风险
-            defense_reasons.append(f"较近基准{distance_from_baseline:.2f}")
-
-        # 打印防御层决策
-        if multiplier < 1.0:
+        # ================= 最终决策 =================
+        if multiplier < 0.2:
+            print(f" [防御层] 多重风险叠加，最终乘数{multiplier:.2f} < 0.2 → 拒绝开仓")
+            return 0.0
+        elif multiplier < 1.0:
             print(f" [防御层] 最终乘数: {multiplier:.2f} | 原因: {', '.join(defense_reasons)}")
         else:
-            print(f" [防御层] 全仓通过 (乘数1.0)")
-
-        # [安全修复] 多风险叠加直接拒绝（乘数<0.2说明风险太高）
-        if multiplier < 0.2:
-            print(f"[防御层-拦截] 多重风险叠加(乘数{multiplier:.2f}<0.2)，拒绝开仓")
-            return 0.0
+            print(f" [防御层] 五因子全部通过，全仓执行 (乘数1.0)")
 
         return max(0.0, min(1.0, multiplier))
 
@@ -1809,8 +1864,6 @@ class AutoTraderV5:
         direction = vote_result['direction']
         confidence = vote_result['confidence']
         vote_details = vote_result
-        # 方向对应的分数（仅用于防御层计算，不代表"本地分"概念）
-        score = 5.0 if direction == 'LONG' else -5.0
 
         print(f"\n       [VOTING RESULT] 最终方向: {direction} | 置信度: {confidence:.0%}")
         print(f"       [VOTE] 继续执行防御层评估...")
@@ -1845,11 +1898,10 @@ class AutoTraderV5:
                 print(f" [UT Bot参考] 15m趋势={ut_hull_trend}（不作为过滤条件）")
 
             # ==========================================
-            # [LAYER 3] 防御层（风险控制）
+            # [LAYER 3] 防御层（五因子风险控制）
             # ==========================================
-            # 防御层包含：时间锁、混沌过滤、利润空间
-            # 注意：这里传递的score是方向对应的分数（+5.0/-5.0），不代表"本地分"概念
-            defense_multiplier = self.calculate_defense_multiplier(price, score, oracle)
+            # 五因子：CVD一致性、距离基准、剩余时间、混沌过滤、利润空间
+            defense_multiplier = self.calculate_defense_multiplier(price, direction, oracle)
 
             # 如果防御层返回0，直接拦截
             if defense_multiplier <= 0:
@@ -1863,7 +1915,6 @@ class AutoTraderV5:
             return {
                 'direction': direction,
                 'strategy': strategy_name,
-                'score': score,
                 'confidence': confidence,
                 'rsi': rsi,
                 'vwap': vwap,
@@ -2963,8 +3014,8 @@ class AutoTraderV5:
                 return None
             self.position_mgr.balance = fresh_usdc
 
-            # [TARGET] 智能动态仓位：根据信号强度自动调整（15%-30%）
-            base_position_value = self.position_mgr.calculate_position(signal['confidence'], signal['score'])
+            # [TARGET] 智能动态仓位：根据置信度和投票强度自动调整（15%-30%）
+            base_position_value = self.position_mgr.calculate_position(signal['confidence'], signal.get('vote_details'))
 
             #  应用防御层乘数 (@jtrevorchapman 三层防御系统)
             defense_multiplier = signal.get('defense_multiplier', 1.0)
@@ -3072,7 +3123,7 @@ class AutoTraderV5:
                 signal['direction'],
                 signal['price'],
                 value,
-                signal['score'],
+                5.0 if signal['direction'] == 'LONG' else -5.0,  # 占位值（方向标记）
                 signal['confidence'],
                 signal['rsi'],
                 signal['vwap'],
@@ -3257,7 +3308,7 @@ class AutoTraderV5:
                     str(sl_target_price) if sl_target_price else str(round(max(0.01, actual_price * (1 - CONFIG['risk'].get('max_stop_loss_pct', 0.30))), 4)),
                     token_id,
                     'open',
-                    signal['score'],  #  保存信号评分（本地融合分数）
+                    5.0 if signal['direction'] == 'LONG' else -5.0,  # 占位值（方向标记）
                     signal.get('oracle_1h_trend', 'NEUTRAL'),  #  保存1H趋势
                     signal.get('oracle_15m_trend', 'NEUTRAL'),  #  保存15m趋势
                     merged_from,  #  标记是否是合并交易（0=独立，>0=被合并的持仓ID）
@@ -4503,7 +4554,7 @@ class AutoTraderV5:
                     # 增加信号计数器
                     self.stats['signal_count'] += 1
 
-                    print(f"       Signal: {new_signal['direction']} | Score: {new_signal['score']:.1f}")
+                    print(f"       Signal: {new_signal['direction']} | Conf: {new_signal['confidence']:.0%}")
 
                     # 检测信号改变（作为止盈信号）
                     # [LOCK] 已禁用信号反转强制平仓 - 让仓位完全由止盈止损控制，避免频繁左右横跳
