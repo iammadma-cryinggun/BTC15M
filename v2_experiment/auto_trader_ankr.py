@@ -1621,6 +1621,11 @@ class AutoTraderV5:
             file_mtime = os.path.getmtime(oracle_path)
             file_age = time.time() - file_mtime
 
+            # 🟢 Oracle恢复检测：如果之前过期，现在恢复正常
+            if hasattr(self, '_oracle_stale_warned') and file_age < 30:
+                print(f"       [ORACLE HEALTH] 🟢 Oracle已恢复！数据延迟{file_age:.0f}秒（正常范围）")
+                delattr(self, '_oracle_stale_warned')  # 清除崩溃标记
+
             if file_age > 120:  # 2分钟没更新
                 if not hasattr(self, '_oracle_stale_warned'):
                     print(f"       [ORACLE HEALTH] 🔴 数据严重过期: {file_age:.0f}秒前（binance_oracle.py 可能崩溃）")
