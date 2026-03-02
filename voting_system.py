@@ -1634,19 +1634,19 @@ def create_voting_system(session_memory=None, wallet_address=None, http_session=
     system.add_rule(UltraShortMomentumRule(120, 'Momentum 120s', weight=1.0))  # 120秒精确时间窗口
 
     # ==========================================
-    # 标准技术指标
+    # 标准技术指标（降低权重，让位给 CVD）
     # ==========================================
-    system.add_rule(PriceMomentumRule(weight=1.0))      # 价格动量（10周期）
-    system.add_rule(PriceTrendRule(weight=0.8))         # 价格趋势（5周期，短期）
-    system.add_rule(RSIRule(weight=1.0))                # RSI 14
-    system.add_rule(VWAPRule(weight=1.0))               # VWAP偏离
-    system.add_rule(TrendStrengthRule(weight=1.0))      # 趋势强度（3周期）
+    system.add_rule(PriceMomentumRule(weight=0.8))      # 🔧 价格动量（降低权重）
+    system.add_rule(PriceTrendRule(weight=0.6))         # 🔧 价格趋势（降低权重）
+    system.add_rule(RSIRule(weight=0.5))                # 🔧 RSI 只是防呆，降低权重
+    system.add_rule(VWAPRule(weight=0.8))               # 🔧 VWAP偏离（降低权重）
+    system.add_rule(TrendStrengthRule(weight=0.5))      # 🔧 趋势强度只是辅助，降低权重
 
     # ==========================================
     # [CVD强化] 参考 @jtrevorchapman: CVD是预测力最强的单一指标
     # ==========================================
-    system.add_rule(OracleCVDRule('5m', weight=3.0))    # 5分钟CVD：最强指标（3.0x权重）
-    system.add_rule(OracleCVDRule('1m', weight=1.5))    # 1分钟CVD：即时动量
+    system.add_rule(OracleCVDRule('5m', weight=3.0))    # 🚀 5分钟CVD：统治级权重（3.0x）
+    system.add_rule(OracleCVDRule('1m', weight=1.5))    # 🚀 1分钟CVD：即时动量（1.5x）
     system.add_rule(DeltaZScoreRule(weight=1.2))        # Delta Z-Score：CVD标准化
 
     # ==========================================

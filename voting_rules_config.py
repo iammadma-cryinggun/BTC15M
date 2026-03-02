@@ -15,43 +15,43 @@ SIGNAL_RULES = [
         'name': 'Price Momentum',
         'description': '10周期价格动量',
         'enabled': True,
-        'min_confidence_to_vote': 0.3,  # 低于30%置信度不投票
-        'weight': 1.0  # 投票权重（默认1.0）
+        'min_confidence_to_vote': 0.3,
+        'weight': 0.8  # 🔧 降低技术指标权重
     },
     {
         'name': 'RSI Status',
         'description': 'RSI超买超卖判断',
         'enabled': True,
         'min_confidence_to_vote': 0.3,
-        'weight': 1.0
+        'weight': 0.5  # 🔧 RSI只是辅助防呆，降低权重
     },
     {
         'name': 'VWAP Deviation',
         'description': 'VWAP偏离度',
         'enabled': True,
         'min_confidence_to_vote': 0.3,
-        'weight': 1.0
+        'weight': 0.8  # 🔧 降低技术指标权重
     },
     {
         'name': 'Trend Strength',
         'description': '3周期趋势强度',
         'enabled': True,
         'min_confidence_to_vote': 0.3,
-        'weight': 1.0
+        'weight': 0.5  # 🔧 趋势只是辅助，降低权重
     },
     {
         'name': 'Oracle 5m CVD',
-        'description': 'Oracle 5分钟CVD',
+        'description': 'Oracle 5分钟CVD - 真金白银的主力动向',
         'enabled': True,
         'min_confidence_to_vote': 0.4,
-        'weight': 1.2  # Oracle更重要，权重稍高
+        'weight': 3.0  # 🚀 CVD统治级权重！预测力最强的单一指标
     },
     {
         'name': 'Oracle 1m CVD',
-        'description': 'Oracle 1分钟CVD',
+        'description': 'Oracle 1分钟CVD - 即时订单流',
         'enabled': True,
         'min_confidence_to_vote': 0.3,
-        'weight': 0.8  # 1分钟CVD权重稍低
+        'weight': 1.5  # 🚀 1分钟CVD也要提升权重
     },
     {
         'name': 'UT Bot 15m',

@@ -85,31 +85,40 @@ class DefenseLayer:
         # ==========================================
         # 因子3：session剩余时间？
         # ==========================================
-        # 使用更直观的分钟计算方式
-        now = datetime.now()
-        minutes_to_expiry = 15 - (now.minute % 15)  # 距离本轮15分钟会话结束还有几分钟
-        
-        # 大神金句："发现在会议剩下6分钟的时候指标才开始可靠...末日最后两三分钟任何突发都来不及反应"
-        if minutes_to_expiry <= 3.0:
-            multiplier = 0
-            reasons.append(f"末日期({minutes_to_expiry:.1f}分钟)")
-            print(f"       🛡️ [防御-时间] 拦截: 仅剩 {minutes_to_expiry:.1f} 分钟，进入末日抛硬币轮，风险陡增，一票否决！")
-            return multiplier, reasons  # 直接返回，不再评估其他因子
-        elif minutes_to_expiry > 6.0:
-            multiplier *= 0.5
-            reasons.append(f"前置期({minutes_to_expiry:.1f}分钟)")
-            print(f"       🛡️ [防御-时间] 警告: 剩余 {minutes_to_expiry:.1f} 分钟，处于前置骗炮期，仓位前瞻性减半。")
-        
-        # 如果有 endTimestamp，也做二次验证
+        # 🔧 修复：使用绝对时间戳，避免本地时钟偏差
         end_ts = market.get('endTimestamp', 0) if market else 0
+        if not end_ts:
+            # 如果没有 endTimestamp，尝试从 endDate 解析
+            end_date = market.get('endDate') if market else None
+            if end_date:
+                try:
+                    from datetime import datetime as dt
+                    end_dt = dt.strptime(end_date, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)
+                    end_ts = int(end_dt.timestamp() * 1000)
+                except:
+                    pass
+        
         if end_ts:
             now_ts = int(time.time() * 1000)
-            seconds_left = (end_ts - now_ts) / 1000
+            minutes_left = (end_ts - now_ts) / 60000.0  # 转换为分钟
             
-            if seconds_left < 120:  # 最后2分钟（二次验证）
+            # 大神金句："发现在会议剩下6分钟的时候指标才开始可靠...末日最后两三分钟任何突发都来不及反应"
+            if minutes_left <= 3.0:
                 multiplier = 0
-                reasons.append(f"剩余{seconds_left:.0f}秒")
-                return multiplier, reasons
+                reasons.append(f"末日期({minutes_left:.1f}分钟)")
+                print(f"       🛡️ [防御-时间] 拦截: 仅剩 {minutes_left:.1f} 分钟，进入末日抛硬币轮，风险陡增，一票否决！")
+                return multiplier, reasons  # 直接返回，不再评估其他因子
+            elif minutes_left > 9.0:
+                # 前置期：剩余时间 > 9分钟（即前6分钟）
+                multiplier *= 0.5
+                reasons.append(f"前置期({minutes_left:.1f}分钟)")
+                print(f"       🛡️ [防御-时间] 警告: 剩余 {minutes_left:.1f} 分钟，处于前置骗炮期，仓位前瞻性减半。")
+        else:
+            # 如果无法获取 endTimestamp，拒绝交易（安全第一）
+            multiplier = 0
+            reasons.append("无法获取市场结束时间")
+            print(f"       🛡️ [防御-时间] 拦截: 无法获取市场结束时间，拒绝交易！")
+            return multiplier, reasons
         
         # ==========================================
         # 因子4：预言机穿越次数？（CVD一票否决权）
