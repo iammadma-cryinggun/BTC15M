@@ -2,7 +2,7 @@
 services:
   - name: btc-15min-trader
     type: worker
-    buildCommand: pip install -r requirements.txt --default-timeout=300
+    buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
     env:
-      - PYTHON_VERSION=3.9
+      - PYTHON_VERSION=3.10
