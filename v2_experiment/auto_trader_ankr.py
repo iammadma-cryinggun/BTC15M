@@ -3937,6 +3937,7 @@ class AutoTraderV5:
                     continue  # 跳过后续处理，进入下一个持仓
 
                 # 🚨 [最后2分钟亏损减损] 防止到期归零，在亏损时主动平仓减少损失
+                # 注意：这个检查必须在追踪止盈、绝对止盈之前执行，确保不会被跳过
                 from datetime import datetime as dt, timezone as tz
                 now_utc = dt.now(tz.utc)
                 # 计算当前15分钟窗口的结束时间
@@ -3944,11 +3945,19 @@ class AutoTraderV5:
                 window_end_ts = window_start_ts + 900
                 seconds_remaining = window_end_ts - int(now_utc.timestamp())
 
+                # 🔧 调试日志：每30秒打印一次剩余时间
+                if int(now_utc.timestamp()) % 30 == 0:
+                    print(f"       [🚨 亏损减损] Session剩余{seconds_remaining:.0f}秒 ({seconds_remaining//60}分{seconds_remaining%60}秒)")
+
                 # 最后2分钟（120秒）且未触发其他平仓逻辑时检查
                 if seconds_remaining <= 120 and not trailing_triggered:
+                    print(f"       [🚨 亏损减损] ⏰ 进入最后2分钟检查窗口！剩余{seconds_remaining:.0f}秒")
+
                     # 计算当前盈亏
                     current_pnl_usd = size * (pos_current_price - entry_token_price)
                     current_pnl_pct = (current_pnl_usd / value_usdc) * 100 if value_usdc > 0 else 0
+
+                    print(f"       [🚨 亏损减损] 当前状态: PnL=${current_pnl_usd:.2f} ({current_pnl_pct:.1f}%), 位置={side}")
 
                     if current_pnl_usd < 0:
                         # 亏损状态：立即市价平仓减少损失
@@ -3999,9 +4008,15 @@ class AutoTraderV5:
                                 print(f"       [🚨 亏损减损] ⚠ 平仓单发送失败，继续监控")
                         except Exception as e:
                             print(f"       [🚨 亏损减损] [X] 平仓异常: {e}")
+                            import traceback
+                            print(f"       [🚨 亏损减损] TRACEBACK: {traceback.format_exc()}")
                     else:
-                        # 盈利状态：不需要平仓，让止盈单正常工作
-                        pass
+                        print(f"       [🚨 亏损减损] 当前盈利${current_pnl_usd:+.2f}，不需要止损")
+                else:
+                    if seconds_remaining > 120:
+                        pass  # 还没到2分钟，不打印
+                    else:
+                        print(f"       [🚨 亏损减损] 已触发其他平仓逻辑(trailing_triggered={trailing_triggered})，跳过")
 
                 # 获取止损价格（从字段读取）
                 sl_price = None
