@@ -1243,6 +1243,14 @@ class AutoTraderV5:
             conn.commit()
             print("[MIGRATION] 数据库已升级：positions表添加strategy列")
 
+        #  数据库迁移：添加 vote_details 列（保存31个规则的投票详情）
+        try:
+            cursor.execute("SELECT vote_details FROM positions LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE positions ADD COLUMN vote_details TEXT")
+            conn.commit()
+            print("[MIGRATION] 数据库已升级：positions表添加vote_details列（JSON格式）")
+
         self.safe_commit(conn)
 
         # 兼容旧数据库：添加 token_id 列（如果不存在）
@@ -3525,8 +3533,8 @@ class AutoTraderV5:
                         take_profit_pct, stop_loss_pct,
                         take_profit_order_id, stop_loss_order_id, token_id, status,
                         score, oracle_score, oracle_1h_trend, oracle_15m_trend,
-                        merged_from, strategy, highest_price
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        merged_from, strategy, highest_price, vote_details
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3549,7 +3557,8 @@ class AutoTraderV5:
                     signal.get('oracle_15m_trend', 'NEUTRAL'),  #  保存15m趋势
                     merged_from,  #  标记是否是合并交易（0=独立，>0=被合并的持仓ID）
                     signal.get('strategy', 'TREND_FOLLOWING'),  # [TARGET] 标记策略类型
-                    actual_price  # [ROCKET] 吸星大法：初始化历史最高价为入场价
+                    actual_price,  # [ROCKET] 吸星大法：初始化历史最高价为入场价
+                    json.dumps(signal.get('vote_details', {}), ensure_ascii=False)  # 保存31个规则的投票详情（JSON格式）
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
