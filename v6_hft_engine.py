@@ -421,7 +421,10 @@ class V6HFTEngine:
 
         if signal:
             self.signal_count += 1
-            print(f"[SIGNAL] {signal['direction']} | Score: {signal['score']:.2f} | Price: {self.current_price:.4f}")
+            # 🔧 修复：安全获取 score 字段，如果不存在则使用默认值
+            score = signal.get('score', 0.0)
+            confidence = signal.get('confidence', 0.0)
+            print(f"[SIGNAL] {signal['direction']} | Score: {score:.2f} | Confidence: {confidence:.0%} | Price: {self.current_price:.4f}")
 
             # ❌ 禁用信号改变平仓（数据显示：SIGNAL_CHANGE胜率14.3%，亏损-10.02 USDC）
             # 持有到结算胜率更高（80.0%），不应该在信号改变时提前平仓

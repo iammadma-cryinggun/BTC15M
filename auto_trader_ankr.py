@@ -1854,6 +1854,62 @@ class AutoTraderV5:
 
         return max(0.0, min(1.0, multiplier))
 
+    def _read_oracle_signal(self) -> Optional[Dict]:
+        """
+        读取 Binance Oracle 信号文件
+        
+        返回：
+        {
+            'cvd_1m': float,      # 1分钟CVD
+            'cvd_5m': float,      # 5分钟CVD
+            'signal_score': float,  # Oracle综合分数
+            'ut_hull_trend': str,   # UT Bot趋势（LONG/SHORT/NEUTRAL）
+            'momentum_30s': float,  # 30秒动量
+            'momentum_60s': float,  # 60秒动量
+            'momentum_120s': float, # 120秒动量
+            'timestamp': float      # 时间戳
+        }
+        """
+        try:
+            # Oracle信号文件路径（与数据库同目录）
+            signal_file = os.path.join(os.path.dirname(self.db_path), 'oracle_signal.json')
+            
+            if not os.path.exists(signal_file):
+                # 首次运行时不打印警告，避免日志污染
+                return None
+            
+            # 读取文件
+            with open(signal_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # 检查数据新鲜度（超过60秒视为过期）
+            timestamp = data.get('timestamp', 0)
+            age = time.time() - timestamp
+            
+            if age > 60:
+                print(f"       [ORACLE] ⚠️ 数据过期: {age:.1f}秒前（binance_oracle.py 可能未运行）")
+                return None
+            
+            # 提取CVD数据
+            cvd_1m = data.get('cvd_1m', 0.0)
+            cvd_5m = data.get('cvd_5m', 0.0)
+            
+            # 只在CVD数据有效时打印
+            if abs(cvd_1m) > 1000 or abs(cvd_5m) > 1000:
+                print(f"       [ORACLE] 💰 CVD 1m: {cvd_1m:+.0f}, CVD 5m: {cvd_5m:+.0f}")
+            
+            return data
+            
+        except FileNotFoundError:
+            # 文件不存在，静默返回（避免日志污染）
+            return None
+        except json.JSONDecodeError as e:
+            print(f"       [ORACLE] ❌ JSON解析失败: {e}")
+            return None
+        except Exception as e:
+            print(f"       [ORACLE] ❌ 读取失败: {e}")
+            return None
+
     def generate_signal(self, market: Dict, price: float, no_price: float = None) -> Optional[Dict]:
         # 注意：V5主循环在调用generate_signal前已调用update_indicators
         # V6的update_price_from_ws每秒也会调用update_indicators
