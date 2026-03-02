@@ -83,12 +83,12 @@ CONFIG = {
         # [策略调整] 恢复止盈止损功能
         # 理由：允许全时段入场后，需要止盈止损保护
         'max_stop_loss_pct': 0.50,      # 🔴 50%止损（确认）
-        'take_profit_pct': 0.20,        # 20%止盈（从30%降低）
+        'take_profit_pct': 0.30,        # 30%止盈（提高，给更多利润空间）
         'enable_stop_loss': True,       # ✅ 启用止盈止损
-        
+
         # [止盈开关] 可以单独控制每种止盈机制
         'enable_trailing_tp': True,     # ✅ 启用追踪止盈（0.75激活，回撤5¢触发）
-        'enable_absolute_tp': True,     # ✅ 启用绝对止盈（0.92强制平仓）
+        'enable_absolute_tp': True,     # ✅ 启用绝对止盈（0.90强制平仓）
     },
 
     'signal': {
@@ -3832,7 +3832,7 @@ class AutoTraderV5:
                 # 超高位强制结算保护（防止最后1秒画门）
                 # 🔴 检查绝对止盈开关
                 if not trailing_triggered and CONFIG['risk'].get('enable_absolute_tp', True):
-                    if pos_current_price >= 0.92:
+                    if pos_current_price >= 0.90:
                         print(f"       [[TARGET] 绝对止盈] 价格已达{pos_current_price:.2f}，不赌最后结算，落袋为安！")
                         trailing_triggered = True
                         exit_reason = 'ABSOLUTE_TAKE_PROFIT'
