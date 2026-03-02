@@ -703,7 +703,40 @@ class BinanceOracle:
 
 if __name__ == "__main__":
     oracle = BinanceOracle()
-    try:
-        asyncio.run(oracle.run())
-    except KeyboardInterrupt:
-        print("\n[ORACLE] Shutdown complete.")
+
+    # 🔧 崩溃自动恢复机制
+    # 无论什么原因导致崩溃，都会自动重启
+    restart_count = 0
+    max_restart_delay = 60  # 最大重启延迟60秒
+
+    while True:
+        try:
+            print(f"[ORACLE] 启动中... (重启次数: {restart_count})")
+            asyncio.run(oracle.run())
+
+        except KeyboardInterrupt:
+            print("\n[ORACLE] 用户中断，程序退出")
+            break
+
+        except Exception as e:
+            restart_count += 1
+            import traceback
+
+            # 计算重启延迟（指数退避，最多60秒）
+            restart_delay = min(2 ** restart_count, max_restart_delay)
+
+            print(f"\n{'='*70}")
+            print(f"[ORACLE] 🔴 程序崩溃！将在{restart_delay}秒后自动重启...")
+            print(f"[ORACLE] 崩溃原因: {type(e).__name__}: {e}")
+            print(f"[ORACLE] 重启次数: {restart_count}")
+            print(f"[ORACLE] TRACEBACK:\n{traceback.format_exc()}")
+            print(f"{'='*70}\n")
+
+            # 等待后重启
+            import time
+            time.sleep(restart_delay)
+
+            # 重新创建oracle对象（清理旧状态）
+            oracle = BinanceOracle()
+            print(f"[ORACLE] 🔄 正在重启... (第{restart_count}次)")
+
