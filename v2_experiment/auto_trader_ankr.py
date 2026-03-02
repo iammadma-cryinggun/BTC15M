@@ -1296,13 +1296,14 @@ class AutoTraderV5:
             cursor = conn.cursor()
 
             #  每次都打印最近的交易记录（自动导出到日志）
+            # 只显示有vote_details的交易（有31规则投票详情的交易）
             cursor.execute("""
                 SELECT
                     entry_time, side, entry_token_price, exit_token_price,
                     pnl_usd, pnl_pct, exit_reason, status,
-                    score, oracle_score, oracle_1h_trend, oracle_15m_trend
+                    score, oracle_score, vote_details
                 FROM positions
-                WHERE status = 'closed'
+                WHERE status = 'closed' AND vote_details IS NOT NULL
                 ORDER BY entry_time DESC
                 LIMIT 10
             """)
@@ -1323,13 +1324,14 @@ class AutoTraderV5:
 
                     print(f"\n  {i}. [{t['entry_time']}] {t['side']:6s} {t['entry_token_price']:.4f}->{exit_price} {pnl_icon:8s} ${t['pnl_usd']:+.2f}")
 
-                    # sqlite3.Row 不支持 .get() 方法，直接访问并检查 None
-                    oracle_score = t['oracle_score']
-                    if oracle_score is not None:
-                        oracle_icon = "" if abs(oracle_score) >= 10 else "" if abs(oracle_score) >= 7 else ""
-                        print(f"     Oracle:{oracle_icon} {oracle_score:+.2f} | 1H:{t['oracle_1h_trend']} 15m:{t['oracle_15m_trend']}")
-                    else:
-                        print(f"     Oracle: 未保存")
+                    # 显示投票详情（31规则投票数据）
+                    try:
+                        vote_details = json.loads(t['vote_details']) if t['vote_details'] else {}
+                        long_votes = vote_details.get('long_votes', 0)
+                        short_votes = vote_details.get('short_votes', 0)
+                        print(f"     投票: LONG={long_votes} SHORT={short_votes} | Oracle={t['oracle_score']:+.2f}")
+                    except:
+                        print(f"     投票详情: 未保存")
 
                     if t['pnl_usd']:
                         if t['pnl_usd'] > 0:
@@ -1338,7 +1340,7 @@ class AutoTraderV5:
                             loss_count += 1
                         total_pnl += t['pnl_usd']
 
-                print(f"\n  统计: 盈利{win_count}笔 亏损{loss_count}笔 净${total_pnl:+.2f}")
+                print(f"\n  统计: 盈利{win_count}笔 亏损{loss_count}笔 净${total_pnl:+.2f} (仅显示有投票详情的交易)")
                 print("="*140 + "\n")
 
             conn.close()
@@ -1355,11 +1357,12 @@ class AutoTraderV5:
             print("[交易分析] Trading Performance Analysis")
             print("=" * 100)
 
-            # 1. 最近20笔交易
-            print("\n[1] 最近交易记录 (Last 20 Trades)")
+            # 1. 最近20笔交易（仅显示有投票详情的交易）
+            print("\n[1] 最近交易记录 (Last 20 Trades - Only with Vote Details)")
             cursor.execute('''
                 SELECT id, entry_time, side, entry_token_price, size, exit_token_price, exit_reason, pnl_usd, pnl_pct, merged_from
                 FROM positions
+                WHERE vote_details IS NOT NULL
                 ORDER BY id DESC LIMIT 20
             ''')
             rows = cursor.fetchall()
@@ -1376,8 +1379,8 @@ class AutoTraderV5:
             else:
                 print("  无交易记录")
 
-            # 2. 总体统计
-            print("\n[2] 总体统计 (Overall Statistics)")
+            # 2. 总体统计（仅显示有投票详情的交易）
+            print("\n[2] 总体统计 (Overall Statistics - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     COUNT(*) as total,
@@ -1385,7 +1388,7 @@ class AutoTraderV5:
                     AVG(pnl_pct) as avg_pnl,
                     SUM(pnl_usd) as total_pnl
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
             ''')
             row = cursor.fetchone()
             if row and row[0] > 0:
@@ -1398,8 +1401,8 @@ class AutoTraderV5:
             else:
                 print("  无已完成交易")
 
-            # 3. 按方向统计
-            print("\n[3] 按方向统计 (By Direction)")
+            # 3. 按方向统计（仅显示有投票详情的交易）
+            print("\n[3] 按方向统计 (By Direction - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     side,
@@ -1408,7 +1411,7 @@ class AutoTraderV5:
                     AVG(pnl_pct) as avg_pnl,
                     SUM(pnl_usd) as total_pnl
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 GROUP BY side
             ''')
             rows = cursor.fetchall()
@@ -1420,8 +1423,8 @@ class AutoTraderV5:
                     win_rate = (wins / total * 100) if total > 0 else 0
                     print(f"{side:<8} {total:<8} {wins:<8} {win_rate:<8.1f}% {avg_pnl:+.2f}% ({total_pnl:+.2f} USDC)")
 
-            # 4. 按退出原因统计
-            print("\n[4] 按退出原因统计 (By Exit Reason)")
+            # 4. 按退出原因统计（仅显示有投票详情的交易）
+            print("\n[4] 按退出原因统计 (By Exit Reason - Only with Vote Details)")
             cursor.execute('''
                 SELECT
                     exit_reason,
@@ -1429,7 +1432,7 @@ class AutoTraderV5:
                     AVG(pnl_pct) as avg_pnl,
                     SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) as wins
                 FROM positions
-                WHERE exit_reason IS NOT NULL
+                WHERE exit_reason IS NOT NULL AND vote_details IS NOT NULL
                 GROUP BY exit_reason
                 ORDER BY total DESC
             ''')
