@@ -1351,6 +1351,7 @@ class AutoTraderV5:
         print("[DEBUG] 开始执行交易分析...")
         try:
             conn = sqlite3.connect(self.db_path, timeout=30.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row  # 🔧 修复：设置row_factory以支持字典访问
             conn.execute('PRAGMA journal_mode=WAL;')
             cursor = conn.cursor()
 
