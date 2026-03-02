@@ -38,6 +38,11 @@ class SessionMemory:
         self.session_cache = deque(maxlen=100)  # 缓存最近100个会话特征
         self.prior_cache = {}  # 缓存先验计算结果
 
+        # Session预加载缓存
+        self.current_session_id = None  # 当前session ID (格式: YYYYMMDD_HHMM)
+        self.current_session_bias = 0.0  # 当前session的prior_bias
+        self.current_session_analysis = {}  # 当前session的分析详情
+
         print("[MEMORY] Session Memory System initialized")
         print(f"[MEMORY] Database: {db_path}")
 
@@ -300,6 +305,91 @@ class SessionMemory:
         self.prior_cache[cache_key] = (prior_bias, analysis)
 
         return prior_bias, analysis
+
+    def preload_session_bias(self, price: float, rsi: float, oracle: dict, price_history: list = None) -> bool:
+        """
+        在session开始时预加载prior_bias
+
+        在每个15分钟session开始时调用，计算并缓存整个session的先验bias。
+        之后同一session的信号生成直接使用缓存值，无需重新计算。
+
+        Args:
+            price: 当前价格
+            rsi: 当前RSI
+            oracle: Oracle数据字典（包含cvd_5m等）
+            price_history: 价格历史列表
+
+        Returns:
+            bool: 是否成功预加载
+        """
+        try:
+            # 计算当前session ID
+            now = datetime.now()
+            session_id = now.strftime('%Y%m%d_%H%M')
+
+            # 检查是否是新的session
+            if self.current_session_id == session_id:
+                # 同一个session，已预加载过
+                return True
+
+            # 提取特征
+            market_features = {
+                'price': price,
+                'rsi': rsi,
+                'oracle': oracle or {},
+                'price_history': price_history or []
+            }
+
+            features = self.extract_session_features(market_features)
+
+            # 计算prior_bias
+            prior_bias, analysis = self.calculate_prior_bias(features)
+
+            # 缓存session级别的结果
+            self.current_session_id = session_id
+            self.current_session_bias = prior_bias
+            self.current_session_analysis = analysis
+
+            # 打印预加载结果
+            self.print_preload_result(analysis)
+
+            return True
+
+        except Exception as e:
+            print(f"[MEMORY ERROR] 预加载失败: {e}")
+            # 使用中立先验
+            self.current_session_bias = 0.0
+            self.current_session_analysis = {'status': 'error', 'error': str(e)}
+            return False
+
+    def get_cached_bias(self) -> float:
+        """
+        获取当前session缓存的prior_bias
+
+        在信号生成时调用，快速返回预计算的bias值。
+        """
+        return self.current_session_bias
+
+    def get_cached_analysis(self) -> dict:
+        """获取当前session缓存的analysis详情"""
+        return self.current_session_analysis
+
+    def print_preload_result(self, analysis: dict):
+        """打印预加载结果"""
+        if analysis.get('status') == 'insufficient_data':
+            print(f"⚪ [MEMORY-L1] Session预加载: 历史数据不足，使用中立先验 (0.00)")
+            return
+
+        bias = analysis.get('prior_bias', 0.0)
+        emoji = "🟢" if bias > 0.2 else "🔴" if bias < -0.2 else "⚪"
+
+        long_wr = analysis.get('long_win_rate', 0.0)
+        short_wr = analysis.get('short_win_rate', 0.0)
+        similar = analysis.get('similar_sessions', 0)
+
+        print(f"{emoji} [MEMORY-L1] Session预加载完成")
+        print(f"     基于过去{similar}个相似session: LONG={long_wr:.1%} SHORT={short_wr:.1%}")
+        print(f"     先验bias: {bias:+.2f} {'(倾向做多)' if bias > 0.2 else '(倾向做空)' if bias < -0.2 else '(中立)'}")
 
     def print_analysis(self, analysis: dict):
         """打印先验分析报告"""

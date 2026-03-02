@@ -1598,12 +1598,33 @@ class AutoTraderV5:
         now = datetime.now()
         current_session = now.minute // 15  # 划分 00, 15, 30, 45 的 Session
 
-        # ========== 1. 重置混沌震荡计数器 ==========
+        # ========== 1. Session切换检测 + Layer 1预加载 ==========
         if current_session != self.last_session_id:
             self.session_cross_count = 0
             self.last_cross_state = None
             self.last_session_id = current_session
             print(f" [防御层] 新Session开始，混沌计数器重置")
+
+            # [LAYER 1] Session Memory预加载
+            # 在新session开始时立即计算整个session的prior_bias
+            if self.session_memory:
+                try:
+                    # 读取Oracle数据用于Session Memory
+                    oracle_data = None
+                    try:
+                        oracle_data = self._read_oracle_signal()
+                    except:
+                        pass
+
+                    # 调用预加载
+                    self.session_memory.preload_session_bias(
+                        price=current_price,
+                        rsi=0.0,  # Session Memory主要用价格和CVD，RSI用默认值
+                        oracle=oracle_data or {},
+                        price_history=list(self.price_history) if self.price_history else []
+                    )
+                except Exception as e:
+                    print(f" [LAYER-1 ERROR] Session Memory预加载失败: {e}")
 
         # ========== 2. 记录 0.50 基准线穿越 ==========
         current_state = 'UP' if current_price > 0.50 else 'DOWN'
@@ -1741,33 +1762,22 @@ class AutoTraderV5:
         print(f"       [ORACLE] UT Bot趋势:{ut_hull_trend}")
 
         # ==========================================
-        # [LAYER 1] Session Memory - 先验层
+        # [LAYER 1] Session Memory - 先验层（使用预加载缓存）
         # ==========================================
         # 在任何信号之前，系统已经基于历史数据有了"观点"
+        # prior_bias在session开始时已预加载，这里直接使用缓存
         prior_bias = 0.0
         prior_analysis = {}
 
         if self.session_memory:
-            try:
-                market_features = {
-                    'price': price,
-                    'rsi': rsi,
-                    'oracle': oracle or {},
-                    'price_history': price_hist
-                }
+            prior_bias = self.session_memory.get_cached_bias()
+            prior_analysis = self.session_memory.get_cached_analysis()
 
-                features = self.session_memory.extract_session_features(market_features)
-                prior_bias, prior_analysis = self.session_memory.calculate_prior_bias(features)
-
-                if abs(prior_bias) >= 0.3:
-                    direction_str = "LONG" if prior_bias > 0 else "SHORT"
-                    print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} ({direction_str})")
-                    print(f"         基于过去{prior_analysis.get('matched_sessions', 0)}个相似session")
-                else:
-                    print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} (中立，历史无明显倾向)")
-            except Exception as e:
-                print(f"       [LAYER-1 MEMORY] 计算失败: {e}，使用中立先验")
-                prior_bias = 0.0
+            if abs(prior_bias) >= 0.1:
+                direction_str = "LONG" if prior_bias > 0 else "SHORT"
+                print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} ({direction_str})")
+            else:
+                print(f"       [LAYER-1 MEMORY] 先验bias: {prior_bias:+.2f} (中立)")
         else:
             print(f"       [LAYER-1 MEMORY] 未初始化，使用中立先验")
 
