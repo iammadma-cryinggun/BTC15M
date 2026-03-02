@@ -3637,10 +3637,11 @@ class AutoTraderV5:
             print(f"       [MERGE] 合并后: {merged_size}股 @ {merged_entry_price:.4f} (${merged_value:.2f})")
 
             # 计算新的止盈止损价格（合并持仓只用百分比，不用固定金额）
-            #  修复：移除固定金额逻辑，统一使用30%百分比
+            #  修复：移除固定金额逻辑，统一使用CONFIG中的百分比
             # 原因：大仓位时+1U/-1U占比太小，会偏离设计意图
-            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.20)
-            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.30)
+            #  注意：合并持仓的止盈止损与正常开仓保持一致（30%止盈 / 70%止损）
+            tp_pct_max = CONFIG['risk'].get('take_profit_pct', 0.30)  # 30%止盈
+            sl_pct_max = CONFIG['risk'].get('max_stop_loss_pct', 0.70)  # 70%止损（与正常开仓一致）
 
             # 对齐价格精度
             tick_size = float(market.get('orderPriceMinTickSize') or 0.01)
