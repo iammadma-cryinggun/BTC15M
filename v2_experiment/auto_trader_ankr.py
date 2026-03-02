@@ -1301,7 +1301,7 @@ class AutoTraderV5:
                 SELECT
                     entry_time, side, entry_token_price, exit_token_price,
                     pnl_usd, pnl_pct, exit_reason, status,
-                    score, oracle_score, vote_details
+                    score, vote_details
                 FROM positions
                 WHERE status = 'closed' AND vote_details IS NOT NULL
                 ORDER BY entry_time DESC
@@ -1329,7 +1329,8 @@ class AutoTraderV5:
                         vote_details = json.loads(t['vote_details']) if t['vote_details'] else {}
                         long_votes = vote_details.get('long_votes', 0)
                         short_votes = vote_details.get('short_votes', 0)
-                        print(f"     投票: LONG={long_votes} SHORT={short_votes} | Oracle={t['oracle_score']:+.2f}")
+                        total_score = vote_details.get('total_score', 0)
+                        print(f"     投票: LONG={long_votes} SHORT={short_votes} | 总分={total_score:+.1f}")
                     except:
                         print(f"     投票详情: 未保存")
 
@@ -1607,23 +1608,21 @@ class AutoTraderV5:
         except Exception:
             return None
 
-    def calculate_defense_multiplier(self, current_price: float, oracle_score: float, score: float, oracle: Dict = None) -> float:
+    def calculate_defense_multiplier(self, current_price: float, score: float, oracle: Dict = None) -> float:
         """
         核心防御层 (Sentinel Dampening) - v2_experiment版本
 
         评估各项环境因子，返回仓位乘数 (1.0=全仓，0.0=一票否决)
 
-        四大防御因子（v2版本）：
+        三大防御因子（v2版本）：
         1. 时间窗口管理 - 全时段入场 + 动态仓位调整（已移除6分钟限制）
         2. 混沌过滤器 - 预言机报价反复穿越基准价格次数
         3. 利润空间防御 - 基于实盘数据的价格区间分层
-        4. CVD否决权 - 混沌市场中的CVD强度检查
 
         Args:
             current_price: 当前价格
-            oracle_score: Oracle 评分
-            score: 本地信号评分
-            oracle: Oracle 数据字典（包含 cvd_5m 等）
+            score: 本地信号评分（31规则投票总分）
+            oracle: Oracle 数据字典（包含 cvd_5m 等，用于基准价格计算）
         """
         from datetime import datetime
         now = datetime.now()
@@ -1703,14 +1702,6 @@ class AutoTraderV5:
             multiplier *= 0.9  # 较近基准，轻微风险
             defense_reasons.append(f"较近基准{distance_from_baseline:.2f}")
 
-        # ========== 因子E: CVD一致性检查 ==========
-        # [逻辑] CVD是最强单一指标，Oracle代表CVD方向
-        # 如果Oracle与本地信号背离，说明结构性与动量信号冲突，降半仓
-        if oracle_score * score < 0:
-            multiplier *= 0.2
-            defense_reasons.append(f"CVD背离(本地{score:+.1f} vs Oracle{oracle_score:+.1f})")
-            print(f"[CVD一致性] Oracle({oracle_score:+.1f})与本地({score:+.1f})背离，仓位压缩至20%")
-
         # 打印防御层决策
         if multiplier < 1.0:
             print(f" [防御层] 最终乘数: {multiplier:.2f} | 原因: {', '.join(defense_reasons)}")
@@ -1772,14 +1763,12 @@ class AutoTraderV5:
 
         # 读取Oracle数据（包含CVD、UT Bot、超短动量等）
         oracle = self._read_oracle_signal()
-        oracle_score = 0.0
         ut_hull_trend = 'NEUTRAL'
 
         if oracle:
-            oracle_score = oracle.get('signal_score', 0.0)
             ut_hull_trend = oracle.get('ut_hull_trend', 'NEUTRAL')
 
-        print(f"       [ORACLE] Oracle分数:{oracle_score:+.2f} | UT Bot:{ut_hull_trend}")
+        print(f"       [ORACLE] UT Bot趋势:{ut_hull_trend}")
 
         # ==========================================
         # [VOTING] 投票系统（统一信号生成）
@@ -1847,9 +1836,9 @@ class AutoTraderV5:
             # ==========================================
             #  智能防御层评估 (@jtrevorchapman 三层防御系统)
             # ==========================================
-            # 防御层包含：时间锁、混沌过滤、利润空间、核弹穿透
+            # 防御层包含：时间锁、混沌过滤、利润空间
             # 注意：这里传递的score是方向对应的分数（+5.0/-5.0），不代表"本地分"概念
-            defense_multiplier = self.calculate_defense_multiplier(price, oracle_score, score, oracle)
+            defense_multiplier = self.calculate_defense_multiplier(price, score, oracle)
 
             # 如果防御层返回0，直接拦截
             if defense_multiplier <= 0:
@@ -1869,7 +1858,6 @@ class AutoTraderV5:
                 'vwap': vwap,
                 'price': price,
                 'components': {},  # 投票系统没有components概念
-                'oracle_score': oracle_score,
                 'oracle_15m_trend': ut_hull_trend,
                 'defense_multiplier': defense_multiplier,
                 'vote_details': vote_details,  # 添加投票详情（原系统为None）
@@ -3238,9 +3226,9 @@ class AutoTraderV5:
                         size, value_usdc, take_profit_usd, stop_loss_usd,
                         take_profit_pct, stop_loss_pct,
                         take_profit_order_id, stop_loss_order_id, token_id, status,
-                        score, oracle_score, oracle_1h_trend, oracle_15m_trend,
+                        score, oracle_1h_trend, oracle_15m_trend,
                         merged_from, strategy, highest_price, vote_details
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3258,7 +3246,6 @@ class AutoTraderV5:
                     token_id,
                     'open',
                     signal['score'],  #  保存信号评分（本地融合分数）
-                    signal.get('oracle_score', 0.0),  #  保存Oracle先知分
                     signal.get('oracle_1h_trend', 'NEUTRAL'),  #  保存1H趋势
                     signal.get('oracle_15m_trend', 'NEUTRAL'),  #  保存15m趋势
                     merged_from,  #  标记是否是合并交易（0=独立，>0=被合并的持仓ID）
