@@ -37,11 +37,22 @@ except ImportError:
 
 # 导入Binance WebSocket（CVD数据源）
 try:
+    # 尝试从同目录导入（本地开发）
     from binance_websocket import get_binance_ws
     BINANCE_WS_AVAILABLE = True
 except ImportError:
-    BINANCE_WS_AVAILABLE = False
-    print("[WARN] Binance WebSocket module not found")
+    try:
+        # 尝试从父目录导入（Zeabur部署）
+        import sys
+        import os
+        parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if parent_dir not in sys.path:
+            sys.path.insert(0, parent_dir)
+        from binance_websocket import get_binance_ws
+        BINANCE_WS_AVAILABLE = True
+    except ImportError:
+        BINANCE_WS_AVAILABLE = False
+        print("[WARN] Binance WebSocket module not found")
 
 # 导入Session Memory系统（Layer 1）
 try:
