@@ -155,7 +155,7 @@ class SessionMemory:
                 print("[MEMORY] positions表不存在")
                 return []
 
-            # 查询已关闭的仓位
+            # 查询已关闭的仓位（包含完整指标数据）
             sql = """
             SELECT
                 entry_time,
@@ -164,7 +164,13 @@ class SessionMemory:
                 exit_token_price,
                 pnl_usd,
                 status,
-                score
+                score,
+                rsi,
+                vwap,
+                cvd_5m,
+                cvd_1m,
+                prior_bias,
+                defense_multiplier
             FROM positions
             WHERE status = 'closed'
             ORDER BY entry_time DESC
@@ -179,6 +185,11 @@ class SessionMemory:
                 is_win = row['pnl_usd'] and row['pnl_usd'] > 0
                 is_long = row['side'] == 'LONG'
 
+                # 从数据库读取真实指标（用于相似度匹配）
+                cvd_5m = row['cvd_5m'] or 0.0
+                cvd_1m = row['cvd_1m'] or 0.0
+                cvd_combined = cvd_5m * 0.7 + cvd_1m * 0.3  # 与防御层一致
+
                 session = {
                     'entry_time': row['entry_time'],
                     'side': row['side'],
@@ -188,8 +199,11 @@ class SessionMemory:
                     'is_win': is_win,
                     'is_long': is_long,
                     'score': row['score'] or 0.0,
-                    'cvd': 0.0,  # 默认中性值（数据库中没有保存cvd）
-                    'rsi': 50.0  # 默认中性值（数据库中没有保存rsi）
+                    'cvd': cvd_combined,  # 真实CVD数据
+                    'rsi': row['rsi'] or 50.0,  # 真实RSI数据
+                    'vwap': row['vwap'] or 0.0,  # 真实VWAP数据
+                    'prior_bias': row['prior_bias'] or 0.0,  # 真实先验偏差
+                    'defense_multiplier': row['defense_multiplier'] or 1.0,  # 真实防御乘数
                 }
                 sessions.append(session)
 

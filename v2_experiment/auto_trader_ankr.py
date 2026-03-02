@@ -1156,6 +1156,24 @@ class AutoTraderV5:
             conn.commit()
             print("[MIGRATION] 数据库已升级：positions表添加vote_details列（JSON格式）")
 
+        #  数据库迁移：添加完整指标数据列（用于回测和Session Memory）
+        indicator_migrations = [
+            ("rsi", "ALTER TABLE positions ADD COLUMN rsi REAL DEFAULT 50.0"),
+            ("vwap", "ALTER TABLE positions ADD COLUMN vwap REAL DEFAULT 0.0"),
+            ("cvd_5m", "ALTER TABLE positions ADD COLUMN cvd_5m REAL DEFAULT 0.0"),
+            ("cvd_1m", "ALTER TABLE positions ADD COLUMN cvd_1m REAL DEFAULT 0.0"),
+            ("prior_bias", "ALTER TABLE positions ADD COLUMN prior_bias REAL DEFAULT 0.0"),
+            ("defense_multiplier", "ALTER TABLE positions ADD COLUMN defense_multiplier REAL DEFAULT 1.0"),
+        ]
+
+        for column_name, alter_sql in indicator_migrations:
+            try:
+                cursor.execute(f"SELECT {column_name} FROM positions LIMIT 1")
+            except sqlite3.OperationalError:
+                cursor.execute(alter_sql)
+                conn.commit()
+                print(f"[MIGRATION] 数据库已升级：positions表添加{column_name}列（指标回测用）")
+
         self.safe_commit(conn)
 
         # 兼容旧数据库：添加 token_id 列（如果不存在）
@@ -3409,8 +3427,9 @@ class AutoTraderV5:
                         take_profit_pct, stop_loss_pct,
                         take_profit_order_id, stop_loss_order_id, token_id, status,
                         score, oracle_1h_trend, oracle_15m_trend,
-                        merged_from, strategy, highest_price, vote_details
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        merged_from, strategy, highest_price, vote_details,
+                        rsi, vwap, cvd_5m, cvd_1m, prior_bias, defense_multiplier
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     signal['direction'],
@@ -3433,7 +3452,14 @@ class AutoTraderV5:
                     merged_from,  #  标记是否是合并交易（0=独立，>0=被合并的持仓ID）
                     signal.get('strategy', 'TREND_FOLLOWING'),  # [TARGET] 标记策略类型
                     actual_price,  # [ROCKET] 吸星大法：初始化历史最高价为入场价
-                    json.dumps(signal.get('vote_details', {}), ensure_ascii=False)  # 保存31个规则的投票详情（JSON格式）
+                    json.dumps(signal.get('vote_details', {}), ensure_ascii=False),  # 保存31个规则的投票详情（JSON格式）
+                    #  指标数据（用于回测和Session Memory相似度匹配）
+                    signal.get('rsi', 50.0),  # RSI指标
+                    signal.get('vwap', 0.0),  # VWAP价格基准
+                    signal.get('vote_details', {}).get('oracle', {}).get('cvd_5m', 0.0),  # 5分钟CVD
+                    signal.get('vote_details', {}).get('oracle', {}).get('cvd_1m', 0.0),  # 1分钟CVD
+                    signal.get('prior_bias', 0.0),  # Layer 1先验偏差
+                    signal.get('defense_multiplier', 1.0),  # Layer 3防御乘数
                 ))
                 print(f"       [POSITION] 记录持仓: {signal['direction']} {position_value:.2f} USDC @ {actual_price:.4f}")
 
